@@ -45,4 +45,17 @@ logs/
 docker-compose.override.yml
 
 # Custom
-docs/
+dev-docs/
+config.yaml
+config-dev.yaml
+
+# Auto-generated
+frontend/auto-imports.d.ts
+frontend/components.d.ts
+*.pyc
+*.pyo
+backend/__pycache__/
+backend/**/__pycache__/
+
+# Dev scripts output
+backend/scripts/__pycache__/

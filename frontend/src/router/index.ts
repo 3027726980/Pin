@@ -1,59 +1,69 @@
-import { App } from 'vue';
-import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
-import { RedirectRoute } from '@/router/base';
-import { PageEnum } from '@/enums/pageEnum';
-import { createRouterGuards } from './guards';
-import type { IModuleType } from './types';
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { storage } from '@/utils/storage'
+import { TOKEN_KEY } from '@/api/request'
 
-const modules = import.meta.glob<IModuleType>('./modules/**/*.ts', { eager: true });
+const LoginView = () => import('@/views/login/LoginView.vue')
+const MainLayout = () => import('@/layouts/MainLayout.vue')
+const DashboardView = () => import('@/views/dashboard/DashboardView.vue')
+const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue')
+const AgentListView = () => import('@/views/agent/AgentListView.vue')
 
-const routeModuleList: RouteRecordRaw[] = Object.keys(modules).reduce((list, key) => {
-  const mod = modules[key].default ?? {};
-  const modList = Array.isArray(mod) ? [...mod] : [mod];
-  return [...list, ...modList];
-}, []);
-
-function sortRoute(a, b) {
-  return (a.meta?.sort ?? 0) - (b.meta?.sort ?? 0);
-}
-
-routeModuleList.sort(sortRoute);
-
-export const RootRoute: RouteRecordRaw = {
-  path: '/',
-  name: 'Root',
-  redirect: PageEnum.BASE_HOME,
-  meta: {
-    title: 'Root',
+const routes: RouteRecordRaw[] = [
+  {
+    path: '/login',
+    name: 'Login',
+    component: LoginView,
+    meta: { title: '登录' },
   },
-};
-
-export const LoginRoute: RouteRecordRaw = {
-  path: '/login',
-  name: 'Login',
-  component: () => import('@/views/login/index.vue'),
-  meta: {
-    title: '登录',
+  {
+    path: '/',
+    component: MainLayout,
+    redirect: '/dashboard',
+    children: [
+      {
+        path: 'dashboard',
+        name: 'Dashboard',
+        component: DashboardView,
+        meta: { title: '仪表盘', requiresAuth: true },
+      },
+      {
+        path: 'knowledge',
+        name: 'Knowledge',
+        component: KnowledgeListView,
+        meta: { title: '知识库', requiresAuth: true },
+      },
+      {
+        path: 'agent',
+        name: 'Agent',
+        component: AgentListView,
+        meta: { title: 'Agent', requiresAuth: true },
+      },
+    ],
   },
-};
-
-//需要验证权限
-export const asyncRoutes = [...routeModuleList];
-
-//普通路由 无需验证权限
-export const constantRouter: RouteRecordRaw[] = [LoginRoute, RootRoute, RedirectRoute];
+]
 
 const router = createRouter({
   history: createWebHistory(),
-  routes: constantRouter,
-  strict: true,
-  scrollBehavior: () => ({ left: 0, top: 0 }),
-});
+  routes,
+})
 
-export function setupRouter(app: App) {
-  app.use(router);
-  // 创建路由守卫
-  createRouterGuards(router);
-}
+// ── 路由守卫 ────────────────────────
+router.beforeEach((to, _from, next) => {
+  const title = (to.meta.title as string) || 'Pin'
+  document.title = title
 
-export default router;
+  const isLoginPage = to.path === '/login'
+  const token = storage.get<string>(TOKEN_KEY)
+
+  if (to.meta.requiresAuth && !token) {
+    // 需要登录但没 token → 跳登录
+    next({ path: '/login', query: { redirect: to.fullPath } })
+  } else if (isLoginPage && token) {
+    // 已登录却去登录页 → 跳仪表盘
+    next('/dashboard')
+  } else {
+    next()
+  }
+})
+
+export default router
