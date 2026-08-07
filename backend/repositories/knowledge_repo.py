@@ -23,6 +23,11 @@ class KnowledgeBaseRepo:
         allowed_extensions: str | None,
         max_file_size: int,
         allow_multiple: bool,
+        chunk_size: int = 800,
+        chunk_overlap: int = 150,
+        chunk_separators: str = "\n##,\n###,\n,。,., ",
+        embedding_model: str = "text-embedding-3-small",
+        embedding_dimension: int = 1536,
     ) -> KnowledgeBase:
         """
         创建知识库记录
@@ -37,6 +42,11 @@ class KnowledgeBaseRepo:
             allowed_extensions=allowed_extensions,
             max_file_size=max_file_size,
             allow_multiple=allow_multiple,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunk_separators=chunk_separators,
+            embedding_model=embedding_model,
+            embedding_dimension=embedding_dimension,
         )
         db.add(kb)
         await db.flush()

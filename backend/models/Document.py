@@ -40,6 +40,7 @@ class Document(Base):
     )
 
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")
+    chunks = relationship("Chunk", back_populates="document", lazy="selectin")
 
     def __repr__(self) -> str:
         return f"<Document(id={self.id}, filename={self.filename})>"

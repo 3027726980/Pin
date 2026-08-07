@@ -22,6 +22,11 @@ class KnowledgeBaseCreate(BaseModel):
     allowed_extensions: str | None = Field(None, max_length=500)
     max_file_size: int | None = Field(None, ge=1, description="单文件上限（字节），不传则使用 config.yaml 默认值")
     allow_multiple: bool = Field(True)
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    chunk_separators: str | None = None
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
 
 
 class KnowledgeBaseUpdate(BaseModel):
@@ -31,6 +36,11 @@ class KnowledgeBaseUpdate(BaseModel):
     allowed_extensions: str | None = Field(None, max_length=500)
     max_file_size: int | None = Field(None, ge=1)
     allow_multiple: bool | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    chunk_separators: str | None = None
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
     status: int | None = Field(None, ge=0, le=9)
 
 
@@ -42,6 +52,11 @@ class KnowledgeBaseResponse(BaseModel):
     allowed_extensions: str | None
     max_file_size: int
     allow_multiple: bool
+    chunk_size: int
+    chunk_overlap: int
+    chunk_separators: str
+    embedding_model: str
+    embedding_dimension: int
     status: int
     created_at: datetime
 
@@ -108,6 +123,22 @@ class BatchFileAction(BaseModel):
     """批量操作文件"""
     ids: list[UUID] = Field(..., min_length=1, max_length=100)
     action: Literal["delete"]
+
+
+class DocIdsRequest(BaseModel):
+    """文档处理请求（解析/分块共用）"""
+    doc_ids: list[UUID] = Field(..., min_length=1, max_length=100)
+
+
+class ChunkIdsRequest(BaseModel):
+    """向量化请求"""
+    chunk_ids: list[UUID] = Field(..., min_length=1, max_length=500)
+
+
+class ProcessResult(BaseModel):
+    """处理结果"""
+    processed: int
+    total: int
 
 
 class BatchResult(BaseModel):

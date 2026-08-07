@@ -28,6 +28,27 @@ class KnowledgeBase(Base):
     allow_multiple: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, comment="是否允许多文件上传"
     )
+    chunk_size: Mapped[int] = mapped_column(
+        default=800, nullable=False, comment="分块大小（字符数），默认 800"
+    )
+    chunk_overlap: Mapped[int] = mapped_column(
+        default=150, nullable=False, comment="相邻块重叠字符数，默认 150"
+    )
+    chunk_separators: Mapped[str] = mapped_column(
+        String(300),
+        default="\n##,\n###,\n,。,., ",
+        nullable=False,
+        comment="递归分隔符（逗号分隔）",
+    )
+    embedding_model: Mapped[str] = mapped_column(
+        String(100),
+        default="text-embedding-3-small",
+        nullable=False,
+        comment="选用的 Embedding 模型",
+    )
+    embedding_dimension: Mapped[int] = mapped_column(
+        default=1536, nullable=False, comment="模型输出维度"
+    )
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=逻辑删除"
     )

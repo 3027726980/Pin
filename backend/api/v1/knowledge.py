@@ -17,12 +17,17 @@ from backend.schemas.knowledge import (
     BatchFileAction,
     BatchKnowledgeBaseAction,
     BatchResult,
+    ChunkIdsRequest,
+    DocIdsRequest,
     KnowledgeBaseCreate,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
     PaginatedResponse,
+    ProcessResult,
 )
 from backend.services import KnowledgeBaseService
+from backend.services.document_process_service import DocumentProcessService
+from backend.services.knowledge_service import _get_kb_for_user
 
 router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["知识库"])
 
@@ -108,6 +113,47 @@ async def delete_kb(
 ):
     await KnowledgeBaseService.delete(db, user, kb_id)
     return SuccessResponse(message="已删除")
+
+
+# ── 文档处理 ────────────────────────────
+
+@router.post("/{kb_id}/parse", response_model=SuccessResponse[ProcessResult], summary="触发文档解析")
+async def parse_docs(
+    kb_id: UUID,
+    body: DocIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    processed = await DocumentProcessService.parse_documents(db, kb, body.doc_ids)
+    await db.commit()
+    return SuccessResponse(result=ProcessResult(processed=processed, total=len(body.doc_ids)))
+
+
+@router.post("/{kb_id}/chunk", response_model=SuccessResponse[ProcessResult], summary="触发文档分块")
+async def chunk_docs(
+    kb_id: UUID,
+    body: DocIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    processed = await DocumentProcessService.chunk_documents(db, kb, body.doc_ids)
+    await db.commit()
+    return SuccessResponse(result=ProcessResult(processed=processed, total=len(body.doc_ids)))
+
+
+@router.post("/{kb_id}/vectorize", response_model=SuccessResponse[ProcessResult], summary="触发向量化")
+async def vectorize_chunks(
+    kb_id: UUID,
+    body: ChunkIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    processed = await DocumentProcessService.vectorize_chunks(db, kb, body.chunk_ids)
+    await db.commit()
+    return SuccessResponse(result=ProcessResult(processed=processed, total=len(body.chunk_ids)))
 
 
 # ── 批量操作 ────────────────────────────

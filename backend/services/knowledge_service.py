@@ -56,6 +56,11 @@ class KnowledgeBaseService:
             allowed_extensions=data.allowed_extensions,
             max_file_size=data.max_file_size or settings.storage.default_max_file_size,
             allow_multiple=data.allow_multiple,
+            chunk_size=data.chunk_size or 800,
+            chunk_overlap=data.chunk_overlap or 150,
+            chunk_separators=data.chunk_separators or "\n##,\n###,\n,。,., ",
+            embedding_model=data.embedding_model or "text-embedding-3-small",
+            embedding_dimension=data.embedding_dimension or 1536,
         )
         await db.commit()
         return KnowledgeBaseResponse.model_validate(kb)
@@ -111,6 +116,11 @@ class KnowledgeBaseService:
             allowed_extensions=data.allowed_extensions,
             max_file_size=data.max_file_size,
             allow_multiple=data.allow_multiple,
+            chunk_size=data.chunk_size,
+            chunk_overlap=data.chunk_overlap,
+            chunk_separators=data.chunk_separators,
+            embedding_model=data.embedding_model,
+            embedding_dimension=data.embedding_dimension,
             status=data.status,
         )
         await db.commit()
