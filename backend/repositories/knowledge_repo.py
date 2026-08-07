@@ -109,3 +109,30 @@ class KnowledgeBaseRepo:
         """
         kb.status = 9
         await db.flush()
+
+    @staticmethod
+    async def batch_update_status(
+        db: AsyncSession,
+        user_id: UUID,
+        ids: list[UUID],
+        status: int,
+    ) -> int:
+        """
+        批量更新知识库状态
+
+        仅更新属于该用户且未删除的记录，返回实际更新行数
+        """
+        from sqlalchemy import update as _update
+
+        stmt = (
+            _update(KnowledgeBase)
+            .where(
+                KnowledgeBase.id.in_(ids),
+                KnowledgeBase.user_id == user_id,
+                KnowledgeBase.status != 9,
+            )
+            .values(status=status)
+        )
+        result = await db.execute(stmt)
+        await db.flush()
+        return result.rowcount

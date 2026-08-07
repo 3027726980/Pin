@@ -241,6 +241,69 @@ class KnowledgeBaseService:
         await DocumentRepo.soft_delete(db, doc)
         await db.commit()
 
+    # ═══════════════════════════════════════════════
+    # 批量操作
+    # ═══════════════════════════════════════════════
+
+    @staticmethod
+    async def batch_kb(
+        db: AsyncSession,
+        user: User,
+        ids: list[UUID],
+        action: str,
+    ) -> "BatchResult":
+        """
+        批量操作知识库：enable / disable / delete
+
+        仅操作属于当前用户且未删除的知识库
+        """
+        from backend.schemas.knowledge import BatchResult
+
+        if action == "delete":
+            affected = await KnowledgeBaseRepo.batch_update_status(db, user.id, ids, 9)
+        elif action == "enable":
+            affected = await KnowledgeBaseRepo.batch_update_status(db, user.id, ids, 1)
+        elif action == "disable":
+            affected = await KnowledgeBaseRepo.batch_update_status(db, user.id, ids, 0)
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
+
+        await db.commit()
+        failed_count = len(ids) - affected
+        return BatchResult(
+            success_count=affected,
+            fail_count=failed_count,
+        )
+
+    @staticmethod
+    async def batch_files(
+        db: AsyncSession,
+        user: User,
+        kb_id: UUID,
+        ids: list[UUID],
+        action: str,
+    ) -> "BatchResult":
+        """
+        批量操作文件：delete
+
+        先校验知识库归属，再批量删除文档
+        """
+        from backend.schemas.knowledge import BatchResult
+
+        await _get_kb_for_user(db, user, kb_id)
+
+        if action == "delete":
+            affected = await DocumentRepo.batch_soft_delete(db, kb_id, user.id, ids)
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
+
+        await db.commit()
+        failed_count = len(ids) - affected
+        return BatchResult(
+            success_count=affected,
+            fail_count=failed_count,
+        )
+
 
 # ── 内部工具 ──────────────────────────────
 

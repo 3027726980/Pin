@@ -93,6 +93,30 @@ class DocumentListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ── 批量操作 ──────────────────────────────
+
+from typing import Literal
+
+
+class BatchKnowledgeBaseAction(BaseModel):
+    """批量操作知识库"""
+    ids: list[UUID] = Field(..., min_length=1, max_length=100)
+    action: Literal["enable", "disable", "delete"]
+
+
+class BatchFileAction(BaseModel):
+    """批量操作文件"""
+    ids: list[UUID] = Field(..., min_length=1, max_length=100)
+    action: Literal["delete"]
+
+
+class BatchResult(BaseModel):
+    """批量操作结果"""
+    success_count: int
+    fail_count: int
+    failed_ids: list[UUID] = []
+
+
 # ── 分页 ──────────────────────────────
 
 class PaginatedResponse(BaseModel):

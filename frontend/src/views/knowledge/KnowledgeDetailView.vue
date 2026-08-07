@@ -41,12 +41,26 @@
 
     <!-- 文件列表 -->
     <n-card title="文件列表" class="file-card">
+      <!-- 批量操作栏 -->
+      <div v-if="checkedFileKeys.length > 0" class="batch-bar">
+        <span class="batch-tip">已选 {{ checkedFileKeys.length }} 项</span>
+        <n-space>
+          <n-popconfirm @positive-click="batchFilesAction">
+            <template #trigger><n-button size="small" type="error">批量删除</n-button></template>
+            确定批量删除所选文件？
+          </n-popconfirm>
+          <n-button size="small" @click="checkedFileKeys = []">取消选择</n-button>
+        </n-space>
+      </div>
+
       <n-data-table
         :columns="fileColumns"
         :data="fileList"
         :loading="fileLoading"
         :pagination="false"
         :row-key="(row: DocumentListItem) => row.id"
+        :checked-row-keys="checkedFileKeys"
+        @update:checked-row-keys="checkedFileKeys = $event"
       >
         <template #empty>
           <n-empty description="暂无文件，点击右上角上传" />
@@ -78,6 +92,7 @@ import {
   getKnowledgeBase,
   listFiles,
   deleteFile,
+  batchFiles,
   type KnowledgeBaseDetail,
   type DocumentListItem,
 } from '@/api/knowledge'
@@ -98,6 +113,7 @@ const fileList = ref<DocumentListItem[]>([])
 const filePage = ref(1)
 const filePageSize = ref(20)
 const fileTotal = ref(0)
+const checkedFileKeys = ref<any[]>([])
 
 // ── 上传配置 ────────────────────────────
 const uploadUrl = computed(() => `/api/v1/knowledge-bases/${kbId.value}/files`)
@@ -116,6 +132,7 @@ const acceptExtensions = computed(() => {
 
 // ── 表格列 ──────────────────────────────
 const fileColumns: DataTableColumns<DocumentListItem> = [
+  { type: 'selection' },
   { title: '文件名', key: 'filename', ellipsis: { tooltip: true } },
   {
     title: '大小',
@@ -253,6 +270,19 @@ async function handleDeleteFile(docId: string) {
   }
 }
 
+async function batchFilesAction() {
+  if (checkedFileKeys.value.length === 0) return
+  const ids = [...checkedFileKeys.value]
+  try {
+    const res = await batchFiles(kbId.value, ids, 'delete')
+    message.success(`批量删除完成：成功 ${res.success_count}，失败 ${res.fail_count}`)
+    checkedFileKeys.value = []
+    fetchFiles()
+  } catch (e) {
+    message.error((e as Error).message || '批量删除失败')
+  }
+}
+
 // ── 工具 ────────────────────────────────
 function formatFileSize(bytes: number): string {
   if (!bytes || bytes <= 0) return '-'
@@ -307,5 +337,20 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.batch-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  background: var(--n-color-embedded);
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+}
+.batch-tip {
+  font-size: 14px;
+  font-weight: 500;
 }
 </style>

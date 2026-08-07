@@ -14,6 +14,9 @@ from backend.core.database import get_db
 from backend.models import User
 from backend.schemas.common import SuccessResponse
 from backend.schemas.knowledge import (
+    BatchFileAction,
+    BatchKnowledgeBaseAction,
+    BatchResult,
     KnowledgeBaseCreate,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
@@ -107,6 +110,18 @@ async def delete_kb(
     return SuccessResponse(message="已删除")
 
 
+# ── 批量操作 ────────────────────────────
+
+@router.post("/batch", response_model=SuccessResponse[BatchResult], summary="批量操作知识库")
+async def batch_kb(
+    body: BatchKnowledgeBaseAction,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await KnowledgeBaseService.batch_kb(db, user, body.ids, body.action)
+    return SuccessResponse(result=result)
+
+
 # ── 文件管理 ────────────────────────────
 
 @router.post(
@@ -155,3 +170,18 @@ async def delete_file(
 ):
     await KnowledgeBaseService.delete_file(db, user, kb_id, doc_id)
     return SuccessResponse(message="已删除")
+
+
+@router.post(
+    "/{kb_id}/files/batch",
+    response_model=SuccessResponse[BatchResult],
+    summary="批量操作文件",
+)
+async def batch_files(
+    kb_id: UUID,
+    body: BatchFileAction,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await KnowledgeBaseService.batch_files(db, user, kb_id, body.ids, body.action)
+    return SuccessResponse(result=result)

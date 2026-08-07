@@ -91,3 +91,31 @@ class DocumentRepo:
         """
         doc.status = 9
         await db.flush()
+
+    @staticmethod
+    async def batch_soft_delete(
+        db: AsyncSession,
+        kb_id: UUID,
+        user_id: UUID,
+        ids: list[UUID],
+    ) -> int:
+        """
+        批量软删除文档
+
+        仅删除属于该用户、该知识库且未删除的记录，返回实际更新行数
+        """
+        from sqlalchemy import update as _update
+
+        stmt = (
+            _update(Document)
+            .where(
+                Document.id.in_(ids),
+                Document.knowledge_base_id == kb_id,
+                Document.user_id == user_id,
+                Document.status != 9,
+            )
+            .values(status=9)
+        )
+        result = await db.execute(stmt)
+        await db.flush()
+        return result.rowcount

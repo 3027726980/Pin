@@ -9,6 +9,20 @@
     </div>
 
     <n-card>
+      <!-- 批量操作栏 -->
+      <div v-if="checkedRowKeys.length > 0" class="batch-bar">
+        <span class="batch-tip">已选 {{ checkedRowKeys.length }} 项</span>
+        <n-space>
+          <n-button size="small" type="primary" @click="batchAction('enable')">批量启用</n-button>
+          <n-button size="small" @click="batchAction('disable')">批量禁用</n-button>
+          <n-popconfirm @positive-click="batchAction('delete')">
+            <template #trigger><n-button size="small" type="error">批量删除</n-button></template>
+            确定批量删除所选知识库？
+          </n-popconfirm>
+          <n-button size="small" @click="checkedRowKeys = []">取消选择</n-button>
+        </n-space>
+      </div>
+
       <n-data-table
         :columns="columns"
         :data="list"
@@ -16,6 +30,8 @@
         :pagination="false"
         :row-key="(row: KnowledgeBaseListItem) => row.id"
         :row-props="rowProps"
+        :checked-row-keys="checkedRowKeys"
+        @update:checked-row-keys="checkedRowKeys = $event"
       />
 
       <div class="pagination-wrap">
@@ -103,9 +119,11 @@ import {
   createKnowledgeBase,
   updateKnowledgeBase,
   deleteKnowledgeBase,
+  batchKnowledgeBases,
   type KnowledgeBaseListItem,
   type KnowledgeBaseDetail,
   type KnowledgeBaseCreate,
+  type BatchAction,
 } from '@/api/knowledge'
 
 const router = useRouter()
@@ -117,17 +135,24 @@ const list = ref<KnowledgeBaseListItem[]>([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+const checkedRowKeys = ref<any[]>([])
 
 // ── 行点击跳转 ──────────────────────────
 function rowProps(row: KnowledgeBaseListItem) {
   return {
     style: 'cursor: pointer',
-    onClick: () => router.push(`/knowledge/${row.id}`),
+    onClick: (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      // 点击复选框/选择框时不跳转
+      if (target.closest('.n-checkbox') || target.closest('.n-data-table-checkbox')) return
+      router.push(`/knowledge/${row.id}`)
+    },
   }
 }
 
 // ── 表格列定义 ──────────────────────────
 const columns: DataTableColumns<KnowledgeBaseListItem> = [
+  { type: 'selection' },
   { title: '名称', key: 'name', ellipsis: { tooltip: true } },
   {
     title: '允许类型',
@@ -313,6 +338,20 @@ async function handleToggleStatus(id: string, enabled: boolean) {
   }
 }
 
+async function batchAction(action: BatchAction) {
+  if (checkedRowKeys.value.length === 0) return
+  const ids = [...checkedRowKeys.value]
+  try {
+    const res = await batchKnowledgeBases(ids, action)
+    const label = { enable: '批量启用', disable: '批量禁用', delete: '批量删除' }[action]
+    message.success(`${label}完成：成功 ${res.success_count}，失败 ${res.fail_count}`)
+    checkedRowKeys.value = []
+    fetchList()
+  } catch (e) {
+    message.error((e as Error).message || '批量操作失败')
+  }
+}
+
 function resetForm() {
   formRef.value?.restoreValidation()
   editingId.value = null
@@ -351,5 +390,20 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.batch-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  background: var(--n-color-embedded);
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+}
+.batch-tip {
+  font-size: 14px;
+  font-weight: 500;
 }
 </style>

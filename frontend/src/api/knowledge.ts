@@ -125,3 +125,24 @@ export function uploadFile(kbId: string, file: File): Promise<DocumentDetail> {
 export function deleteFile(kbId: string, docId: string): Promise<void> {
   return request.delete(`/v1/knowledge-bases/${kbId}/files/${docId}`)
 }
+
+// ── 批量操作 ────────────────────────────
+
+export type BatchAction = 'enable' | 'disable' | 'delete'
+export type BatchFileAction = 'delete'
+
+export interface BatchResult {
+  success_count: number
+  fail_count: number
+  failed_ids: string[]
+}
+
+/** 批量操作知识库 */
+export function batchKnowledgeBases(ids: string[], action: BatchAction): Promise<BatchResult> {
+  return request.post('/v1/knowledge-bases/batch', { ids, action })
+}
+
+/** 批量操作文件 */
+export function batchFiles(kbId: string, ids: string[], action: BatchFileAction): Promise<BatchResult> {
+  return request.post(`/v1/knowledge-bases/${kbId}/files/batch`, { ids, action })
+}
