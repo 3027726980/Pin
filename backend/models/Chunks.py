@@ -24,7 +24,10 @@ class Chunks(Base):
         "metadata", JSONB, nullable=True, comment="来源标题、页码等元信息"
     )
     status: Mapped[int] = mapped_column(
-        SmallInteger, default=0, nullable=False, comment="-1=失败, 0=未完成, 1=已完成, 2=进行中"
+        SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=软删除"
+    )
+    is_vectorized: Mapped[int] = mapped_column(
+        SmallInteger, default=0, nullable=False, comment="向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
 
     document = relationship("Documents", back_populates="chunks")

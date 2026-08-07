@@ -26,8 +26,9 @@ class KnowledgeBaseRepo:
         chunk_size: int = 800,
         chunk_overlap: int = 150,
         chunk_separators: str = "\n##,\n###,\n,。,., ",
-        embedding_model: str = "text-embedding-3-small",
-        embedding_dimension: int = 1536,
+        embedding_model: str = "bge-small-zh-v1.5",
+        embedding_dimension: int = 4096,
+        user_model_config_id: UUID | None = None,
     ) -> KnowledgeBases:
         """
         创建知识库记录
@@ -47,6 +48,7 @@ class KnowledgeBaseRepo:
             chunk_separators=chunk_separators,
             embedding_model=embedding_model,
             embedding_dimension=embedding_dimension,
+            user_model_config_id=user_model_config_id,
         )
         db.add(kb)
         await db.flush()

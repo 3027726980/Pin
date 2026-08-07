@@ -8,6 +8,7 @@ const DashboardView = () => import('@/views/dashboard/DashboardView.vue')
 const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue')
 const KnowledgeDetailView = () => import('@/views/knowledge/KnowledgeDetailView.vue')
 const AgentListView = () => import('@/views/agent/AgentListView.vue')
+const ModelConfigView = () => import('@/views/settings/ModelConfigView.vue')
 
 const routes: RouteRecordRaw[] = [
   {
@@ -44,6 +45,12 @@ const routes: RouteRecordRaw[] = [
         name: 'Agent',
         component: AgentListView,
         meta: { title: 'Agent', requiresAuth: true },
+      },
+      {
+        path: 'settings/model-config',
+        name: 'ModelConfig',
+        component: ModelConfigView,
+        meta: { title: '模型配置', requiresAuth: true },
       },
     ],
   },

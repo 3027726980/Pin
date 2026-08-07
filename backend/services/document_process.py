@@ -6,16 +6,17 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import HTTPException
-from openai import AsyncOpenAI
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.core.config import settings
-from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, ModelConfig, Users
-from backend.repositories import DocumentRepo, KnowledgeBaseRepo, ModelConfigRepo
+from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, UserModelConfig, Users
+from backend.repositories import DocumentRepo, KnowledgeBaseRepo
 from backend.services.knowledge import UPLOAD_ROOT
 from backend.services.parsers import get_parser
+from backend.services.embedding import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class DocumentProcessService:
             if doc is None or doc.status == 9:
                 continue
 
+            doc.is_parsed = 2
             try:
                 parser = get_parser(doc.file_type or "")
                 file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
@@ -51,7 +53,7 @@ class DocumentProcessService:
                 doc.is_parsed = 1
                 count += 1
             except Exception as e:
-                logger.error(f"解析文档 {doc_id} 失败: {e}")
+                logger.error(f"解析文档 {doc.filename} 失败: {e}")
                 doc.is_parsed = -1
                 continue
 
@@ -71,8 +73,8 @@ class DocumentProcessService:
         """
         对已解析的文档文本进行分块
 
-        流程：读取 chunks 中 chunk_index=0 的完整文本 → 分块 → 替换为多个 chunk 行
-        返回生成的总块数
+        流程：读取 doc.content 完整文本 → 递归分块 → 替换旧 chunks → 插入新行
+        返回成功分块的文档数
         """
         separator_list = [s.strip() for s in kb.chunk_separators.split(",") if s.strip()]
         splitter = RecursiveCharacterTextSplitter(
@@ -82,7 +84,7 @@ class DocumentProcessService:
             keep_separator=True,
         )
 
-        total_chunks = 0
+        success_count = 0
         for doc_id in doc_ids:
             doc = await DocumentRepo.get_by_id(db, doc_id)
             if doc is None or doc.status == 9:
@@ -92,28 +94,66 @@ class DocumentProcessService:
             if not doc.content:
                 continue
 
-            texts = splitter.split_text(doc.content)
+            doc.is_chunked = 2
+            try:
+                texts = splitter.split_text(doc.content)
 
-            # 删除旧块，插入新块
-            await db.execute(delete(Chunks).where(Chunks.document_id == doc_id))
-            for i, text in enumerate(texts):
-                chunk = Chunks(
-                    document_id=doc_id,
-                    kb_id=kb.id,
-                    chunk_index=i,
-                    content=text,
-                    status=1,
-                )
-                db.add(chunk)
-                total_chunks += 1
-            doc.is_chunked = 1
+                # 先删 embeddings（FK 依赖），再删旧 chunks
+                old_chunks = (await db.execute(
+                    select(Chunks.id).where(Chunks.document_id == doc_id)
+                )).scalars().all()
+                if old_chunks:
+                    await db.execute(delete(Embeddings).where(Embeddings.chunk_id.in_(old_chunks)))
+                await db.execute(delete(Chunks).where(Chunks.document_id == doc_id))
+
+                for i, text in enumerate(texts):
+                    chunk = Chunks(
+                        document_id=doc_id,
+                        kb_id=kb.id,
+                        chunk_index=i,
+                        content=text,
+                        chunk_metadata={
+                            "source": doc.filename,
+                            "chunk_index": i,
+                            "total_chunks": len(texts),
+                        },
+                        status=1,
+                    )
+                    db.add(chunk)
+                doc.is_chunked = 1
+                success_count += 1
+            except Exception as e:
+                logger.error(f"文档 {doc.filename} 分块失败: {e}")
+                doc.is_chunked = -1
+                continue
 
         await db.flush()
-        return total_chunks
+        return success_count
 
     # ═══════════════════════════════════════════════
     # 向量化
     # ═══════════════════════════════════════════════
+
+    @staticmethod
+    async def vectorize_documents(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        doc_ids: list[UUID],
+    ) -> int:
+        """对指定文档的所有分块进行向量化（含失败重试），返回成功处理的文档数"""
+        q = select(Chunks).options(selectinload(Chunks.document)).where(
+            Chunks.document_id.in_(doc_ids),
+            Chunks.kb_id == kb.id,
+            Chunks.status == 1,  # 仅启用的分块
+        )
+        result = await db.execute(q)
+        chunks = list(result.scalars().all())
+        if not chunks:
+            return 0
+        chunk_count = await DocumentProcessService._do_vectorize(db, kb, chunks)
+        # 统计至少有一个 chunk 向量化成功的文档数
+        success_doc_ids = {c.document_id for c in chunks if c.is_vectorized == 1}
+        return len(success_doc_ids)
 
     @staticmethod
     async def vectorize_chunks(
@@ -121,57 +161,83 @@ class DocumentProcessService:
         kb: KnowledgeBases,
         chunk_ids: list[UUID],
     ) -> int:
-        """
-        对指定分块进行向量化
-
-        流程：取 chunk 文本 → Embedding API → 零填充 → 存 embeddings 表
-        返回成功向量化的块数
-        """
-        # 找 active 的 embedding 配置
-        cfg_q = select(ModelConfig).where(
-            ModelConfig.user_id == kb.user_id,
-            ModelConfig.model_type == 1,
-            ModelConfig.is_active == True,
+        """对指定分块进行向量化"""
+        q = select(Chunks).options(selectinload(Chunks.document)).where(
+            Chunks.id.in_(chunk_ids),
+            Chunks.kb_id == kb.id,
         )
-        result = await db.execute(cfg_q)
-        cfg = result.scalars().first()
-        if cfg is None:
-            raise HTTPException(status_code=400, detail="未找到启用的 Embedding 模型配置")
+        result = await db.execute(q)
+        valid = [c for c in result.scalars().all() if c.content]
+        if not valid:
+            return 0
+        return await DocumentProcessService._do_vectorize(db, kb, valid)
 
-        client = AsyncOpenAI(api_key=cfg.key_value)
+    @staticmethod
+    async def _do_vectorize(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        chunks: list[Chunks],
+    ) -> int:
+        """内部：对给定的 chunk 列表执行向量化，返回成功数"""
+        if kb.user_model_config_id:
+            cfg = await db.get(UserModelConfig, kb.user_model_config_id)
+            if cfg is None:
+                raise HTTPException(status_code=400, detail="关联的 Embedding 模型配置不存在")
+            provider = cfg.provider
+            model_name = cfg.model_name
+            api_key = cfg.api_key
+            url = cfg.base_url
+        else:
+            provider = "local"
+            model_name = kb.embedding_model
+            api_key = None
+            url = None
+
         max_dim = settings.embedding.max_dimension
-
+        batch_size = settings.embedding.batch_size
         count = 0
-        for chunk_id in chunk_ids:
-            chunk = await db.get(Chunks, chunk_id)
-            if chunk is None:
-                continue
+
+        # 先标记所有相关 chunk 为"进行中"
+        for c in chunks:
+            c.is_vectorized = 2
+            c.document.is_vectorized = 2
+        await db.flush()
+
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            texts = [c.content for c in batch]
 
             try:
-                resp = await client.embeddings.create(
-                    model=cfg.model_name,
-                    input=chunk.content,
+                vectors = EmbeddingService.embed(
+                    provider=provider,
+                    model_name=model_name,
+                    api_key=api_key,
+                    base_url=url,
+                    texts=texts,
                 )
-                vec = resp.data[0].embedding
+            except Exception as e:
+                logger.error(f"第 {i // batch_size + 1} 批向量化失败: {e}")
+                for c in batch:
+                    c.is_vectorized = -1
+                    c.document.is_vectorized = -1
+                await db.flush()
+                continue
 
-                # 零填充
+            for chunk, vec in zip(batch, vectors):
                 if len(vec) < max_dim:
                     vec = list(vec) + [0.0] * (max_dim - len(vec))
 
-                # 删除旧 embedding，插入新
-                await db.execute(delete(Embeddings).where(Embeddings.chunk_id == chunk_id))
+                await db.execute(delete(Embeddings).where(Embeddings.chunk_id == chunk.id))
                 emb = Embeddings(
-                    chunk_id=chunk_id,
+                    chunk_id=chunk.id,
                     kb_id=kb.id,
                     embedding=vec,
-                    status=1,
+                    status=1,  # 与 chunk 状态同步，启用
                 )
                 db.add(emb)
+                chunk.is_vectorized = 1
                 chunk.document.is_vectorized = 1
                 count += 1
-            except Exception as e:
-                logger.error(f"向量化 chunk {chunk_id} 失败: {e}")
-                continue
 
         await db.flush()
         return count

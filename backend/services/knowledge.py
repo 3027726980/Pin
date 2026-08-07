@@ -59,8 +59,9 @@ class KnowledgeBaseService:
             chunk_size=data.chunk_size or 800,
             chunk_overlap=data.chunk_overlap or 150,
             chunk_separators=data.chunk_separators or "\n##,\n###,\n,。,., ",
-            embedding_model=data.embedding_model or "text-embedding-3-small",
-            embedding_dimension=data.embedding_dimension or 1536,
+            embedding_model=data.embedding_model or "bge-small-zh-v1.5",
+            embedding_dimension=data.embedding_dimension or 4096,
+            user_model_config_id=data.user_model_config_id,
         )
         await db.commit()
         return KnowledgeBaseResponse.model_validate(kb)
@@ -123,18 +124,21 @@ class KnowledgeBaseService:
             embedding_dimension=data.embedding_dimension,
             status=data.status,
         )
+        # user_model_config_id 需显式处理：允许设为 None 以切换回本地模型
+        set_fields = data.model_dump(exclude_unset=True)
+        if 'user_model_config_id' in set_fields:
+            kb.user_model_config_id = data.user_model_config_id
         await db.commit()
+        await db.refresh(kb)  # 重新加载 onupdate 触发的 updated_at，避免 MissingGreenlet
         return KnowledgeBaseResponse.model_validate(kb)
 
     @staticmethod
     async def delete(db: AsyncSession, user: Users, kb_id: UUID) -> None:
         """
-        软删除知识库（status → 9）
-
-        校验：归属 + 未删除
-        不删除关联文件（文件本身保留，记录软删除）
+        软删除知识库及其下所有文件（status → 9）
         """
         kb = await _get_kb_for_user(db, user, kb_id)
+        await DocumentRepo.soft_delete_by_kb(db, kb_id)
         await KnowledgeBaseRepo.soft_delete(db, kb)
         await db.commit()
 
@@ -195,7 +199,7 @@ class KnowledgeBaseService:
             knowledge_base_id=kb_id,
             user_id=user.id,
             filename=original_name,
-            file_path=str(file_path.relative_to(UPLOAD_ROOT.parent)),
+            file_path=str(file_path.relative_to(UPLOAD_ROOT)),
             file_size=len(contents),
             file_type=ext or None,
         )

@@ -20,6 +20,11 @@ export interface KnowledgeBaseDetail {
   allowed_extensions: string | null
   max_file_size: number
   allow_multiple: boolean
+  chunk_size: number
+  chunk_overlap: number
+  embedding_model: string
+  embedding_dimension: number
+  user_model_config_id: string | null
   status: number
   created_at: string
 }
@@ -30,6 +35,9 @@ export interface KnowledgeBaseCreate {
   allowed_extensions?: string | null
   max_file_size?: number | null
   allow_multiple?: boolean
+  embedding_model?: string | null
+  embedding_dimension?: number | null
+  user_model_config_id?: string | null
 }
 
 export interface KnowledgeBaseUpdate {
@@ -38,6 +46,9 @@ export interface KnowledgeBaseUpdate {
   allowed_extensions?: string | null
   max_file_size?: number | null
   allow_multiple?: boolean | null
+  embedding_model?: string | null
+  embedding_dimension?: number | null
+  user_model_config_id?: string | null
   status?: number | null
 }
 
@@ -147,4 +158,31 @@ export function batchKnowledgeBases(ids: string[], action: BatchAction): Promise
 /** 批量操作文件 */
 export function batchFiles(kbId: string, ids: string[], action: BatchFileAction): Promise<BatchResult> {
   return request.post(`/v1/knowledge-bases/${kbId}/files/batch`, { ids, action })
+}
+
+// ── 文档处理 ────────────────────────────
+
+export interface ProcessResult {
+  processed: number
+  total: number
+}
+
+/** 触发文档解析 */
+export function parseDocuments(kbId: string, docIds: string[]): Promise<ProcessResult> {
+  return request.post(`/v1/knowledge-bases/${kbId}/parse`, { doc_ids: docIds })
+}
+
+/** 触发文档分块 */
+export function chunkDocuments(kbId: string, docIds: string[]): Promise<ProcessResult> {
+  return request.post(`/v1/knowledge-bases/${kbId}/chunk`, { doc_ids: docIds })
+}
+
+/** 触发向量化（按 chunk_ids） */
+export function vectorizeChunks(kbId: string, chunkIds: string[]): Promise<ProcessResult> {
+  return request.post(`/v1/knowledge-bases/${kbId}/vectorize`, { chunk_ids: chunkIds })
+}
+
+/** 按文档批量向量化（选文档自动找其所有有效分块） */
+export function vectorizeDocuments(kbId: string, docIds: string[]): Promise<ProcessResult> {
+  return request.post(`/v1/knowledge-bases/${kbId}/vectorize-docs`, { doc_ids: docIds })
 }

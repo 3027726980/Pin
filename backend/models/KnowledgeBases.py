@@ -42,12 +42,15 @@ class KnowledgeBases(Base):
     )
     embedding_model: Mapped[str] = mapped_column(
         String(100),
-        default="text-embedding-3-small",
+        default="bge-small-zh-v1.5",
         nullable=False,
-        comment="选用的 Embedding 模型",
+        comment="选用的 Embedding 模型，默认本地 bge-small-zh-v1.5",
     )
     embedding_dimension: Mapped[int] = mapped_column(
-        default=1536, nullable=False, comment="模型输出维度"
+        default=4096, nullable=False, comment="模型输出维度"
+    )
+    user_model_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id"), nullable=True, comment="关联的用户模型配置（有 API Key 时使用）"
     )
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=逻辑删除"

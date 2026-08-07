@@ -57,5 +57,8 @@ frontend/components.d.ts
 backend/__pycache__/
 backend/**/__pycache__/
 
-# Dev scripts output
-backend/scripts/__pycache__/
+# Dev scripts（仅开发用，不提交）
+backend/scripts-dev/
+
+# 本地模型缓存
+backend/embedding_models/

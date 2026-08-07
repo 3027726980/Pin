@@ -9,6 +9,9 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+import pymupdf
+from markitdown import MarkItDown
+
 
 class BaseParser(ABC):
     @abstractmethod
@@ -18,9 +21,8 @@ class BaseParser(ABC):
 
 class PyMuPDFParser(BaseParser):
     def parse(self, file_path: str) -> str:
-        import fitz
         pages = []
-        with fitz.open(file_path) as doc:
+        with pymupdf.open(file_path) as doc:
             for page in doc:
                 text = page.get_text()
                 if text.strip():
@@ -30,7 +32,6 @@ class PyMuPDFParser(BaseParser):
 
 class MarkitdownParser(BaseParser):
     def parse(self, file_path: str) -> str:
-        from markitdown import MarkItDown
         return MarkItDown().convert(file_path).text_content
 
 

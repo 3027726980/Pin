@@ -92,27 +92,26 @@ COMMENT ON INDEX idx_refresh_whitelist_user IS '按用户查询索引，批量�
 
 -- ============================================================
 -- 5. 知识库表
---     Phase 2：存储知识库的基本信息 + 上传约束
+--     Phase 2：基本信息 + 上传约束
+--     Phase 3：分块配置 + 关联 user_model_config
 -- ============================================================
 CREATE TABLE IF NOT EXISTS knowledge_bases (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id             UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name                VARCHAR(200) NOT NULL,
-    description         TEXT,
-    allowed_extensions  VARCHAR(500),
-    max_file_size       BIGINT      NOT NULL DEFAULT 104857600,
-    allow_multiple      BOOLEAN     NOT NULL DEFAULT TRUE,
-    chunk_size          INT         NOT NULL DEFAULT 800,
-    chunk_overlap       INT         NOT NULL DEFAULT 150,
-    chunk_separators    VARCHAR(300) NOT NULL DEFAULT '
-##,
-###,
-,。,., ',
-    embedding_model     VARCHAR(100) NOT NULL DEFAULT 'text-embedding-3-small',
-    embedding_dimension INT         NOT NULL DEFAULT 1536,
-    status              SMALLINT    NOT NULL DEFAULT 1,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id               UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name                  VARCHAR(200) NOT NULL,
+    description           TEXT,
+    allowed_extensions    VARCHAR(500),
+    max_file_size         BIGINT      NOT NULL DEFAULT 104857600,
+    allow_multiple        BOOLEAN     NOT NULL DEFAULT TRUE,
+    chunk_size            INT         NOT NULL DEFAULT 800,
+    chunk_overlap         INT         NOT NULL DEFAULT 150,
+    chunk_separators      VARCHAR(300) NOT NULL DEFAULT E'\n##,\n###,\n,。,., ',
+    embedding_model       VARCHAR(100) NOT NULL DEFAULT 'bge-small-zh-v1.5',
+    embedding_dimension   INT         NOT NULL DEFAULT 4096,
+    user_model_config_id  UUID        REFERENCES user_model_config(id) ON DELETE SET NULL,
+    status                SMALLINT    NOT NULL DEFAULT 1,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_user_id ON knowledge_bases(user_id);
@@ -126,20 +125,22 @@ COMMENT ON COLUMN knowledge_bases.description IS '描述';
 COMMENT ON COLUMN knowledge_bases.allowed_extensions IS '允许的文件后缀，逗号分隔如 .pdf,.txt,.md；为空则允许所有类型';
 COMMENT ON COLUMN knowledge_bases.max_file_size IS '单文件大小上限（字节），默认 104857600 = 100MB';
 COMMENT ON COLUMN knowledge_bases.allow_multiple IS '是否允许多文件上传';
+COMMENT ON COLUMN knowledge_bases.chunk_size IS '分块大小（字符数），默认 800';
+COMMENT ON COLUMN knowledge_bases.chunk_overlap IS '相邻块重叠字符数，默认 150';
+COMMENT ON COLUMN knowledge_bases.chunk_separators IS '递归分隔符（逗号分隔），优先级从高到低';
+COMMENT ON COLUMN knowledge_bases.embedding_model IS '选用的 Embedding 模型，默认 bge-small-zh-v1.5（本地，零配置）';
+COMMENT ON COLUMN knowledge_bases.embedding_dimension IS '模型输出向量维度，默认 4096（向下兼容，小维度零填充）';
+COMMENT ON COLUMN knowledge_bases.user_model_config_id IS '关联的用户模型配置，有 API Key 时优先使用';
 COMMENT ON COLUMN knowledge_bases.status IS '0=禁用, 1=启用, 9=逻辑删除';
 COMMENT ON COLUMN knowledge_bases.created_at IS '记录创建时间';
 COMMENT ON COLUMN knowledge_bases.updated_at IS '记录最后更新时间';
-COMMENT ON COLUMN knowledge_bases.chunk_size IS '分块大小（字符数），默认 800';
-COMMENT ON COLUMN knowledge_bases.chunk_overlap IS '相邻块重叠字符数，默认 150';
-COMMENT ON COLUMN knowledge_bases.chunk_separators IS '递归分隔符（逗号分隔），默认 \n##,\n###,\n,。,., ';
-COMMENT ON COLUMN knowledge_bases.embedding_model IS '选用的 Embedding 模型，默认 text-embedding-3-small';
-COMMENT ON COLUMN knowledge_bases.embedding_dimension IS '模型输出维度，默认 1536';
 COMMENT ON INDEX idx_kb_user_id IS '按创建者查询索引，列出用户的知识库时使用';
 COMMENT ON INDEX idx_kb_status IS '按状态过滤索引，查询时排除已删除记录';
 
 -- ============================================================
 -- 6. 文档表
---     Phase 2：存储上传到知识库中的文档元信息
+--     Phase 2：文件元信息
+--     Phase 3：content（解析文本）+ is_parsed/is_chunked/is_vectorized（状态追踪）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS documents (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -190,7 +191,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index     INT           NOT NULL DEFAULT 0,
     content         TEXT          NOT NULL,
     metadata        JSONB,
-    status          SMALLINT      NOT NULL DEFAULT 0,
+    status          SMALLINT      NOT NULL DEFAULT 1,
+    is_vectorized   SMALLINT      NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
@@ -199,27 +201,28 @@ CREATE INDEX IF NOT EXISTS idx_chunks_doc_id  ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_kb_id   ON chunks(kb_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_status  ON chunks(status);
 
-COMMENT ON TABLE chunks IS '分块表：存储文档分块后的文本片段，status: -1=失败,0=未完成,1=已完成,2=进行中';
+COMMENT ON TABLE chunks IS '分块表：存储文档分块后的文本片段';
 COMMENT ON COLUMN chunks.document_id IS '所属文档 ID';
 COMMENT ON COLUMN chunks.kb_id IS '所属知识库 ID（冗余加速检索）';
 COMMENT ON COLUMN chunks.chunk_index IS '块序号，同一文档内从 0 递增';
 COMMENT ON COLUMN chunks.content IS '分块文本内容';
 COMMENT ON COLUMN chunks.metadata IS '来源标题、页码等元信息';
-COMMENT ON COLUMN chunks.status IS '-1=失败, 0=未完成, 1=已完成, 2=进行中';
+COMMENT ON COLUMN chunks.status IS '0=禁用, 1=启用, 9=软删除';
+COMMENT ON COLUMN chunks.is_vectorized IS '向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON INDEX idx_chunks_doc_id IS '按文档查询索引';
 COMMENT ON INDEX idx_chunks_kb_id IS '按知识库查询索引';
 COMMENT ON INDEX idx_chunks_status IS '按状态过滤索引';
 
 -- ============================================================
 -- 8. 向量表
---     Phase 3：存储分块文本的 Embedding 向量，统一 vector(2048)
+--     Phase 3：存储分块文本的 Embedding 向量，统一 vector(4096)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS embeddings (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     chunk_id        UUID          NOT NULL UNIQUE REFERENCES chunks(id) ON DELETE CASCADE,
     kb_id           UUID          NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
-    embedding       vector(2048),
-    status          SMALLINT      NOT NULL DEFAULT 0,
+    embedding       vector(4096),
+    status          SMALLINT      NOT NULL DEFAULT 1,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
@@ -228,40 +231,86 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_id ON embeddings(chunk_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_kb_id    ON embeddings(kb_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_status   ON embeddings(status);
 
-COMMENT ON TABLE embeddings IS '向量表：存储分块文本的 Embedding 向量，整体 vector(2048)，小维度模型零填充';
+COMMENT ON TABLE embeddings IS '向量表：存储分块文本的 Embedding 向量，整体 vector(4096)，小维度模型零填充';
 COMMENT ON COLUMN embeddings.chunk_id IS '关联的分块 ID，一一对应';
 COMMENT ON COLUMN embeddings.kb_id IS '所属知识库 ID（冗余加速检索）';
-COMMENT ON COLUMN embeddings.embedding IS '向量数据，固定 2048 维（小维度零填充）';
-COMMENT ON COLUMN embeddings.status IS '-1=失败, 0=未完成, 1=已完成, 2=进行中';
+COMMENT ON COLUMN embeddings.embedding IS '向量数据，固定 4096 维（小维度零填充）';
+COMMENT ON COLUMN embeddings.status IS '0=禁用, 1=启用, 9=软删除（与关联 chunk 状态同步）';
 COMMENT ON INDEX idx_embeddings_chunk_id IS '按分块查询索引';
 COMMENT ON INDEX idx_embeddings_kb_id IS '按知识库查询索引';
 COMMENT ON INDEX idx_embeddings_status IS '按状态过滤索引';
 
 -- ============================================================
--- 9. 模型配置表
---     Phase 3：统一管理 API Key 和模型配置（embedding + LLM）
 -- ============================================================
-CREATE TABLE IF NOT EXISTS model_config (
+-- 9. 模型厂商表
+--     Phase 3：启动时从 config.yaml model_providers 自动创建，用户只读
+--     关系：model_providers 1:N default_model_config
+-- ============================================================
+CREATE TABLE IF NOT EXISTS model_providers (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id         UUID          NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    model_type      SMALLINT      NOT NULL,
+    name            VARCHAR(50)   NOT NULL UNIQUE,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE model_providers      IS '模型厂商表：启动时从 config.yaml 自动创建，用户只读不可增删';
+COMMENT ON COLUMN model_providers.name IS '厂商名（unique）：aliyun / openai / ollama';
+
+-- ============================================================
+-- 10. 默认模型配置表
+--      Phase 3：启动时从 config.yaml model_providers.{provider}.models 自动创建
+--      每个厂商下可有多个模型，存储各模型的默认参数（base_url、dimension）
+--      用户创建 user_model_config 时以此为基础，可覆盖 base_url
+-- ============================================================
+CREATE TABLE IF NOT EXISTS default_model_config (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     provider        VARCHAR(50)   NOT NULL,
     model_name      VARCHAR(200)  NOT NULL,
-    key_value       VARCHAR(500),
+    model_type      SMALLINT      NOT NULL,
+    base_url        VARCHAR(500)  NOT NULL,
+    dimension       INT,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE default_model_config                IS '默认模型配置表：启动时自动创建，用户只读。厂商→模型→默认参数';
+COMMENT ON COLUMN default_model_config.provider      IS '所属厂商名，对应 model_providers.name';
+COMMENT ON COLUMN default_model_config.model_name    IS '模型名：text-embedding-v1 / gpt-4o 等';
+COMMENT ON COLUMN default_model_config.model_type    IS '1=embedding, 2=LLM（3~9 预留）';
+COMMENT ON COLUMN default_model_config.base_url      IS 'API 地址（厂商默认，用户创建配置时可覆盖）';
+COMMENT ON COLUMN default_model_config.dimension     IS 'embedding 输出维度，LLM 时 NULL';
+
+-- ============================================================
+-- 11. 用户模型配置表
+--      Phase 3：用户在前端创建，选模型后自动带入 default_model_config 参数
+--      base_url 可覆盖（自建代理/私有化部署等），api_key 由用户填写
+--      向量化时 find_active_embedding() 查此表取 active 的配置
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_model_config (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id         UUID          NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider        VARCHAR(50)   NOT NULL,
+    model_name      VARCHAR(200)  NOT NULL,
+    model_type      SMALLINT      NOT NULL,
+    base_url        VARCHAR(500),
+    api_key         VARCHAR(500),
+    dimension       INT,
     is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_model_config_user_id ON model_config(user_id);
-CREATE INDEX IF NOT EXISTS idx_model_config_type    ON model_config(model_type);
+CREATE INDEX IF NOT EXISTS idx_umc_user_id ON user_model_config(user_id);
+CREATE INDEX IF NOT EXISTS idx_umc_type    ON user_model_config(model_type);
 
-COMMENT ON TABLE model_config IS '模型配置表：统一管理 Embedding 和 LLM 的 API Key 和模型配置';
-COMMENT ON COLUMN model_config.user_id IS '所属用户 ID';
-COMMENT ON COLUMN model_config.model_type IS '1=embedding, 2=LLM（3~9 预留）';
-COMMENT ON COLUMN model_config.provider IS '服务商：openai / ollama';
-COMMENT ON COLUMN model_config.model_name IS '模型名称：text-embedding-3-small / gpt-4o 等';
-COMMENT ON COLUMN model_config.key_value IS 'API Key（加密存储）';
-COMMENT ON COLUMN model_config.is_active IS '是否启用';
-COMMENT ON INDEX idx_model_config_user_id IS '按用户查询索引';
-COMMENT ON INDEX idx_model_config_type IS '按类型查询索引';
+COMMENT ON TABLE user_model_config               IS '用户模型配置表：base_url=NULL 时使用 default_model_config 的默认值';
+COMMENT ON COLUMN user_model_config.user_id      IS '所属用户 ID（多租户预留）';
+COMMENT ON COLUMN user_model_config.provider     IS '厂商名，用于 EmbeddingService switch 分发';
+COMMENT ON COLUMN user_model_config.model_name   IS '模型名，传给 SDK/API';
+COMMENT ON COLUMN user_model_config.model_type   IS '1=embedding, 2=LLM';
+COMMENT ON COLUMN user_model_config.base_url     IS 'API 地址。用户可覆盖（自建代理），NULL 则用 default 的';
+COMMENT ON COLUMN user_model_config.api_key      IS 'API Key（阿里云 DashScope / OpenAI 等）';
+COMMENT ON COLUMN user_model_config.dimension    IS '向量维度（embedding 用，LLM 为 NULL）';
+COMMENT ON COLUMN user_model_config.is_active    IS '是否启用。向量化时只取 active 且 model_type=1 的';
+COMMENT ON INDEX idx_umc_user_id                IS '按用户查询索引';
+COMMENT ON INDEX idx_umc_type                   IS '按类型查询索引：快速找 embedding 或 LLM 配置';

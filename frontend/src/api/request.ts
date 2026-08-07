@@ -80,7 +80,9 @@ request.interceptors.response.use(
     if (error.response?.status === 401) {
       return handle401(error.response.config)
     }
-    return Promise.reject(error)
+    // 其他 HTTP 错误：提取后端返回的 message
+    const backendMsg = error.response?.data?.message
+    return Promise.reject(new Error(backendMsg || error.message || '请求失败'))
   },
 )
 

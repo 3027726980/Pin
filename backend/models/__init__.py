@@ -6,16 +6,20 @@ from .KnowledgeBases import KnowledgeBases
 from .Documents import Documents
 from .Chunks import Chunks
 from .Embeddings import Embeddings
-from .ModelConfig import ModelConfig
+from .ModelProviders import ModelProviders
+from .DefaultModelConfig import DefaultModelConfig
+from .UserModelConfig import UserModelConfig
 
 __all__ = [
     "AccessTokenWhitelist",
     "Base",
     "Chunks",
+    "DefaultModelConfig",
     "Documents",
     "Embeddings",
     "KnowledgeBases",
-    "ModelConfig",
+    "ModelProviders",
     "RefreshTokenWhitelist",
+    "UserModelConfig",
     "Users",
 ]

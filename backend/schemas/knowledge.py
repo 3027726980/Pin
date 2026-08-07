@@ -27,6 +27,7 @@ class KnowledgeBaseCreate(BaseModel):
     chunk_separators: str | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    user_model_config_id: UUID | None = Field(None, description="关联的用户模型配置，NULL 则使用本地默认 Embedding 模型")
 
 
 class KnowledgeBaseUpdate(BaseModel):
@@ -41,6 +42,7 @@ class KnowledgeBaseUpdate(BaseModel):
     chunk_separators: str | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    user_model_config_id: UUID | None = None
     status: int | None = Field(None, ge=0, le=9)
 
 
@@ -57,6 +59,7 @@ class KnowledgeBaseResponse(BaseModel):
     chunk_separators: str
     embedding_model: str
     embedding_dimension: int
+    user_model_config_id: UUID | None
     status: int
     created_at: datetime
 

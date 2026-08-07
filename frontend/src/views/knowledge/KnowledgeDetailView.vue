@@ -30,11 +30,19 @@
 
     <!-- 知识库信息 -->
     <n-card v-if="kbInfo" title="基本信息" size="small" class="info-card">
-      <n-descriptions :column="3" label-placement="left">
+      <n-descriptions :column="2" label-placement="left">
         <n-descriptions-item label="描述">{{ kbInfo.description || '无' }}</n-descriptions-item>
         <n-descriptions-item label="允许类型">{{ kbInfo.allowed_extensions || '不限制' }}</n-descriptions-item>
         <n-descriptions-item label="文件大小上限">{{ formatFileSize(kbInfo.max_file_size) }}</n-descriptions-item>
         <n-descriptions-item label="允许多次上传">{{ kbInfo.allow_multiple ? '是' : '否' }}</n-descriptions-item>
+        <n-descriptions-item label="Embedding 模型">
+          <template v-if="kbInfo.user_model_config_id">
+            {{ embeddingLabel }}
+          </template>
+          <template v-else>
+            本地默认 ({{ kbInfo.embedding_model }}, {{ kbInfo.embedding_dimension }}维)
+          </template>
+        </n-descriptions-item>
         <n-descriptions-item label="创建时间">{{ formatDate(kbInfo.created_at) }}</n-descriptions-item>
       </n-descriptions>
     </n-card>
@@ -45,6 +53,10 @@
       <div v-if="checkedFileKeys.length > 0" class="batch-bar">
         <span class="batch-tip">已选 {{ checkedFileKeys.length }} 项</span>
         <n-space>
+          <n-button size="small" type="primary" :loading="processing" @click="triggerParse">解析选中</n-button>
+          <n-button size="small" type="primary" :loading="processing" @click="triggerChunk">分块选中</n-button>
+          <n-button size="small" type="primary" :loading="processing" @click="triggerVectorize">向量化选中</n-button>
+          <n-divider vertical />
           <n-popconfirm @positive-click="batchFilesAction">
             <template #trigger><n-button size="small" type="error">批量删除</n-button></template>
             确定批量删除所选文件？
@@ -91,11 +103,14 @@ import type { DataTableColumns } from 'naive-ui'
 import {
   getKnowledgeBase,
   listFiles,
-  deleteFile,
   batchFiles,
+  parseDocuments,
+  chunkDocuments,
+  vectorizeDocuments,
   type KnowledgeBaseDetail,
   type DocumentListItem,
 } from '@/api/knowledge'
+import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
 import { storage } from '@/utils/storage'
 import { TOKEN_KEY } from '@/api/request'
 
@@ -106,6 +121,12 @@ const kbId = computed(() => route.params.id as string)
 // ── 知识库信息 ──────────────────────────
 const kbInfo = ref<KnowledgeBaseDetail | null>(null)
 const kbName = computed(() => kbInfo.value?.name || '知识库详情')
+const modelConfigs = ref<UserModelConfigItem[]>([])
+const embeddingLabel = computed(() => {
+  if (!kbInfo.value?.user_model_config_id) return ''
+  const cfg = modelConfigs.value.find(c => c.id === kbInfo.value!.user_model_config_id)
+  return cfg ? `${cfg.provider} / ${cfg.model_name}` : kbInfo.value.user_model_config_id
+})
 
 // ── 文件列表 ────────────────────────────
 const fileLoading = ref(false)
@@ -114,6 +135,7 @@ const filePage = ref(1)
 const filePageSize = ref(20)
 const fileTotal = ref(0)
 const checkedFileKeys = ref<any[]>([])
+const processing = ref(false)
 
 // ── 上传配置 ────────────────────────────
 const uploadUrl = computed(() => `/api/v1/knowledge-bases/${kbId.value}/files`)
@@ -277,7 +299,7 @@ function onUploadError({ event }: any) {
 // ── 删除文件 ────────────────────────────
 async function handleDeleteFile(docId: string) {
   try {
-    await deleteFile(kbId.value, docId)
+    await batchFiles(kbId.value, [docId], 'delete')
     message.success('已删除')
     fetchFiles()
   } catch (e) {
@@ -295,6 +317,45 @@ async function batchFilesAction() {
     fetchFiles()
   } catch (e) {
     message.error((e as Error).message || '批量删除失败')
+  }
+}
+
+async function triggerParse() {
+  processing.value = true
+  try {
+    const res = await parseDocuments(kbId.value, checkedFileKeys.value)
+    message.success(`解析完成：成功 ${res.processed} / ${res.total}`)
+    fetchFiles()
+  } catch (e) {
+    message.error((e as Error).message || '解析失败')
+  } finally {
+    processing.value = false
+  }
+}
+
+async function triggerChunk() {
+  processing.value = true
+  try {
+    const res = await chunkDocuments(kbId.value, checkedFileKeys.value)
+    message.success(`分块完成：成功 ${res.processed} / ${res.total}`)
+    fetchFiles()
+  } catch (e) {
+    message.error((e as Error).message || '分块失败')
+  } finally {
+    processing.value = false
+  }
+}
+
+async function triggerVectorize() {
+  processing.value = true
+  try {
+    const res = await vectorizeDocuments(kbId.value, checkedFileKeys.value)
+    message.success(`向量化完成：成功 ${res.processed} / ${res.total}`)
+    fetchFiles()
+  } catch (e) {
+    message.error((e as Error).message || '向量化失败')
+  } finally {
+    processing.value = false
   }
 }
 
@@ -321,6 +382,7 @@ function formatDate(dateStr: string): string {
 onMounted(() => {
   fetchKnowledgeBase()
   fetchFiles()
+  listMyConfigs().then(list => { modelConfigs.value = list }).catch(() => {})
 })
 </script>
 

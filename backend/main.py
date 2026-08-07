@@ -11,9 +11,9 @@ from fastapi.responses import JSONResponse
 from backend.core.database import async_session_local, init_db
 from backend.core.security import hash_password
 from backend.core.config import settings
-from backend.models import Users
+from backend.models import Users, ModelProviders, DefaultModelConfig
 from backend.repositories import UserRepo
-from backend.api.v1 import auth_router, knowledge_router, model_config_router
+from backend.api.v1 import auth_router, knowledge_router, user_model_config_router
 
 
 # ── 种子管理员 ──────────────────────────────────────
@@ -32,11 +32,48 @@ async def seed_admin() -> None:
             print(f"[INIT] 管理员账号已创建: {settings.admin.username}")
 
 
+# ── 种子模型配置 ─────────────────────────────────
+# 每次启动时：清空 model_providers + default_model_config，再从 config.yaml 重新插入。
+# 避免 config.yaml 删除厂商/模型后数据库残留旧数据。
+# user_model_config 不受影响（仅存 provider 字符串，无 FK 依赖）。
+async def seed_model_config() -> None:
+    async with async_session_local() as session:
+        from sqlalchemy import delete
+
+        providers = getattr(settings, "model_providers", None)
+        if providers is None:
+            return
+
+        # 1. 清空旧数据
+        await session.execute(delete(DefaultModelConfig))
+        await session.execute(delete(ModelProviders))
+
+        # 2. 从 config.yaml 重新插入
+        for provider_name, provider_cfg in vars(providers).items():
+            session.add(ModelProviders(name=provider_name))
+            print(f"[INIT] 厂商已创建: {provider_name}")
+
+            models = getattr(provider_cfg, "models", [])
+            if isinstance(models, list):
+                for m in models:
+                    session.add(DefaultModelConfig(
+                        provider=provider_name,
+                        model_name=m["model_name"],
+                        model_type=m["model_type"],
+                        base_url=m["base_url"],
+                        dimension=m.get("dimension"),
+                    ))
+                    print(f"[INIT] 默认模型已创建: {provider_name}/{m['model_name']} (dim={m.get('dimension')})")
+
+        await session.commit()
+
+
 # ── 生命周期 ────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
+    await seed_model_config()
     yield
 
 
@@ -64,4 +101,4 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 # ── 注册路由 ────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(knowledge_router)
-app.include_router(model_config_router)
+app.include_router(user_model_config_router)

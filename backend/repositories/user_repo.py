@@ -18,7 +18,7 @@ class UserRepo:
     @staticmethod
     async def get_by_username(db: AsyncSession, username: str) -> Users | None:
         result = await db.execute(
-            select(Users).where(User.username == username)
+            select(Users).where(Users.username == username)
         )
         return result.scalar_one_or_none()
 

@@ -93,6 +93,13 @@
         <n-form-item label="允许多次上传" path="allow_multiple">
           <n-switch v-model:value="formData.allow_multiple" />
         </n-form-item>
+        <n-form-item label="Embedding 模型" path="embedding">
+          <n-select
+            v-model:value="selectedEmbedding"
+            :options="embeddingOptions"
+            placeholder="选择向量化模型，默认本地 bge-small-zh-v1.5"
+          />
+        </n-form-item>
       </n-form>
 
       <template #footer>
@@ -118,16 +125,35 @@ import {
   getKnowledgeBase,
   createKnowledgeBase,
   updateKnowledgeBase,
-  deleteKnowledgeBase,
   batchKnowledgeBases,
   type KnowledgeBaseListItem,
   type KnowledgeBaseDetail,
   type KnowledgeBaseCreate,
   type BatchAction,
 } from '@/api/knowledge'
+import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
 
 const router = useRouter()
 const message = useMessage()
+
+// ── Embedding 模型选项 ──────────────────
+const userModelConfigs = ref<UserModelConfigItem[]>([])
+const selectedEmbedding = ref<string>('__local__')  // '__local__' = 本地默认，否则为 user_model_config.id
+
+const embeddingOptions = computed(() => {
+  const options = [
+    { label: '本地默认 (bge-small-zh-v1.5)', value: '__local__' },
+  ]
+  for (const cfg of userModelConfigs.value) {
+    if (cfg.model_type === 1 && cfg.is_active) {
+      options.push({
+        label: `${cfg.provider} / ${cfg.model_name}`,
+        value: cfg.id,
+      })
+    }
+  }
+  return options
+})
 
 // ── 列表状态 ────────────────────────────
 const loading = ref(false)
@@ -259,6 +285,7 @@ function onPageSizeChange(size: number) {
 // ── CRUD 操作 ──────────────────────────
 function openCreate() {
   editingId.value = null
+  selectedEmbedding.value = '__local__'
   formData.value = { name: '', description: '', allowed_extensions: '', max_file_size: null, allow_multiple: true }
   maxFileSizeMB.value = null
   modalShow.value = true
@@ -275,6 +302,7 @@ async function openEdit(id: string) {
       max_file_size: detail.max_file_size,
       allow_multiple: detail.allow_multiple,
     }
+    selectedEmbedding.value = detail.user_model_config_id || '__local__'
     maxFileSizeMB.value = detail.max_file_size ? +(detail.max_file_size / 1048576).toFixed(2) : null
     modalShow.value = true
   } catch (e) {
@@ -291,8 +319,13 @@ async function handleSubmit() {
 
   submitting.value = true
   try {
+    const embeddingPayload = selectedEmbedding.value === '__local__'
+      ? { user_model_config_id: null, embedding_model: 'bge-small-zh-v1.5', embedding_dimension: 4096 }
+      : { user_model_config_id: selectedEmbedding.value, embedding_model: null, embedding_dimension: null }
+
     const payload = {
       ...formData.value,
+      ...embeddingPayload,
       max_file_size: maxFileSizeMB.value ? Math.round(maxFileSizeMB.value * 1048576) : null,
     }
 
@@ -314,7 +347,7 @@ async function handleSubmit() {
 
 async function handleDelete(id: string) {
   try {
-    await deleteKnowledgeBase(id)
+    await batchKnowledgeBases([id], 'delete')
     message.success('已删除')
     fetchList()
   } catch (e) {
@@ -365,8 +398,13 @@ function formatDate(dateStr: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+async function fetchModelConfigs() {
+  try { userModelConfigs.value = await listMyConfigs() } catch { /* */ }
+}
+
 onMounted(() => {
   fetchList()
+  fetchModelConfigs()
 })
 </script>
 
