@@ -7,6 +7,7 @@ from .Documents import Documents
 from .Chunks import Chunks
 from .Embeddings import Embeddings
 from .ModelProviders import ModelProviders
+from .ModelTypes import ModelTypes
 from .DefaultModelConfig import DefaultModelConfig
 from .UserModelConfig import UserModelConfig
 
@@ -19,6 +20,7 @@ __all__ = [
     "Embeddings",
     "KnowledgeBases",
     "ModelProviders",
+    "ModelTypes",
     "RefreshTokenWhitelist",
     "UserModelConfig",
     "Users",

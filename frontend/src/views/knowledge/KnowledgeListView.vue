@@ -95,9 +95,9 @@
         </n-form-item>
         <n-form-item label="Embedding 模型" path="embedding">
           <n-select
-            v-model:value="selectedEmbedding"
+            v-model:value="formData.user_model_config_id"
             :options="embeddingOptions"
-            placeholder="选择向量化模型，默认本地 bge-small-zh-v1.5"
+            placeholder="选择向量化模型"
           />
         </n-form-item>
       </n-form>
@@ -138,21 +138,14 @@ const message = useMessage()
 
 // ── Embedding 模型选项 ──────────────────
 const userModelConfigs = ref<UserModelConfigItem[]>([])
-const selectedEmbedding = ref<string>('__local__')  // '__local__' = 本地默认，否则为 user_model_config.id
 
 const embeddingOptions = computed(() => {
-  const options = [
-    { label: '本地默认 (bge-small-zh-v1.5)', value: '__local__' },
-  ]
-  for (const cfg of userModelConfigs.value) {
-    if (cfg.model_type === 1 && cfg.is_active) {
-      options.push({
-        label: `${cfg.provider} / ${cfg.model_name}`,
-        value: cfg.id,
-      })
-    }
-  }
-  return options
+  return userModelConfigs.value
+    .filter(c => c.model_type === 1 && c.is_active)
+    .map(c => ({
+      label: `${c.provider} / ${c.model_name}`,
+      value: c.id,
+    }))
 })
 
 // ── 列表状态 ────────────────────────────
@@ -187,6 +180,27 @@ const columns: DataTableColumns<KnowledgeBaseListItem> = [
     ellipsis: { tooltip: true },
     render(row) {
       return row.allowed_extensions || '不限制'
+    },
+  },
+  {
+    title: '供应商',
+    key: 'provider',
+    width: 80,
+    render(row) {
+      if (!row.user_model_config_id) return '-'
+      const cfg = userModelConfigs.value.find(c => c.id === row.user_model_config_id)
+      return cfg?.provider || '-'
+    },
+  },
+  {
+    title: '向量模型',
+    key: 'model',
+    width: 180,
+    ellipsis: { tooltip: true },
+    render(row) {
+      if (!row.user_model_config_id) return row.embedding_model || '-'
+      const cfg = userModelConfigs.value.find(c => c.id === row.user_model_config_id)
+      return cfg?.model_name || '-'
     },
   },
   {
@@ -246,12 +260,13 @@ const modalShow = ref(false)
 const submitting = ref(false)
 const editingId = ref<string | null>(null)
 
-const formData = ref<KnowledgeBaseCreate & { description: string; allowed_extensions: string }>({
+const formData = ref<KnowledgeBaseCreate & { description: string; allowed_extensions: string; user_model_config_id: string | null }>({
   name: '',
   description: '',
   allowed_extensions: '',
   max_file_size: null,
   allow_multiple: true,
+  user_model_config_id: null,
 })
 
 const maxFileSizeMB = ref<number | null>(null)
@@ -285,8 +300,11 @@ function onPageSizeChange(size: number) {
 // ── CRUD 操作 ──────────────────────────
 function openCreate() {
   editingId.value = null
-  selectedEmbedding.value = '__local__'
-  formData.value = { name: '', description: '', allowed_extensions: '', max_file_size: null, allow_multiple: true }
+  formData.value = {
+    name: '', description: '', allowed_extensions: '',
+    max_file_size: null, allow_multiple: true,
+    user_model_config_id: userModelConfigs.value[0]?.id || null,
+  }
   maxFileSizeMB.value = null
   modalShow.value = true
 }
@@ -301,8 +319,8 @@ async function openEdit(id: string) {
       allowed_extensions: detail.allowed_extensions || '',
       max_file_size: detail.max_file_size,
       allow_multiple: detail.allow_multiple,
+      user_model_config_id: detail.user_model_config_id,
     }
-    selectedEmbedding.value = detail.user_model_config_id || '__local__'
     maxFileSizeMB.value = detail.max_file_size ? +(detail.max_file_size / 1048576).toFixed(2) : null
     modalShow.value = true
   } catch (e) {
@@ -319,13 +337,8 @@ async function handleSubmit() {
 
   submitting.value = true
   try {
-    const embeddingPayload = selectedEmbedding.value === '__local__'
-      ? { user_model_config_id: null, embedding_model: 'bge-small-zh-v1.5', embedding_dimension: 4096 }
-      : { user_model_config_id: selectedEmbedding.value, embedding_model: null, embedding_dimension: null }
-
     const payload = {
       ...formData.value,
-      ...embeddingPayload,
       max_file_size: maxFileSizeMB.value ? Math.round(maxFileSizeMB.value * 1048576) : null,
     }
 

@@ -179,19 +179,15 @@ class DocumentProcessService:
         chunks: list[Chunks],
     ) -> int:
         """内部：对给定的 chunk 列表执行向量化，返回成功数"""
-        if kb.user_model_config_id:
-            cfg = await db.get(UserModelConfig, kb.user_model_config_id)
-            if cfg is None:
-                raise HTTPException(status_code=400, detail="关联的 Embedding 模型配置不存在")
-            provider = cfg.provider
-            model_name = cfg.model_name
-            api_key = cfg.api_key
-            url = cfg.base_url
-        else:
-            provider = "local"
-            model_name = kb.embedding_model
-            api_key = None
-            url = None
+        if not kb.user_model_config_id:
+            raise HTTPException(status_code=400, detail="知识库未配置 Embedding 模型")
+        cfg = await db.get(UserModelConfig, kb.user_model_config_id)
+        if cfg is None:
+            raise HTTPException(status_code=400, detail="关联的 Embedding 模型配置不存在")
+        provider = cfg.provider
+        model_name = cfg.model_name
+        api_key = cfg.api_key
+        url = cfg.base_url
 
         max_dim = settings.embedding.max_dimension
         batch_size = settings.embedding.batch_size

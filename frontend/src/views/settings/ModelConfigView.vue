@@ -44,7 +44,15 @@
             @update:value="onProviderChange"
           />
         </n-form-item>
-        <n-form-item label="模型" path="model_name">
+        <n-form-item v-if="form.provider" label="模型类型" path="model_type">
+          <n-select
+            v-model:value="form.model_type"
+            :options="typeOptions"
+            placeholder="选择类型"
+            @update:value="onTypeChange"
+          />
+        </n-form-item>
+        <n-form-item v-if="form.provider" label="模型" path="model_name">
           <n-select
             v-model:value="form.model_name"
             :options="filteredModelOptions"
@@ -52,14 +60,11 @@
             @update:value="onModelChange"
           />
         </n-form-item>
-        <n-form-item label="接口地址">
+        <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址">
           <n-input v-model:value="form.base_url" placeholder="留空使用默认地址" />
         </n-form-item>
-        <n-form-item label="API Key" path="api_key">
+        <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
-        </n-form-item>
-        <n-form-item v-if="form.provider" label="模型类型">
-          <n-input :value="modelTypeLabel" disabled />
         </n-form-item>
         <n-form-item v-if="form.dimension" label="向量维度">
           <n-input :value="String(form.dimension)" disabled />
@@ -83,11 +88,13 @@ import type { FormInst, FormRules, DataTableColumns, SelectOption } from 'naive-
 import {
   listDefaultModels,
   listMyConfigs,
+  listModelTypes,
   createModelConfig,
   updateModelConfig,
   deleteModelConfig,
   type DefaultModelConfigItem,
   type UserModelConfigItem,
+  type ModelTypeItem,
 } from '@/api/model-config'
 
 const message = useMessage()
@@ -98,19 +105,28 @@ const myConfigs = ref<UserModelConfigItem[]>([])
 
 // ── 默认模型表格 ──────────────────────
 const defaultColumns: DataTableColumns<DefaultModelConfigItem> = [
-  { title: '厂商', key: 'provider', width: 80 },
-  { title: '模型', key: 'model_name', ellipsis: { tooltip: true } },
-  { title: '默认地址', key: 'base_url', ellipsis: { tooltip: true }, width: 280 },
+  { title: '厂商', key: 'provider', width: 100 },
   {
-    title: '维度', key: 'dimension', width: 80,
-    render(row) { return row.dimension ?? '-' },
+    title: '类别', key: 'model_type', width: 200,
+    render(row) {
+      const found = modelTypes.value.find(t => t.code === row.model_type)
+      return found?.name || `类型${row.model_type}`
+    },
   },
+  { title: '模型', key: 'model_name', ellipsis: { tooltip: true } },
 ]
 
 // ── 我的配置表格 ──────────────────────
 const configColumns: DataTableColumns<UserModelConfigItem> = [
   { title: '厂商', key: 'provider', width: 70 },
   { title: '模型', key: 'model_name', width: 160, ellipsis: { tooltip: true } },
+  {
+    title: '类别', key: 'model_type', width: 140,
+    render(row) {
+      const found = modelTypes.value.find(t => t.code === row.model_type)
+      return found?.name || `类型${row.model_type}`
+    },
+  },
   {
     title: '启用', key: 'is_active', width: 70,
     render(row) {
@@ -157,7 +173,15 @@ const form = ref({
 const rules: FormRules = {
   provider: { required: true, message: '请选择厂商', trigger: 'change' },
   model_name: { required: true, message: '请选择模型', trigger: 'change' },
-  api_key: { required: true, message: '请输入 API Key', trigger: 'blur' },
+  api_key: {
+    message: '请输入 API Key',
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (form.value.provider === 'local') return true
+      if (!value) return new Error('请输入 API Key')
+      return true
+    },
+  },
 }
 
 // ── 厂商选项（去重）───────────────────
@@ -169,15 +193,28 @@ const providerOptions = computed<SelectOption[]>(() => {
 })
 
 // ── 模型类型标签 ────────────────────
+const modelTypes = ref<ModelTypeItem[]>([])
 const modelTypeLabel = computed(() => {
-  const map: Record<number, string> = { 1: 'Embedding（向量化）', 2: 'LLM（大语言模型）' }
-  return map[form.value.model_type] || `未知 (${form.value.model_type})`
+  const found = modelTypes.value.find(t => t.code === form.value.model_type)
+  return found?.name || `未知 (${form.value.model_type})`
 })
 
-// ── 根据选中厂商过滤模型 ──────────────
-const filteredModelOptions = computed<SelectOption[]>(() => {
+// ── 根据选中厂商过滤可选类型 ──────────
+const typeOptions = computed<SelectOption[]>(() => {
+  const seen = new Set<number>()
   return defaultModels.value
     .filter(m => m.provider === form.value.provider)
+    .filter(m => { const dup = seen.has(m.model_type); seen.add(m.model_type); return !dup })
+    .map(m => {
+      const found = modelTypes.value.find(t => t.code === m.model_type)
+      return { label: found?.name || `类型${m.model_type}`, value: m.model_type }
+    })
+})
+
+// ── 根据选中厂商+类型过滤模型 ──────────
+const filteredModelOptions = computed<SelectOption[]>(() => {
+  return defaultModels.value
+    .filter(m => m.provider === form.value.provider && m.model_type === form.value.model_type)
     .map(m => ({ label: m.model_name, value: m.model_name }))
 })
 
@@ -186,18 +223,32 @@ function findDefault(provider: string, modelName: string): DefaultModelConfigIte
   return defaultModels.value.find(m => m.provider === provider && m.model_name === modelName)
 }
 
-// ── 厂商变更：清空模型，如果该厂商只有一个模型则自动选中 ──
-function onProviderChange(provider: string) {
+// ── 厂商变更：默认选第一个类型 ──
+function onProviderChange(_provider: string) {
   form.value.model_name = ''
   form.value.base_url = null
   form.value.dimension = null
-  form.value.model_type = 1
 
-  const models = defaultModels.value.filter(m => m.provider === provider)
-  if (models.length === 1) {
+  const types = defaultModels.value
+    .filter(m => m.provider === form.value.provider)
+    .map(m => m.model_type)
+    .filter((v, i, a) => a.indexOf(v) === i)
+  form.value.model_type = types.length > 0 ? types[0] : 0
+  if (form.value.model_type > 0) onTypeChange(form.value.model_type)
+}
+
+// ── 类型变更：默认选第一个模型 ──
+function onTypeChange(typeCode: number) {
+  form.value.model_name = ''
+  form.value.base_url = null
+  form.value.dimension = null
+
+  const models = defaultModels.value.filter(
+    m => m.provider === form.value.provider && m.model_type === typeCode
+  )
+  if (models.length > 0) {
     form.value.model_name = models[0].model_name
     form.value.base_url = models[0].base_url
-    form.value.model_type = models[0].model_type
     form.value.dimension = models[0].dimension
   }
 }
@@ -225,7 +276,7 @@ async function fetchMyConfigs() {
 function openCreate() {
   editingId.value = null
   modalTitle.value = '添加配置'
-  form.value = { provider: '', model_name: '', model_type: 1, base_url: null, api_key: null, dimension: null }
+  form.value = { provider: '', model_name: '', model_type: 0, base_url: null, api_key: null, dimension: null }
   modalShow.value = true
 }
 
@@ -304,6 +355,7 @@ async function handleDelete(id: string) {
 onMounted(() => {
   fetchDefaults()
   fetchMyConfigs()
+  listModelTypes().then(list => { modelTypes.value = list }).catch(() => {})
 })
 </script>
 

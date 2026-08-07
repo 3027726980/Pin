@@ -14,8 +14,8 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import PROJECT_ROOT, settings
-from backend.models import KnowledgeBases, Users
-from backend.repositories import DocumentRepo, KnowledgeBaseRepo
+from backend.models import KnowledgeBases, UserModelConfig, Users
+from backend.repositories import DocumentRepo, KnowledgeBaseRepo, UserModelConfigRepo
 from backend.schemas.knowledge import (
     DocumentListItem,
     KnowledgeBaseCreate,
@@ -27,6 +27,34 @@ from backend.schemas.knowledge import (
 
 # 上传根目录（从 config.yaml 读取，相对于项目根）
 UPLOAD_ROOT = PROJECT_ROOT / settings.storage.upload_dir
+
+
+async def _ensure_model_config(
+    db: AsyncSession, user_id: UUID, provider: str, model_name: str, dimension: int
+) -> UserModelConfig:
+    """查找或创建 user_model_config，确保知识库始终关联配置 ID"""
+    from sqlalchemy import select as _select
+    q = _select(UserModelConfig).where(
+        UserModelConfig.user_id == user_id,
+        UserModelConfig.provider == provider,
+        UserModelConfig.model_name == model_name,
+    )
+    result = await db.execute(q)
+    cfg = result.scalars().first()
+    if cfg:
+        return cfg
+    cfg = await UserModelConfigRepo.create(
+        db,
+        user_id=user_id,
+        provider=provider,
+        model_name=model_name,
+        model_type=1,
+        base_url=None,
+        api_key=None,
+        dimension=dimension,
+        is_active=True,
+    )
+    return cfg
 
 
 class KnowledgeBaseService:
@@ -45,9 +73,17 @@ class KnowledgeBaseService:
         """
         创建知识库
 
-        流程：校验通过 → 写库 → 提交 → 返回响应
-        无额外校验（创建不需要检查重名等）
+        流程：校验通过 → 确保模型配置存在 → 写库 → 提交
         """
+        model = data.embedding_model or "bge-small-zh-v1.5"
+        dim = data.embedding_dimension or 4096
+
+        # 无用户配置 → 自动创建/查找本地默认配置，确保始终有关联
+        config_id = data.user_model_config_id
+        if not config_id:
+            cfg = await _ensure_model_config(db, user.id, "local", model, dim)
+            config_id = cfg.id
+
         kb = await KnowledgeBaseRepo.create(
             db,
             user_id=user.id,
@@ -59,9 +95,9 @@ class KnowledgeBaseService:
             chunk_size=data.chunk_size or 800,
             chunk_overlap=data.chunk_overlap or 150,
             chunk_separators=data.chunk_separators or "\n##,\n###,\n,。,., ",
-            embedding_model=data.embedding_model or "bge-small-zh-v1.5",
-            embedding_dimension=data.embedding_dimension or 4096,
-            user_model_config_id=data.user_model_config_id,
+            embedding_model=model,
+            embedding_dimension=dim,
+            user_model_config_id=config_id,
         )
         await db.commit()
         return KnowledgeBaseResponse.model_validate(kb)
@@ -124,10 +160,16 @@ class KnowledgeBaseService:
             embedding_dimension=data.embedding_dimension,
             status=data.status,
         )
-        # user_model_config_id 需显式处理：允许设为 None 以切换回本地模型
+        # user_model_config_id 处理：显式设为 null → 自动创建本地默认配置
         set_fields = data.model_dump(exclude_unset=True)
         if 'user_model_config_id' in set_fields:
-            kb.user_model_config_id = data.user_model_config_id
+            config_id = data.user_model_config_id
+            if not config_id:
+                model = data.embedding_model or kb.embedding_model
+                dim = data.embedding_dimension or kb.embedding_dimension
+                cfg = await _ensure_model_config(db, user.id, "local", model, dim)
+                config_id = cfg.id
+            kb.user_model_config_id = config_id
         await db.commit()
         await db.refresh(kb)  # 重新加载 onupdate 触发的 updated_at，避免 MissingGreenlet
         return KnowledgeBaseResponse.model_validate(kb)

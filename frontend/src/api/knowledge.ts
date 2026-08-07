@@ -9,6 +9,8 @@ export interface KnowledgeBaseListItem {
   id: string
   name: string
   allowed_extensions: string | null
+  user_model_config_id: string | null
+  embedding_model: string
   status: number
   created_at: string
 }

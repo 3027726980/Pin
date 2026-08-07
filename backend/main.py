@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from backend.core.database import async_session_local, init_db
 from backend.core.security import hash_password
 from backend.core.config import settings
-from backend.models import Users, ModelProviders, DefaultModelConfig
+from backend.models import Users, ModelProviders, ModelTypes, DefaultModelConfig
 from backend.repositories import UserRepo
 from backend.api.v1 import auth_router, knowledge_router, user_model_config_router
 
@@ -47,8 +47,16 @@ async def seed_model_config() -> None:
         # 1. 清空旧数据
         await session.execute(delete(DefaultModelConfig))
         await session.execute(delete(ModelProviders))
+        await session.execute(delete(ModelTypes))
 
-        # 2. 从 config.yaml 重新插入
+        # 2. 插入模型类型对照
+        model_types = getattr(settings, "model_types", [])
+        if isinstance(model_types, list):
+            for mt in model_types:
+                session.add(ModelTypes(code=mt["code"], name=mt["name"]))
+                print(f"[INIT] 模型类型已创建: {mt['code']} → {mt['name']}")
+
+        # 3. 插入厂商和默认模型
         for provider_name, provider_cfg in vars(providers).items():
             session.add(ModelProviders(name=provider_name))
             print(f"[INIT] 厂商已创建: {provider_name}")

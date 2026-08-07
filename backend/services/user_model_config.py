@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Users
-from backend.repositories import UserModelConfigRepo
+from backend.repositories import KnowledgeBaseRepo, UserModelConfigRepo
 from backend.schemas.user_model_config import (
     UserModelConfigCreate,
     UserModelConfigResponse,
@@ -50,6 +50,17 @@ class UserModelConfigService:
         cfg = await UserModelConfigRepo.get_by_id(db, cfg_id)
         if cfg is None or cfg.user_id != user.id:
             raise HTTPException(status_code=404, detail="配置不存在")
+
+        # 禁用前检查是否有知识库在使用
+        if data.is_active is False and cfg.is_active:
+            kbs = await KnowledgeBaseRepo.find_by_model_config(db, cfg_id)
+            if kbs:
+                names = "、".join(kb.name for kb in kbs)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"该模型正在被以下知识库使用，无法禁用：{names}",
+                )
+
         cfg = await UserModelConfigRepo.update(
             db, cfg,
             provider=data.provider,

@@ -148,3 +148,16 @@ class KnowledgeBaseRepo:
         result = await db.execute(stmt)
         await db.flush()
         return result.rowcount
+
+    @staticmethod
+    async def find_by_model_config(
+        db: AsyncSession,
+        config_id: UUID,
+    ) -> list[KnowledgeBases]:
+        """查找使用指定模型配置的所有知识库（未删除）"""
+        q = select(KnowledgeBases).where(
+            KnowledgeBases.user_model_config_id == config_id,
+            KnowledgeBases.status != 9,
+        )
+        result = await db.execute(q)
+        return list(result.scalars().all())

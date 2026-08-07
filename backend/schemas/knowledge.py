@@ -71,6 +71,8 @@ class KnowledgeBaseListItem(BaseModel):
     id: UUID
     name: str
     allowed_extensions: str | None
+    user_model_config_id: UUID | None = None
+    embedding_model: str = ""
     status: int
     created_at: datetime
 

@@ -46,6 +46,16 @@ export interface ModelConfigUpdate {
   is_active?: boolean | null
 }
 
+export interface ModelTypeItem {
+  code: number
+  name: string
+}
+
+/** 获取模型类型对照表 */
+export function listModelTypes(): Promise<ModelTypeItem[]> {
+  return request.get('/v1/settings/user-model-config/model-types')
+}
+
 /** 获取所有默认模型 */
 export function listDefaultModels(): Promise<DefaultModelConfigItem[]> {
   return request.get('/v1/settings/user-model-config/defaults')

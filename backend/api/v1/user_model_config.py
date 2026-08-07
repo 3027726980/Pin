@@ -14,6 +14,7 @@ from backend.api.deps import get_current_user
 from backend.core.database import get_db
 from backend.models import Users
 from backend.schemas.common import SuccessResponse
+from backend.models import ModelTypes
 from backend.schemas.user_model_config import (
     UserModelConfigCreate,
     UserModelConfigResponse,
@@ -23,6 +24,21 @@ from backend.schemas.user_model_config import (
 from backend.services import UserModelConfigService
 
 router = APIRouter(prefix="/api/v1/settings/user-model-config", tags=["用户模型配置"])
+
+
+@router.get(
+    "/model-types",
+    response_model=SuccessResponse[list[dict]],
+    summary="获取模型类型对照表",
+)
+async def list_model_types(
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select
+    q = select(ModelTypes).order_by(ModelTypes.code)
+    result = await db.execute(q)
+    items = [{"code": m.code, "name": m.name} for m in result.scalars().all()]
+    return SuccessResponse(result=items)
 
 
 @router.get(
