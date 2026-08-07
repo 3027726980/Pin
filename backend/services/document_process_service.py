@@ -11,7 +11,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from backend.core.config import settings
 from backend.models import Chunk, Document, Embedding, KnowledgeBase, ModelConfig, User
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo, ModelConfigRepo
-from backend.services.parser import get_parser
+from backend.services.parsers import get_parser
 
 logger = logging.getLogger(__name__)
 
