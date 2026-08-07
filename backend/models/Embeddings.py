@@ -7,7 +7,7 @@ from pgvector.sqlalchemy import Vector
 from backend.models.Base import Base
 
 
-class Embedding(Base):
+class Embeddings(Base):
     __tablename__ = "embeddings"
     __table_args__ = {"comment": "向量表：存储分块文本的 Embedding 向量，整体 vector(2048)"}
 
@@ -24,7 +24,7 @@ class Embedding(Base):
         SmallInteger, default=0, nullable=False, comment="-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
 
-    chunk = relationship("Chunk", back_populates="embedding")
+    chunk = relationship("Chunks", back_populates="embedding")
 
     def __repr__(self) -> str:
-        return f"<Embedding(id={self.id}, chunk_id={self.chunk_id})>"
+        return f"<Embeddings(id={self.id}, chunk_id={self.chunk_id})>"

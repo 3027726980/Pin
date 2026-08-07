@@ -5,7 +5,7 @@ from uuid import UUID
 from backend.models.Base import Base
 
 
-class KnowledgeBase(Base):
+class KnowledgeBases(Base):
     __tablename__ = "knowledge_bases"
     __table_args__ = {"comment": "知识库表：存储知识库配置和上传约束"}
 
@@ -53,7 +53,7 @@ class KnowledgeBase(Base):
         SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=逻辑删除"
     )
 
-    documents = relationship("Document", back_populates="knowledge_base", lazy="selectin")
+    documents = relationship("Documents", back_populates="knowledge_base", lazy="selectin")
 
     def __repr__(self) -> str:
-        return f"<KnowledgeBase(id={self.id}, name={self.name})>"
+        return f"<KnowledgeBases(id={self.id}, name={self.name})>"

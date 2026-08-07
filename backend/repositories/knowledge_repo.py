@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import KnowledgeBase
+from backend.models import KnowledgeBases
 
 
 class KnowledgeBaseRepo:
@@ -28,14 +28,14 @@ class KnowledgeBaseRepo:
         chunk_separators: str = "\n##,\n###,\n,。,., ",
         embedding_model: str = "text-embedding-3-small",
         embedding_dimension: int = 1536,
-    ) -> KnowledgeBase:
+    ) -> KnowledgeBases:
         """
         创建知识库记录
 
         只做 insert + flush，不 commit（由调用方控制事务）
         返回带 id 的 ORM 对象
         """
-        kb = KnowledgeBase(
+        kb = KnowledgeBases(
             user_id=user_id,
             name=name,
             description=description,
@@ -53,13 +53,13 @@ class KnowledgeBaseRepo:
         return kb
 
     @staticmethod
-    async def get_by_id(db: AsyncSession, kb_id: UUID) -> KnowledgeBase | None:
+    async def get_by_id(db: AsyncSession, kb_id: UUID) -> KnowledgeBases | None:
         """
         按主键查询单条
 
         不做状态过滤（调用方自行判断 status）
         """
-        return await db.get(KnowledgeBase, kb_id)
+        return await db.get(KnowledgeBases, kb_id)
 
     @staticmethod
     async def list_by_user(
@@ -67,7 +67,7 @@ class KnowledgeBaseRepo:
         user_id: UUID,
         page: int = 1,
         page_size: int = 20,
-    ) -> tuple[list[KnowledgeBase], int]:
+    ) -> tuple[list[KnowledgeBases], int]:
         """
         按用户分页查询知识库列表
 
@@ -76,16 +76,16 @@ class KnowledgeBaseRepo:
         """
         # 总数
         count_q = select(func.count()).where(
-            KnowledgeBase.user_id == user_id,
-            KnowledgeBase.status != 9,
+            KnowledgeBases.user_id == user_id,
+            KnowledgeBases.status != 9,
         )
         total = (await db.execute(count_q)).scalar() or 0
 
         # 分页数据
         q = (
-            select(KnowledgeBase)
-            .where(KnowledgeBase.user_id == user_id, KnowledgeBase.status != 9)
-            .order_by(KnowledgeBase.created_at.desc())
+            select(KnowledgeBases)
+            .where(KnowledgeBases.user_id == user_id, KnowledgeBases.status != 9)
+            .order_by(KnowledgeBases.created_at.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -95,9 +95,9 @@ class KnowledgeBaseRepo:
     @staticmethod
     async def update(
         db: AsyncSession,
-        kb: KnowledgeBase,
+        kb: KnowledgeBases,
         **kwargs,
-    ) -> KnowledgeBase:
+    ) -> KnowledgeBases:
         """
         更新知识库字段
 
@@ -111,7 +111,7 @@ class KnowledgeBaseRepo:
         return kb
 
     @staticmethod
-    async def soft_delete(db: AsyncSession, kb: KnowledgeBase) -> None:
+    async def soft_delete(db: AsyncSession, kb: KnowledgeBases) -> None:
         """
         软删除：status → 9
 
@@ -135,11 +135,11 @@ class KnowledgeBaseRepo:
         from sqlalchemy import update as _update
 
         stmt = (
-            _update(KnowledgeBase)
+            _update(KnowledgeBases)
             .where(
-                KnowledgeBase.id.in_(ids),
-                KnowledgeBase.user_id == user_id,
-                KnowledgeBase.status != 9,
+                KnowledgeBases.id.in_(ids),
+                KnowledgeBases.user_id == user_id,
+                KnowledgeBases.status != 9,
             )
             .values(status=status)
         )

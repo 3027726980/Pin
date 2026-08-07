@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import User
+from backend.models import Users
 from backend.repositories import ModelConfigRepo
 from backend.schemas.model_config import (
     ModelConfigCreate,
@@ -21,7 +21,7 @@ class ModelConfigService:
     @staticmethod
     async def list_by_user(
         db: AsyncSession,
-        user: User,
+        user: Users,
     ) -> list[ModelConfigResponse]:
         items = await ModelConfigRepo.list_by_user(db, user.id)
         return [ModelConfigResponse.model_validate(cfg) for cfg in items]
@@ -29,7 +29,7 @@ class ModelConfigService:
     @staticmethod
     async def create(
         db: AsyncSession,
-        user: User,
+        user: Users,
         data: ModelConfigCreate,
     ) -> ModelConfigResponse:
         cfg = await ModelConfigRepo.create(
@@ -47,7 +47,7 @@ class ModelConfigService:
     @staticmethod
     async def update(
         db: AsyncSession,
-        user: User,
+        user: Users,
         cfg_id: UUID,
         data: ModelConfigUpdate,
     ) -> ModelConfigResponse:
@@ -69,7 +69,7 @@ class ModelConfigService:
     @staticmethod
     async def delete(
         db: AsyncSession,
-        user: User,
+        user: Users,
         cfg_id: UUID,
     ) -> None:
         cfg = await ModelConfigRepo.get_by_id(db, cfg_id)

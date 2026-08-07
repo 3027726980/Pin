@@ -14,7 +14,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import PROJECT_ROOT, settings
-from backend.models import KnowledgeBase, User
+from backend.models import KnowledgeBases, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo
 from backend.schemas.knowledge import (
     DocumentListItem,
@@ -39,7 +39,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def create(
         db: AsyncSession,
-        user: User,
+        user: Users,
         data: KnowledgeBaseCreate,
     ) -> KnowledgeBaseResponse:
         """
@@ -68,7 +68,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def list_by_user(
         db: AsyncSession,
-        user: User,
+        user: Users,
         page: int = settings.pagination.default_page,
         page_size: int = settings.pagination.default_page_size,
     ) -> PaginatedResponse:
@@ -86,7 +86,7 @@ class KnowledgeBaseService:
         )
 
     @staticmethod
-    async def get(db: AsyncSession, user: User, kb_id: UUID) -> KnowledgeBaseResponse:
+    async def get(db: AsyncSession, user: Users, kb_id: UUID) -> KnowledgeBaseResponse:
         """
         获取单个知识库详情
 
@@ -98,7 +98,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def update(
         db: AsyncSession,
-        user: User,
+        user: Users,
         kb_id: UUID,
         data: KnowledgeBaseUpdate,
     ) -> KnowledgeBaseResponse:
@@ -127,7 +127,7 @@ class KnowledgeBaseService:
         return KnowledgeBaseResponse.model_validate(kb)
 
     @staticmethod
-    async def delete(db: AsyncSession, user: User, kb_id: UUID) -> None:
+    async def delete(db: AsyncSession, user: Users, kb_id: UUID) -> None:
         """
         软删除知识库（status → 9）
 
@@ -145,7 +145,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def upload_file(
         db: AsyncSession,
-        user: User,
+        user: Users,
         kb_id: UUID,
         file: UploadFile,
     ) -> DocumentListItem:
@@ -205,7 +205,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def list_files(
         db: AsyncSession,
-        user: User,
+        user: Users,
         kb_id: UUID,
         page: int = settings.pagination.default_page,
         page_size: int = settings.pagination.default_page_size,
@@ -228,7 +228,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def delete_file(
         db: AsyncSession,
-        user: User,
+        user: Users,
         kb_id: UUID,
         doc_id: UUID,
     ) -> None:
@@ -258,7 +258,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def batch_kb(
         db: AsyncSession,
-        user: User,
+        user: Users,
         ids: list[UUID],
         action: str,
     ) -> "BatchResult":
@@ -288,7 +288,7 @@ class KnowledgeBaseService:
     @staticmethod
     async def batch_files(
         db: AsyncSession,
-        user: User,
+        user: Users,
         kb_id: UUID,
         ids: list[UUID],
         action: str,
@@ -319,9 +319,9 @@ class KnowledgeBaseService:
 
 async def _get_kb_for_user(
     db: AsyncSession,
-    user: User,
+    user: Users,
     kb_id: UUID,
-) -> KnowledgeBase:
+) -> KnowledgeBases:
     """
     查知识库 + 校验归属 + 校验未删除
 

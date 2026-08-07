@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.core.config import settings
-from backend.models import Chunk, Document, Embedding, KnowledgeBase, ModelConfig, User
+from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, ModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo, ModelConfigRepo
 from backend.services.parsers import get_parser
 
@@ -26,7 +26,7 @@ class DocumentProcessService:
     @staticmethod
     async def parse_documents(
         db: AsyncSession,
-        kb: KnowledgeBase,
+        kb: KnowledgeBases,
         doc_ids: list[UUID],
     ) -> int:
         """
@@ -54,8 +54,8 @@ class DocumentProcessService:
                 # 先清旧 chunk，插入单条完整文本作为 chunk_index=0
                 from sqlalchemy import delete as _delete
 
-                await db.execute(_delete(Chunk).where(Chunk.document_id == doc_id))
-                chunk = Chunk(
+                await db.execute(_delete(Chunks).where(Chunks.document_id == doc_id))
+                chunk = Chunks(
                     document_id=doc_id,
                     kb_id=kb.id,
                     chunk_index=0,
@@ -79,7 +79,7 @@ class DocumentProcessService:
     @staticmethod
     async def chunk_documents(
         db: AsyncSession,
-        kb: KnowledgeBase,
+        kb: KnowledgeBases,
         doc_ids: list[UUID],
     ) -> int:
         """
@@ -105,10 +105,10 @@ class DocumentProcessService:
                 continue
 
             # 取完整文本（chunk_index=0）
-            q = _select(Chunk).where(
-                Chunk.document_id == doc_id,
-                Chunk.chunk_index == 0,
-                Chunk.status != -1,
+            q = _select(Chunks).where(
+                Chunks.document_id == doc_id,
+                Chunks.chunk_index == 0,
+                Chunks.status != -1,
             )
             result = await db.execute(q)
             full_chunk = result.scalar_one_or_none()
@@ -121,11 +121,11 @@ class DocumentProcessService:
             # 删除旧块
             from sqlalchemy import delete as _delete
 
-            await db.execute(_delete(Chunk).where(Chunk.document_id == doc_id))
+            await db.execute(_delete(Chunks).where(Chunks.document_id == doc_id))
 
             # 插入新块
             for i, text in enumerate(texts):
-                chunk = Chunk(
+                chunk = Chunks(
                     document_id=doc_id,
                     kb_id=kb.id,
                     chunk_index=i,
@@ -145,7 +145,7 @@ class DocumentProcessService:
     @staticmethod
     async def vectorize_chunks(
         db: AsyncSession,
-        kb: KnowledgeBase,
+        kb: KnowledgeBases,
         chunk_ids: list[UUID],
     ) -> int:
         """
@@ -174,7 +174,7 @@ class DocumentProcessService:
 
         count = 0
         for chunk_id in chunk_ids:
-            chunk = await db.get(Chunk, chunk_id)
+            chunk = await db.get(Chunks, chunk_id)
             if chunk is None:
                 continue
 
@@ -193,9 +193,9 @@ class DocumentProcessService:
                 # 删除旧 embedding（如果存在）
                 from sqlalchemy import delete as _delete
 
-                await db.execute(_delete(Embedding).where(Embedding.chunk_id == chunk_id))
+                await db.execute(_delete(Embeddings).where(Embeddings.chunk_id == chunk_id))
 
-                emb = Embedding(
+                emb = Embeddings(
                     chunk_id=chunk_id,
                     kb_id=kb.id,
                     embedding=vec,

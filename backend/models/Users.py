@@ -4,7 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from backend.models.Base import Base
 
 
-class User(Base):
+class Users(Base):
     __tablename__ = "users"
     __table_args__ = {"comment": "用户表：MVP 阶段仅存一个管理员，v0.5 扩展为多租户用户体系"}
 

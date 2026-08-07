@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.deps import get_current_user
 from backend.core.config import settings
 from backend.core.database import get_db
-from backend.models import User
+from backend.models import Users
 from backend.schemas.common import SuccessResponse
 from backend.schemas.knowledge import (
     BatchFileAction,
@@ -66,7 +66,7 @@ async def list_kb(
     page: str = Query("", description="页码，默认 1"),
     page_size: str = Query("", description="每页条数，默认 20"),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.list_by_user(
         db, user, _parse_page(page), _parse_page_size(page_size)
@@ -78,7 +78,7 @@ async def list_kb(
 async def create_kb(
     body: KnowledgeBaseCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.create(db, user, body)
     return SuccessResponse(result=result)
@@ -88,7 +88,7 @@ async def create_kb(
 async def get_kb(
     kb_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.get(db, user, kb_id)
     return SuccessResponse(result=result)
@@ -99,7 +99,7 @@ async def update_kb(
     kb_id: UUID,
     body: KnowledgeBaseUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.update(db, user, kb_id, body)
     return SuccessResponse(result=result)
@@ -109,7 +109,7 @@ async def update_kb(
 async def delete_kb(
     kb_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     await KnowledgeBaseService.delete(db, user, kb_id)
     return SuccessResponse(message="已删除")
@@ -122,7 +122,7 @@ async def parse_docs(
     kb_id: UUID,
     body: DocIdsRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     kb = await _get_kb_for_user(db, user, kb_id)
     processed = await DocumentProcessService.parse_documents(db, kb, body.doc_ids)
@@ -135,7 +135,7 @@ async def chunk_docs(
     kb_id: UUID,
     body: DocIdsRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     kb = await _get_kb_for_user(db, user, kb_id)
     processed = await DocumentProcessService.chunk_documents(db, kb, body.doc_ids)
@@ -148,7 +148,7 @@ async def vectorize_chunks(
     kb_id: UUID,
     body: ChunkIdsRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     kb = await _get_kb_for_user(db, user, kb_id)
     processed = await DocumentProcessService.vectorize_chunks(db, kb, body.chunk_ids)
@@ -162,7 +162,7 @@ async def vectorize_chunks(
 async def batch_kb(
     body: BatchKnowledgeBaseAction,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.batch_kb(db, user, body.ids, body.action)
     return SuccessResponse(result=result)
@@ -179,7 +179,7 @@ async def upload_file(
     kb_id: UUID,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.upload_file(db, user, kb_id, file)
     return SuccessResponse(result=result)
@@ -195,7 +195,7 @@ async def list_files(
     page: str = Query("", description="页码，默认 1"),
     page_size: str = Query("", description="每页条数，默认 20"),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.list_files(
         db, user, kb_id, _parse_page(page), _parse_page_size(page_size)
@@ -212,7 +212,7 @@ async def delete_file(
     kb_id: UUID,
     doc_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     await KnowledgeBaseService.delete_file(db, user, kb_id, doc_id)
     return SuccessResponse(message="已删除")
@@ -227,7 +227,7 @@ async def batch_files(
     kb_id: UUID,
     body: BatchFileAction,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.batch_files(db, user, kb_id, body.ids, body.action)
     return SuccessResponse(result=result)

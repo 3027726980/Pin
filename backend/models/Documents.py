@@ -5,7 +5,7 @@ from uuid import UUID
 from backend.models.Base import Base
 
 
-class Document(Base):
+class Documents(Base):
     __tablename__ = "documents"
     __table_args__ = {"comment": "文档表：存储上传到知识库中的文件元信息"}
 
@@ -39,8 +39,8 @@ class Document(Base):
         SmallInteger, default=0, nullable=False, comment="向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
 
-    knowledge_base = relationship("KnowledgeBase", back_populates="documents")
-    chunks = relationship("Chunk", back_populates="document", lazy="selectin")
+    knowledge_base = relationship("KnowledgeBases", back_populates="documents")
+    chunks = relationship("Chunks", back_populates="document", lazy="selectin")
 
     def __repr__(self) -> str:
-        return f"<Document(id={self.id}, filename={self.filename})>"
+        return f"<Documents(id={self.id}, filename={self.filename})>"

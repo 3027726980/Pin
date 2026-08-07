@@ -6,7 +6,7 @@ from uuid import UUID
 from backend.models.Base import Base
 
 
-class Chunk(Base):
+class Chunks(Base):
     __tablename__ = "chunks"
     __table_args__ = {"comment": "分块表：存储文档分块后的文本片段"}
 
@@ -27,8 +27,8 @@ class Chunk(Base):
         SmallInteger, default=0, nullable=False, comment="-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
 
-    document = relationship("Document", back_populates="chunks")
-    embedding = relationship("Embedding", back_populates="chunk", uselist=False, lazy="selectin")
+    document = relationship("Documents", back_populates="chunks")
+    embedding = relationship("Embeddings", back_populates="chunk", uselist=False, lazy="selectin")
 
     def __repr__(self) -> str:
-        return f"<Chunk(id={self.id}, doc_id={self.document_id}, index={self.chunk_index})>"
+        return f"<Chunks(id={self.id}, doc_id={self.document_id}, index={self.chunk_index})>"

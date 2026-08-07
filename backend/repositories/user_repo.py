@@ -9,19 +9,19 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import User
+from backend.models import Users
 
 
 class UserRepo:
     """用户相关数据库操作"""
 
     @staticmethod
-    async def get_by_username(db: AsyncSession, username: str) -> User | None:
+    async def get_by_username(db: AsyncSession, username: str) -> Users | None:
         result = await db.execute(
-            select(User).where(User.username == username)
+            select(Users).where(User.username == username)
         )
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def get_by_id(db: AsyncSession, user_id: UUID | str) -> User | None:
-        return await db.get(User, user_id)
+    async def get_by_id(db: AsyncSession, user_id: UUID | str) -> Users | None:
+        return await db.get(Users, user_id)

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from backend.core.database import async_session_local, init_db
 from backend.core.security import hash_password
 from backend.core.config import settings
-from backend.models import User
+from backend.models import Users
 from backend.repositories import UserRepo
 from backend.api.v1 import auth_router, knowledge_router, model_config_router
 
@@ -21,7 +21,7 @@ async def seed_admin() -> None:
     """确保管理员账号存在（首次启动自动创建）"""
     async with async_session_local() as session:
         if await UserRepo.get_by_username(session, settings.admin.username) is None:
-            admin = User(
+            admin = Users(
                 username=settings.admin.username,
                 hashed_password=hash_password(settings.admin.password),
                 is_superuser=True,
