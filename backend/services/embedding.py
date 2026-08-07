@@ -60,15 +60,23 @@ def _embed_openai(model_name: str, api_key: str | None, texts: list[str]) -> lis
 
 
 def _embed_local(model_name: str, texts: list[str]) -> list[list[float]]:
-    """本地 Embedding（sentence-transformers），首次自动下载模型"""
+    """本地 Embedding，仅从本地加载，不联网下载"""
     from pathlib import Path
     from sentence_transformers import SentenceTransformer
 
     from backend.core.config import settings
 
-    cache_dir = Path(settings.embedding.model_cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    # 模型缓存目录 / 模型名 → 本地路径
+    model_dir = Path(settings.embedding.model_cache_dir) / model_name
+    if not model_dir.exists():
+        raise FileNotFoundError(
+            f"本地模型不存在: {model_dir}，请先下载模型到该目录"
+        )
 
-    model = SentenceTransformer(model_name, cache_folder=str(cache_dir))
+    model = SentenceTransformer(
+        str(model_dir),
+        device="cpu",
+        local_files_only=True,
+    )
     results = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
     return results.tolist()

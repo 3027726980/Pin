@@ -24,4 +24,5 @@ dependencies = [
     "uvicorn==0.21.0",
     "dashscope>=1.26.6",
     "langchain-community>=0.4.2",
+    "flagembedding>=1.4.0",
 ]

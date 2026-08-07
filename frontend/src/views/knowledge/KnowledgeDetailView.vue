@@ -334,6 +334,14 @@ async function triggerParse() {
 }
 
 async function triggerChunk() {
+  // 检查是否都已解析
+  const unchecked = fileList.value.filter(
+    f => checkedFileKeys.value.includes(f.id) && f.is_parsed !== 1
+  )
+  if (unchecked.length > 0) {
+    message.warning(`有 ${unchecked.length} 个文件未解析，请先点击"解析选中"`)
+    return
+  }
   processing.value = true
   try {
     const res = await chunkDocuments(kbId.value, checkedFileKeys.value)
@@ -347,6 +355,14 @@ async function triggerChunk() {
 }
 
 async function triggerVectorize() {
+  // 检查是否都已解析+分块
+  const unchecked = fileList.value.filter(
+    f => checkedFileKeys.value.includes(f.id) && (f.is_parsed !== 1 || f.is_chunked !== 1)
+  )
+  if (unchecked.length > 0) {
+    message.warning(`有 ${unchecked.length} 个文件未准备就绪，请先完成"解析"和"分块"`)
+    return
+  }
   processing.value = true
   try {
     const res = await vectorizeDocuments(kbId.value, checkedFileKeys.value)

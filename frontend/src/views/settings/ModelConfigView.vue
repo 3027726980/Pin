@@ -105,23 +105,23 @@ const myConfigs = ref<UserModelConfigItem[]>([])
 
 // ── 默认模型表格 ──────────────────────
 const defaultColumns: DataTableColumns<DefaultModelConfigItem> = [
-  { title: '厂商', key: 'provider', width: 100 },
+  { title: '厂商', key: 'provider', width: 120 },
   {
-    title: '类别', key: 'model_type', width: 200,
+    title: '类别', key: 'model_type', width: 240,
     render(row) {
       const found = modelTypes.value.find(t => t.code === row.model_type)
       return found?.name || `类型${row.model_type}`
     },
   },
-  { title: '模型', key: 'model_name', ellipsis: { tooltip: true } },
+  { title: '模型', key: 'model_name', width: 260, ellipsis: { tooltip: true } },
 ]
 
 // ── 我的配置表格 ──────────────────────
 const configColumns: DataTableColumns<UserModelConfigItem> = [
-  { title: '厂商', key: 'provider', width: 70 },
-  { title: '模型', key: 'model_name', width: 160, ellipsis: { tooltip: true } },
+  { title: '厂商', key: 'provider', width: 120 },
+  { title: '模型', key: 'model_name', width: 260, ellipsis: { tooltip: true } },
   {
-    title: '类别', key: 'model_type', width: 140,
+    title: '类别', key: 'model_type', width: 240,
     render(row) {
       const found = modelTypes.value.find(t => t.code === row.model_type)
       return found?.name || `类型${row.model_type}`
