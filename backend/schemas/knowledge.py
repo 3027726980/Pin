@@ -31,6 +31,7 @@ class KnowledgeBaseUpdate(BaseModel):
     allowed_extensions: str | None = Field(None, max_length=500)
     max_file_size: int | None = Field(None, ge=1)
     allow_multiple: bool | None = None
+    status: int | None = Field(None, ge=0, le=9)
 
 
 class KnowledgeBaseResponse(BaseModel):
@@ -70,8 +71,8 @@ class DocumentResponse(BaseModel):
     file_size: int
     file_type: str | None
     status: int
-    is_chunked: bool
-    is_vectorized: bool
+    is_chunked: int
+    is_vectorized: int
     created_at: datetime
     updated_at: datetime
 
@@ -85,6 +86,8 @@ class DocumentListItem(BaseModel):
     file_size: int
     file_type: str | None
     status: int
+    is_chunked: int
+    is_vectorized: int
     created_at: datetime
 
     model_config = {"from_attributes": True}

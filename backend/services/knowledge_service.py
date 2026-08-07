@@ -111,6 +111,7 @@ class KnowledgeBaseService:
             allowed_extensions=data.allowed_extensions,
             max_file_size=data.max_file_size,
             allow_multiple=data.allow_multiple,
+            status=data.status,
         )
         await db.commit()
         return KnowledgeBaseResponse.model_validate(kb)

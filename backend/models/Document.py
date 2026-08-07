@@ -32,11 +32,11 @@ class Document(Base):
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=逻辑删除"
     )
-    is_chunked: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, comment="是否已完成切片"
+    is_chunked: Mapped[int] = mapped_column(
+        SmallInteger, default=0, nullable=False, comment="切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
-    is_vectorized: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, comment="是否已完成向量化"
+    is_vectorized: Mapped[int] = mapped_column(
+        SmallInteger, default=0, nullable=False, comment="向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
 
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")

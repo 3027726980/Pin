@@ -80,7 +80,12 @@ const menuOptions = [
   { label: 'Agent', key: '/agent', icon: renderIcon(HardwareChipOutline) },
 ]
 
-const activeMenu = computed(() => route.path)
+const activeMenu = computed(() => {
+  // 子路由高亮父菜单：/knowledge/:id → /knowledge
+  if (route.path.startsWith('/knowledge')) return '/knowledge'
+  if (route.path.startsWith('/agent')) return '/agent'
+  return route.path
+})
 
 function onMenuChange(key: string) {
   router.push(key)

@@ -6,6 +6,7 @@ const LoginView = () => import('@/views/login/LoginView.vue')
 const MainLayout = () => import('@/layouts/MainLayout.vue')
 const DashboardView = () => import('@/views/dashboard/DashboardView.vue')
 const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue')
+const KnowledgeDetailView = () => import('@/views/knowledge/KnowledgeDetailView.vue')
 const AgentListView = () => import('@/views/agent/AgentListView.vue')
 
 const routes: RouteRecordRaw[] = [
@@ -31,6 +32,12 @@ const routes: RouteRecordRaw[] = [
         name: 'Knowledge',
         component: KnowledgeListView,
         meta: { title: '知识库', requiresAuth: true },
+      },
+      {
+        path: 'knowledge/:id',
+        name: 'KnowledgeDetail',
+        component: KnowledgeDetailView,
+        meta: { title: '知识库详情', requiresAuth: true },
       },
       {
         path: 'agent',
