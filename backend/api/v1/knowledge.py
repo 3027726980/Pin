@@ -26,8 +26,8 @@ from backend.schemas.knowledge import (
     ProcessResult,
 )
 from backend.services import KnowledgeBaseService
-from backend.services.document_process_service import DocumentProcessService
-from backend.services.knowledge_service import _get_kb_for_user
+from backend.services.document_process import DocumentProcessService
+from backend.services.knowledge import _get_kb_for_user
 
 router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["知识库"])
 

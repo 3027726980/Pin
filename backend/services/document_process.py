@@ -45,7 +45,7 @@ class DocumentProcessService:
                 # 构建完整文件路径
                 from pathlib import Path as _Path
 
-                from backend.services.knowledge_service import UPLOAD_ROOT
+                from backend.services.knowledge import UPLOAD_ROOT
 
                 file_path = _Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
                 text = parser.parse(str(file_path))

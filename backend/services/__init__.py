@@ -1,7 +1,7 @@
-from backend.services.auth_service import AuthService
-from backend.services.knowledge_service import KnowledgeBaseService
-from backend.services.model_config_service import ModelConfigService
-from backend.services.document_process_service import DocumentProcessService
+from backend.services.auth import AuthService
+from backend.services.knowledge import KnowledgeBaseService
+from backend.services.model_config import ModelConfigService
+from backend.services.document_process import DocumentProcessService
 
 __all__ = [
     "AuthService",
