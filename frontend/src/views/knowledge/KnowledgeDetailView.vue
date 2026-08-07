@@ -151,6 +151,21 @@ const fileColumns: DataTableColumns<DocumentListItem> = [
     },
   },
   {
+    title: '解析',
+    key: 'is_parsed',
+    width: 90,
+    render(row) {
+      const map: Record<number, { type: 'default' | 'info' | 'success' | 'warning' | 'error'; label: string }> = {
+        [-1]: { type: 'error', label: '失败' },
+        0: { type: 'default', label: '未完成' },
+        1: { type: 'success', label: '已完成' },
+        2: { type: 'info', label: '进行中' },
+      }
+      const s = map[row.is_parsed] || { type: 'default' as const, label: '未知' }
+      return h(NTag, { type: s.type, size: 'small' }, { default: () => s.label })
+    },
+  },
+  {
     title: '切片',
     key: 'is_chunked',
     width: 90,

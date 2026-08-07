@@ -34,7 +34,7 @@ class DocumentProcessService:
         doc_ids: list[UUID],
     ) -> int:
         """
-        解析文档文本，将完整文本存入 chunks（chunk_index=0）
+        解析文档文本，存入 documents.content
 
         返回成功解析的文档数
         """
@@ -47,21 +47,12 @@ class DocumentProcessService:
             try:
                 parser = get_parser(doc.file_type or "")
                 file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
-                text = parser.parse(str(file_path))
-
-                # 先清旧 chunk，插入单条完整文本作为 chunk_index=0
-                await db.execute(delete(Chunks).where(Chunks.document_id == doc_id))
-                chunk = Chunks(
-                    document_id=doc_id,
-                    kb_id=kb.id,
-                    chunk_index=0,
-                    content=text,
-                    status=1,
-                )
-                db.add(chunk)
+                doc.content = parser.parse(str(file_path))
+                doc.is_parsed = 1
                 count += 1
             except Exception as e:
                 logger.error(f"解析文档 {doc_id} 失败: {e}")
+                doc.is_parsed = -1
                 continue
 
         await db.flush()
@@ -97,18 +88,11 @@ class DocumentProcessService:
             if doc is None or doc.status == 9:
                 continue
 
-            # 取完整文本（chunk_index=0）
-            q = select(Chunks).where(
-                Chunks.document_id == doc_id,
-                Chunks.chunk_index == 0,
-                Chunks.status != -1,
-            )
-            result = await db.execute(q)
-            full_chunk = result.scalar_one_or_none()
-            if full_chunk is None:
+            # 取完整文本
+            if not doc.content:
                 continue
 
-            texts = splitter.split_text(full_chunk.content)
+            texts = splitter.split_text(doc.content)
 
             # 删除旧块，插入新块
             await db.execute(delete(Chunks).where(Chunks.document_id == doc_id))
@@ -122,6 +106,7 @@ class DocumentProcessService:
                 )
                 db.add(chunk)
                 total_chunks += 1
+            doc.is_chunked = 1
 
         await db.flush()
         return total_chunks
@@ -182,6 +167,7 @@ class DocumentProcessService:
                     status=1,
                 )
                 db.add(emb)
+                chunk.document.is_vectorized = 1
                 count += 1
             except Exception as e:
                 logger.error(f"向量化 chunk {chunk_id} 失败: {e}")

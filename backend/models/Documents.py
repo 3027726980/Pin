@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Boolean, ForeignKey, SmallInteger, String
+from sqlalchemy import BigInteger, Boolean, ForeignKey, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid import UUID
 
@@ -31,6 +31,12 @@ class Documents(Base):
     )
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=逻辑删除"
+    )
+    is_parsed: Mapped[int] = mapped_column(
+        SmallInteger, default=0, nullable=False, comment="解析状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
+    )
+    content: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="解析后的完整纯文本"
     )
     is_chunked: Mapped[int] = mapped_column(
         SmallInteger, default=0, nullable=False, comment="切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"

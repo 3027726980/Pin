@@ -149,7 +149,9 @@ CREATE TABLE IF NOT EXISTS documents (
     file_path           VARCHAR(1000) NOT NULL,
     file_size           BIGINT      NOT NULL,
     file_type           VARCHAR(100),               -- 文件后缀，如 .pdf，无后缀则为 NULL
+    content             TEXT,
     status              SMALLINT    NOT NULL DEFAULT 1,
+    is_parsed           SMALLINT    NOT NULL DEFAULT 0,
     is_chunked          SMALLINT    NOT NULL DEFAULT 0,
     is_vectorized       SMALLINT    NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -167,7 +169,9 @@ COMMENT ON COLUMN documents.filename IS '原始文件名';
 COMMENT ON COLUMN documents.file_path IS '相对路径，如 uploads/{kb_id}/{name}_{uuid}.{ext}';
 COMMENT ON COLUMN documents.file_size IS '文件大小（字节）';
 COMMENT ON COLUMN documents.file_type IS '文件后缀，如 .pdf，无后缀则为 NULL';
+COMMENT ON COLUMN documents.content IS '解析后的完整纯文本';
 COMMENT ON COLUMN documents.status IS '0=禁用, 1=启用, 9=逻辑删除';
+COMMENT ON COLUMN documents.is_parsed IS '解析状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.is_chunked IS '切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.is_vectorized IS '向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.created_at IS '记录创建时间';

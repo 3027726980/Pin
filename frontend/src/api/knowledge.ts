@@ -47,6 +47,7 @@ export interface DocumentListItem {
   file_size: number
   file_type: string | null
   status: number
+  is_parsed: number
   is_chunked: number
   is_vectorized: number
   created_at: string
@@ -61,6 +62,7 @@ export interface DocumentDetail {
   file_size: number
   file_type: string | null
   status: number
+  is_parsed: number
   is_chunked: number
   is_vectorized: number
   created_at: string

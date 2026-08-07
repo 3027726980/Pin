@@ -3,12 +3,22 @@
 -- 版本  : v0.4
 -- 日期  : 2025-08-07
 -- 说明  :
---   1. knowledge_bases 新增分块/embedding 配置字段
---   2. 新建 chunks、embeddings、model_config 表
+--   1. documents 新增 content + is_parsed 字段
+--   2. knowledge_bases 新增分块/embedding 配置字段
+--   3. 新建 chunks、embeddings、model_config 表
 -- 回滚  :
+--   ALTER TABLE documents DROP COLUMN content, DROP COLUMN is_parsed;
 --   ALTER TABLE knowledge_bases DROP COLUMN chunk_size, ...;
 --   DROP TABLE embeddings, chunks, model_config;
 -- ============================================================
+
+-- 0. documents 新增 content + 解析状态
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS content TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_parsed
+    SMALLINT NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN documents.content IS '解析后的完整纯文本';
+COMMENT ON COLUMN documents.is_parsed IS '解析状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 
 -- 1. knowledge_bases 新增分块/embedding 配置
 ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS chunk_size

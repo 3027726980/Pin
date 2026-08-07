@@ -86,6 +86,7 @@ class DocumentResponse(BaseModel):
     file_size: int
     file_type: str | None
     status: int
+    is_parsed: int
     is_chunked: int
     is_vectorized: int
     created_at: datetime
@@ -101,6 +102,7 @@ class DocumentListItem(BaseModel):
     file_size: int
     file_type: str | None
     status: int
+    is_parsed: int
     is_chunked: int
     is_vectorized: int
     created_at: datetime
