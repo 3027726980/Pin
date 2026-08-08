@@ -29,23 +29,44 @@
 
       <div v-for="(msg, idx) in messages" :key="idx" class="msg-row" :class="msg.role">
         <div class="msg-bubble" :class="msg.role">
-          <div class="msg-content">{{ msg.content }}</div>
-          <!-- 引用来源（助手消息附带） -->
+          <!-- 内容分段渲染：文本 + [N] 可点击引用标注 -->
+          <div class="msg-content">
+            <template v-for="(part, i) in splitRefs(msg.content)" :key="i">
+              <span v-if="part.type === 'text'">{{ part.value }}</span>
+              <span
+                v-else
+                class="citation-ref"
+                :class="{ disabled: !msg.rawCitations || part.index! < 1 || part.index! > msg.rawCitations.length }"
+                @click="locateCitation(msg, part.index!)"
+              >
+                [{{ part.index }}]
+              </span>
+            </template>
+          </div>
+          <!-- 引用来源（仅展示回答中实际引用的条目） -->
           <div v-if="msg.role === 'assistant' && msg.citations && msg.citations.length" class="msg-citations">
-            <n-collapse>
+            <n-collapse
+              :expanded-names="msg.refPanelExpanded ? ['cits'] : []"
+              @update:expanded-names="(names: string[]) => (msg.refPanelExpanded = names.includes('cits'))"
+            >
               <n-collapse-item :title="`引用来源（${msg.citations.length} 条）`" name="cits">
-                <div v-for="(c, i) in msg.citations" :key="i" class="citation-item">
+                <div
+                  v-for="(c, i) in msg.citations"
+                  :key="i"
+                  class="citation-item"
+                  :data-citation-index="`${msg.uid}-${msg.rawCitations ? msg.rawCitations.indexOf(c) : i}`"
+                >
                   <div class="citation-head">
-                    <span class="citation-doc">《{{ c.document_name }}》</span>
+                    <span class="citation-doc">[{{ msg.rawCitations ? msg.rawCitations.indexOf(c) + 1 : i + 1 }}]《{{ c.document_name }}》</span>
                     <n-tag size="tiny" type="info" :bordered="false">相似度 {{ c.score.toFixed(2) }}</n-tag>
                   </div>
-                  <div class="citation-content" :class="{ expanded: isCitationExpanded(msg, i) }">{{ c.content }}</div>
+                  <div class="citation-content" :class="{ expanded: isCitationExpanded(msg, msg.rawCitations ? msg.rawCitations.indexOf(c) : i) }">{{ c.content }}</div>
                   <div
                     v-if="c.content && c.content.length > 100"
                     class="citation-toggle"
-                    @click="toggleCitation(msg, i)"
+                    @click="toggleCitation(msg, msg.rawCitations ? msg.rawCitations.indexOf(c) : i)"
                   >
-                    {{ isCitationExpanded(msg, i) ? '收起 ▲' : '展开 ▼' }}
+                    {{ isCitationExpanded(msg, msg.rawCitations ? msg.rawCitations.indexOf(c) : i) ? '收起 ▲' : '展开 ▼' }}
                   </div>
                 </div>
               </n-collapse-item>
@@ -108,10 +129,16 @@ import { ArrowBackOutline, SendOutline, StopOutline } from '@vicons/ionicons5'
 import { getAgent, chatAgent, chatAgentStream, type AgentDetail, type ChatMessage, type ChatCitation } from '@/api/agent'
 
 interface DisplayMessage extends ChatMessage {
+  /** 消息唯一标识（引用定位锚点用） */
+  uid: number
   citations?: ChatCitation[]
+  /** 完整引用列表（过滤前，保留原始编号用） */
+  rawCitations?: ChatCitation[]
   error?: boolean
-  /** 每条引用的展开状态（索引 → 是否展开） */
+  /** 每条引用的展开状态（原始索引 → 是否展开） */
   expandedCitations?: Record<number, boolean>
+  /** 引用面板是否展开 */
+  refPanelExpanded?: boolean
 }
 
 const route = useRoute()
@@ -122,6 +149,7 @@ const agentId = route.params.id as string
 const agent = ref<AgentDetail | null>(null)
 
 const messages = ref<DisplayMessage[]>([])
+let msgUid = 0
 const inputText = ref('')
 const sending = ref(false)
 const streaming = ref(false)
@@ -147,14 +175,14 @@ async function send() {
   const text = inputText.value.trim()
   if (!text || streaming.value) return
 
-  messages.value.push({ role: 'user', content: text })
+  messages.value.push({ role: 'user', content: text, uid: ++msgUid })
   inputText.value = ''
 
   // 组装 history（最近 10 条，不含刚加入的这条）
   const history: ChatMessage[] = messages.value.slice(-11, -1).map(m => ({ role: m.role, content: m.content }))
 
   // 占位助手消息（reactive：push 的是代理本身，流式增量修改实时触发视图更新）
-  const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [] })
+  const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [], uid: ++msgUid })
   messages.value.push(assistantMsg)
 
   streaming.value = true
@@ -192,7 +220,10 @@ async function send() {
           }
           assistantMsg.content += event.content
         } else if (event.type === 'citations') {
-          assistantMsg.citations = event.citations
+          // 仅保留回答中实际引用（[N]）的条目，未引用的不展示
+          assistantMsg.rawCitations = event.citations
+          const used = extractRefIndexes(assistantMsg.content)
+          assistantMsg.citations = event.citations.filter((_, i) => used.has(i + 1))
         } else if (event.type === 'error') {
           assistantMsg.error = true
           assistantMsg.content = (assistantMsg.content || '') + `\n[错误] ${event.message}`
@@ -229,6 +260,46 @@ function onInputKeydown(e: KeyboardEvent) {
 
 function clearChat() {
   messages.value = []
+}
+
+// ── 引用标注解析与定位 ───────────────────
+
+/** 拆分消息内容：文本段 + [N] 引用标注段（避免 v-html，防 XSS） */
+function splitRefs(content: string): Array<{ type: 'text' | 'ref'; value: string; index?: number }> {
+  const parts = content.split(/(\[\d+\])/g)
+  return parts
+    .filter(p => p)
+    .map(p => {
+      const m = p.match(/^\[(\d+)\]$/)
+      if (m) return { type: 'ref' as const, value: p, index: parseInt(m[1], 10) }
+      return { type: 'text' as const, value: p }
+    })
+}
+
+/** 提取内容中所有 [N] 引用序号 */
+function extractRefIndexes(content: string): Set<number> {
+  const set = new Set<number>()
+  const re = /\[(\d+)\]/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    set.add(parseInt(m[1], 10))
+  }
+  return set
+}
+
+/** 点击 [N]：展开引用面板 + 展开对应条目 + 滚动定位 */
+function locateCitation(msg: DisplayMessage, n: number) {
+  if (!msg.rawCitations || n < 1 || n > msg.rawCitations.length) return
+  msg.refPanelExpanded = true
+  if (!msg.expandedCitations) {
+    msg.expandedCitations = {}
+  }
+  msg.expandedCitations[n - 1] = true
+  // 等渲染完成后滚动到对应条目
+  nextTick(() => {
+    const el = document.querySelector(`[data-citation-index="${msg.uid}-${n - 1}"]`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
 }
 
 // ── 引用展开/收起 ───────────────────────
@@ -324,6 +395,33 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 .msg-citations {
   margin-top: 8px;
   font-size: 13px;
+}
+.citation-ref {
+  display: inline-block;
+  padding: 0 3px;
+  margin: 0 1px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2080f0;
+  background: rgba(32, 128, 240, 0.12);
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+}
+.citation-ref:hover {
+  background: rgba(32, 128, 240, 0.25);
+}
+.citation-ref.disabled {
+  color: var(--n-text-color-3);
+  background: transparent;
+  cursor: default;
+}
+.msg-bubble.user .citation-ref {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.2);
+}
+.msg-bubble.user .citation-ref:hover {
+  background: rgba(255, 255, 255, 0.35);
 }
 .citation-item {
   padding: 6px 0;
