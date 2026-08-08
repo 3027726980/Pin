@@ -61,18 +61,19 @@ class ToolRegistry:
         db,
         user,
         tools: list[dict],
-        citations_store: list,
+        **kwargs,
     ) -> list:
         """
         将工具配置列表构建为 LangChain 工具列表（供 create_agent 注册）
 
         每个工具调用自己的 build_langchain（闭包绑定 db/user/config）
+        **kwargs 透传给各工具（如 citations_store），由工具自行决定是否使用
         """
-        return [
-            cls.build_langchain(db, user, tool, citations_store)
-            for tool in tools
-            for cls in [ToolRegistry._get(tool.get("type"))]
-        ]
+        result = []
+        for tool in tools:
+            cls = ToolRegistry._get(tool.get("type"))
+            result.append(cls.build_langchain(db, user, tool, **kwargs))
+        return result
 
     # ═══════════════════════════════════════════════
     # 响应补全（列表/详情时调用）

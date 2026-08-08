@@ -37,7 +37,7 @@ class RAGTool(BaseTool):
     name_ref_keys = {"kb_id": "kb_name"}
 
     @staticmethod
-    async def validate_config(db: AsyncSession, user: Users, config: dict) -> None:
+    async def validate_config(db: AsyncSession, user: Users, config: dict, **kwargs) -> None:
         """
         校验工具配置：kb_id 存在 + 归属当前用户 + 未删除 + 启用
 
@@ -54,22 +54,28 @@ class RAGTool(BaseTool):
             raise HTTPException(status_code=400, detail="知识库已禁用")
 
     @staticmethod
-    def build_langchain(db: AsyncSession, user: Users, config: dict, citations_store: list):
+    def build_langchain(db: AsyncSession, user: Users, config: dict, **kwargs):
         """
         构建 LangChain 工具（闭包绑定 db/user/config，供 create_agent 注册）
+
+        额外参数（kwargs）:
+            citations_store: 外部列表，工具执行结果追加至此（响应回传引用）
 
         LLM 仅需提供 query 参数；工具异常时返回 JSON 错误信息（让 LLM 自行决定下一步）
         """
         from langchain_core.tools import tool
 
+        citations_store = kwargs.get("citations_store")
+
         @tool
         async def rag(query: str) -> str:
             """检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"""
             try:
-                cits = await RAGTool.execute(db, user, config, query)
+                cits = await RAGTool.execute(db, user, config, message=query)
             except HTTPException as e:
                 return json.dumps({"error": e.detail}, ensure_ascii=False)
-            citations_store.extend(cits)
+            if citations_store is not None:
+                citations_store.extend(cits)
             return json.dumps([c.model_dump() for c in cits], ensure_ascii=False)
 
         return rag
@@ -80,6 +86,7 @@ class RAGTool(BaseTool):
         user: Users,
         config: dict,
         message: str,
+        **kwargs,
     ) -> list[Citation]:
         """
         执行知识库检索

@@ -198,7 +198,9 @@ class ChatService:
     ) -> ChatResponse:
         """综合 Agent：create_agent 自主决策（模型判断是否调用工具，可能多轮）"""
         citations_store: list[Citation] = []
-        tools = ToolRegistry.build_langchain_tools(db, user, agent.tools, citations_store)
+        tools = ToolRegistry.build_langchain_tools(
+            db, user, agent.tools, citations_store=citations_store
+        )
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
         lc_agent = ChatService._build_general_agent(agent, llm_cfg, tools, system_prompt)
 
@@ -224,7 +226,9 @@ class ChatService:
     ) -> AsyncIterator[dict]:
         """综合 Agent 流式：create_agent.astream 逐 token 输出（工具调用轮不输出）"""
         citations_store: list[Citation] = []
-        tools = ToolRegistry.build_langchain_tools(db, user, agent.tools, citations_store)
+        tools = ToolRegistry.build_langchain_tools(
+            db, user, agent.tools, citations_store=citations_store
+        )
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
         lc_agent = ChatService._build_general_agent(agent, llm_cfg, tools, system_prompt)
 

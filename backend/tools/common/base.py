@@ -1,11 +1,13 @@
 """
 通用工具类
 
-BaseTool：所有 Agent 工具的抽象基类，工具自带全部能力：
-  - type / description：元信息（注册、LLM 决策用）
-  - name_ref_keys：需要补全名称的配置字段（如 rag 的 kb_id → kb_name）
-  - validate_config：配置校验（创建/编辑 Agent 时调用）
-  - build_langchain：LangChain 工具构建（对话时调用，闭包绑定上下文）
+BaseTool：所有 Agent 工具的抽象基类，只定义统一调用协议：
+  固定形参 (db, user, config)，多余参数通过 **kwargs 传入（由调用方与子类约定）。
+
+设计原则：抽象层保持极简，不规定任何具体工具的概念（如 message / citations_store）；
+子类实现时按需定义自己的参数（如 rag 的 message、引用收集器），
+因为反正每个工具都要重写这些方法，扩展参数由开发者自行确定。
+
 新增工具 = 新建一个工具类（实现上述方法）+ 注册到 ToolRegistry.TOOLS，
 调用方（chat/agent 服务）零改动。
 """
@@ -13,7 +15,7 @@ from abc import ABC, abstractmethod
 
 
 class BaseTool(ABC):
-    """工具抽象基类：定义工具的注册、校验、构建、补全能力"""
+    """工具抽象基类：定义工具的注册、校验、构建、执行协议"""
 
     # 工具类型（注册表 key，与 schema 中 ToolConfig.type 对应）
     type: str = ""
@@ -27,7 +29,7 @@ class BaseTool(ABC):
 
     @staticmethod
     @abstractmethod
-    async def validate_config(db, user, config: dict) -> None:
+    async def validate_config(db, user, config: dict, **kwargs) -> None:
         """
         校验工具配置（创建/编辑 Agent 时调用）
 
@@ -35,6 +37,7 @@ class BaseTool(ABC):
             db: AsyncSession
             user: 当前用户
             config: 工具配置（如 {"kb_id": ...}）
+            **kwargs: 子类按需扩展
 
         校验失败时 raise HTTPException（404/400）
         """
@@ -42,7 +45,7 @@ class BaseTool(ABC):
 
     @staticmethod
     @abstractmethod
-    def build_langchain(db, user, config: dict, citations_store: list):
+    def build_langchain(db, user, config: dict, **kwargs):
         """
         构建 LangChain 工具（对话时调用，闭包绑定 db/user/config）
 
@@ -50,13 +53,24 @@ class BaseTool(ABC):
             db: AsyncSession
             user: 当前用户
             config: 工具配置
-            citations_store: 外部列表，工具执行结果追加至此（响应回传引用）
+            **kwargs: 子类按需扩展（如 rag 需要引用收集器）
 
         返回: LangChain 工具对象（@tool），供 create_agent 注册
         """
         raise NotImplementedError
 
     @staticmethod
-    def execute(db, user, config: dict, message: str):
-        """工具核心执行逻辑（simple_rag 等代码控制场景直接调用）"""
+    @abstractmethod
+    def execute(db, user, config: dict, **kwargs):
+        """
+        工具核心执行逻辑（simple_rag 等代码控制场景直接调用）
+
+        参数:
+            db: AsyncSession
+            user: 当前用户
+            config: 工具配置
+            **kwargs: 子类按需扩展（如 rag 需要用户消息）
+
+        返回: 工具输出（结构由各工具定义，如 rag 返回 list[Citation]）
+        """
         raise NotImplementedError
