@@ -24,7 +24,7 @@ from backend.repositories import (
 )
 from backend.schemas.agent import ChatRequest, ChatResponse, Citation
 from backend.services.llm import LLMService
-from backend.tools.agent.rag import RAGTool, build_langchain_tool
+from backend.tools import RAGTool, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -198,11 +198,7 @@ class ChatService:
     ) -> ChatResponse:
         """综合 Agent：create_agent 自主决策（模型判断是否调用工具，可能多轮）"""
         citations_store: list[Citation] = []
-        tools = [
-            build_langchain_tool(db, user, cfg, citations_store)
-            for cfg in agent.tools
-            if cfg.get("type") == "rag"  # Schema 已约束，此处防御
-        ]
+        tools = ToolRegistry.build_langchain_tools(db, user, agent.tools, citations_store)
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
         lc_agent = ChatService._build_general_agent(agent, llm_cfg, tools, system_prompt)
 
@@ -228,11 +224,7 @@ class ChatService:
     ) -> AsyncIterator[dict]:
         """综合 Agent 流式：create_agent.astream 逐 token 输出（工具调用轮不输出）"""
         citations_store: list[Citation] = []
-        tools = [
-            build_langchain_tool(db, user, cfg, citations_store)
-            for cfg in agent.tools
-            if cfg.get("type") == "rag"  # Schema 已约束，此处防御
-        ]
+        tools = ToolRegistry.build_langchain_tools(db, user, agent.tools, citations_store)
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
         lc_agent = ChatService._build_general_agent(agent, llm_cfg, tools, system_prompt)
 

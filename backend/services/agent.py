@@ -94,13 +94,16 @@ class AgentService:
         total = len(all_items)
         paged = all_items[(page - 1) * page_size : page * page_size]
 
-        kb_ids = {
-            to_uuid(t["kb_id"])
-            for _, a in paged
-            for t in (a.tools if hasattr(a, "tools") else [{"kb_id": a.kb_id, "type": "rag"}])
-            if t.get("type") == "rag" and t.get("kb_id")
-        }
-        kb_names = await AgentService._kb_name_map(db, user.id, list(kb_ids))
+        # simple_rag：kb_id 直接查名称；general：工具声明引用（kb_id）查名称后补全
+        from backend.tools import ToolRegistry
+
+        simple_kb_ids = [a.kb_id for atype, a in paged if atype == "simple_rag"]
+        simple_kb_names = await AgentService._kb_name_map(db, user.id, simple_kb_ids)
+        general_tools = [t for _, a in paged if hasattr(a, "tools") for t in a.tools]
+        refs = ToolRegistry.collect_refs(general_tools)
+        ref_names: dict = {}
+        if refs.get("kb_id"):
+            ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
         llm_models = await AgentService._llm_model_map(db, user.id, [a.llm_config_id for _, a in paged])
 
         result_items = []
@@ -116,9 +119,9 @@ class AgentService:
             )
             if atype == "simple_rag":
                 item.kb_id = a.kb_id
-                item.kb_name = kb_names.get(a.kb_id)
+                item.kb_name = simple_kb_names.get(a.kb_id)
             else:
-                item.tools = AgentService._tools_with_kb_name(a.tools, kb_names)
+                item.tools = ToolRegistry.enrich_tools(a.tools, ref_names)
             result_items.append(item)
 
         return PaginatedResponse(
@@ -334,10 +337,12 @@ class AgentService:
 
     @staticmethod
     async def _ensure_tools(db: AsyncSession, user: Users, tools: list[ToolConfig]) -> None:
-        """校验工具配置：rag 工具的知识库归属 + 未删除 + 启用"""
-        for tool in tools:
-            if tool.type == "rag":
-                await AgentService._ensure_kb(db, user, tool.kb_id)
+        """校验工具配置（各工具自带校验逻辑，如 rag 校验知识库归属）"""
+        from backend.tools import ToolRegistry
+
+        await ToolRegistry.validate_all(
+            db, user, [t.model_dump(mode="json", exclude={"kb_name"}) for t in tools]
+        )
 
     @staticmethod
     async def _ensure_kb(db: AsyncSession, user: Users, kb_id: UUID) -> None:
@@ -382,21 +387,14 @@ class AgentService:
             resp.top_k = agent.top_k
             resp.score_threshold = agent.score_threshold
         else:
-            kb_ids = {to_uuid(t["kb_id"]) for t in agent.tools if t.get("type") == "rag" and t.get("kb_id")}
-            kb_names = await AgentService._kb_name_map(db, user.id, list(kb_ids))
-            resp.tools = AgentService._tools_with_kb_name(agent.tools, kb_names)
-        return resp
+            from backend.tools import ToolRegistry
 
-    @staticmethod
-    def _tools_with_kb_name(tools: list[dict], kb_names: dict[UUID, str]) -> list[ToolConfig]:
-        """工具 dict → ToolConfig，补全 rag 工具的 kb_name"""
-        result = []
-        for t in tools:
-            cfg = ToolConfig.model_validate(t)
-            if cfg.type == "rag":
-                cfg.kb_name = kb_names.get(cfg.kb_id)
-            result.append(cfg)
-        return result
+            refs = ToolRegistry.collect_refs(agent.tools)
+            ref_names: dict = {}
+            if refs.get("kb_id"):
+                ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
+            resp.tools = ToolRegistry.enrich_tools(agent.tools, ref_names)
+        return resp
 
     @staticmethod
     async def _kb_name_map(

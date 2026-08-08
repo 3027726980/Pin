@@ -7,6 +7,7 @@ RAGTool：向量化 query（多 query 预留）→ pgvector 余弦检索 → 阈
   top_k               → tools.default_top_k
   score_threshold     → tools.default_score_threshold
 """
+import json
 import logging
 from uuid import UUID
 
@@ -23,7 +24,6 @@ from backend.tools.common.base import BaseTool
 
 logger = logging.getLogger(__name__)
 
-
 # 工具描述（供 LLM 判断是否调用）
 RAG_TOOL_DESCRIPTION = "检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"
 
@@ -32,6 +32,47 @@ class RAGTool(BaseTool):
     """RAG 检索工具：知识库向量检索，返回命中的引用块列表"""
 
     type = "rag"
+    description = RAG_TOOL_DESCRIPTION
+    # 配置中的 kb_id 需要补全知识库名称（响应 kb_name）
+    name_ref_keys = {"kb_id": "kb_name"}
+
+    @staticmethod
+    async def validate_config(db: AsyncSession, user: Users, config: dict) -> None:
+        """
+        校验工具配置：kb_id 存在 + 归属当前用户 + 未删除 + 启用
+
+        Raises: HTTPException 404（不存在/已删除/无归属） / 400（已禁用）
+        """
+        kb_id = to_uuid(config.get("kb_id")) if config.get("kb_id") else None
+        if kb_id is None:
+            raise HTTPException(status_code=400, detail="rag 工具缺少 kb_id")
+
+        kb = await KnowledgeBaseRepo.get_by_id(db, kb_id)
+        if kb is None or kb.status == 9 or kb.user_id != user.id:
+            raise HTTPException(status_code=404, detail="知识库不存在")
+        if kb.status == 0:
+            raise HTTPException(status_code=400, detail="知识库已禁用")
+
+    @staticmethod
+    def build_langchain(db: AsyncSession, user: Users, config: dict, citations_store: list):
+        """
+        构建 LangChain 工具（闭包绑定 db/user/config，供 create_agent 注册）
+
+        LLM 仅需提供 query 参数；工具异常时返回 JSON 错误信息（让 LLM 自行决定下一步）
+        """
+        from langchain_core.tools import tool
+
+        @tool
+        async def rag(query: str) -> str:
+            """检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"""
+            try:
+                cits = await RAGTool.execute(db, user, config, query)
+            except HTTPException as e:
+                return json.dumps({"error": e.detail}, ensure_ascii=False)
+            citations_store.extend(cits)
+            return json.dumps([c.model_dump() for c in cits], ensure_ascii=False)
+
+        return rag
 
     @staticmethod
     async def execute(
@@ -56,13 +97,10 @@ class RAGTool(BaseTool):
         score_threshold = config.get("score_threshold") or settings.tools.default_score_threshold
 
         # 1. 知识库校验：归属 + 未删除 + 启用
-        kb = await KnowledgeBaseRepo.get_by_id(db, kb_id)
-        if kb is None or kb.status == 9 or kb.user_id != user.id:
-            raise HTTPException(status_code=404, detail="知识库不存在")
-        if kb.status == 0:
-            raise HTTPException(status_code=400, detail="知识库已禁用")
+        await RAGTool.validate_config(db, user, config)
 
         # 2. Embedding 配置校验
+        kb = await KnowledgeBaseRepo.get_by_id(db, kb_id)
         if not kb.user_model_config_id:
             raise HTTPException(status_code=400, detail="知识库未配置 Embedding 模型")
         emb_cfg = await UserModelConfigRepo.get_by_id(db, kb.user_model_config_id)
@@ -103,33 +141,3 @@ class RAGTool(BaseTool):
             )
             for cid, (content, filename, score) in ranked
         ]
-
-
-def build_langchain_tool(db, user, config: dict, citations_store: list) -> "BaseTool":
-    """
-    构建 LangChain 工具（闭包绑定 db/user/config，供 create_agent 注册）
-
-    参数:
-        db: AsyncSession
-        user: 当前用户
-        config: 工具配置（来自 general_agents.tools，如 {kb_id, top_k, score_threshold}）
-        citations_store: 外部列表，工具执行结果追加至此（用于响应回传引用）
-
-    返回: LangChain 工具对象（@tool），LLM 仅需提供 query 参数
-    工具异常时返回 JSON 错误信息（让 LLM 自行决定下一步），不抛给框架
-    """
-    import json
-
-    from langchain_core.tools import tool
-
-    @tool
-    async def rag(query: str) -> str:
-        """检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"""
-        try:
-            cits = await RAGTool.execute(db, user, config, query)
-        except HTTPException as e:
-            return json.dumps({"error": e.detail}, ensure_ascii=False)
-        citations_store.extend(cits)
-        return json.dumps([c.model_dump() for c in cits], ensure_ascii=False)
-
-    return rag
