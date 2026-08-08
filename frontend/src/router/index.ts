@@ -8,6 +8,7 @@ const DashboardView = () => import('@/views/dashboard/DashboardView.vue')
 const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue')
 const KnowledgeDetailView = () => import('@/views/knowledge/KnowledgeDetailView.vue')
 const AgentListView = () => import('@/views/agent/AgentListView.vue')
+const AgentChatView = () => import('@/views/agent/AgentChatView.vue')
 const ModelConfigView = () => import('@/views/settings/ModelConfigView.vue')
 
 const routes: RouteRecordRaw[] = [
@@ -45,6 +46,12 @@ const routes: RouteRecordRaw[] = [
         name: 'Agent',
         component: AgentListView,
         meta: { title: 'Agent', requiresAuth: true },
+      },
+      {
+        path: 'agent/:id/chat',
+        name: 'AgentChat',
+        component: AgentChatView,
+        meta: { title: '对话', requiresAuth: true },
       },
       {
         path: 'settings/model-config',
