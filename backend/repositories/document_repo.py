@@ -139,3 +139,47 @@ class DocumentRepo:
         result = await db.execute(stmt)
         await db.flush()
         return result.rowcount
+
+    @staticmethod
+    async def search_chunks(
+        db: AsyncSession,
+        kb_id: UUID,
+        query_vec: list[float],
+        top_k: int,
+    ) -> list[dict]:
+        """
+        RAG 向量检索：按余弦相似度查知识库中与 query_vec 最相近的分块
+
+        score = 1 - cosine_distance，越大越相似
+        仅检索启用状态（e.status=1, c.status=1）的分块
+        返回 [{chunk_id, content, filename, score}, ...]，按相似度降序
+        """
+        from backend.models import Chunks, Documents, Embeddings
+
+        q = (
+            select(
+                Chunks.id.label("chunk_id"),
+                Chunks.content,
+                Documents.filename,
+                (1 - Embeddings.embedding.cosine_distance(query_vec)).label("score"),
+            )
+            .join(Embeddings, Embeddings.chunk_id == Chunks.id)
+            .join(Documents, Documents.id == Chunks.document_id)
+            .where(
+                Embeddings.kb_id == kb_id,
+                Embeddings.status == 1,
+                Chunks.status == 1,
+            )
+            .order_by(Embeddings.embedding.cosine_distance(query_vec))
+            .limit(top_k)
+        )
+        rows = (await db.execute(q)).all()
+        return [
+            {
+                "chunk_id": r.chunk_id,
+                "content": r.content,
+                "filename": r.filename,
+                "score": float(r.score),
+            }
+            for r in rows
+        ]
