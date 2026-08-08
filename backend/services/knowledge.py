@@ -13,7 +13,8 @@ from uuid import UUID
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.config import PROJECT_ROOT, settings
+from backend.core.config import settings
+from backend.core.constants import UPLOAD_ROOT
 from backend.models import KnowledgeBases, UserModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo, UserModelConfigRepo
 from backend.schemas.knowledge import (
@@ -24,9 +25,6 @@ from backend.schemas.knowledge import (
     KnowledgeBaseUpdate,
     PaginatedResponse,
 )
-
-# 上传根目录（从 config.yaml 读取，相对于项目根）
-UPLOAD_ROOT = PROJECT_ROOT / settings.storage.upload_dir
 
 
 async def _ensure_model_config(

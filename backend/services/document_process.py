@@ -14,7 +14,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from backend.core.config import settings
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, UserModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo
-from backend.services.knowledge import UPLOAD_ROOT
+from backend.core.constants import UPLOAD_ROOT
 from backend.services.parsers import get_parser
 from backend.services.embedding import EmbeddingService
 

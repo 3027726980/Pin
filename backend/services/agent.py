@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
+from backend.core.constants import DEFAULT_SYSTEM_PROMPT
 from backend.core.utils import to_uuid
 from backend.models import GeneralAgents, KnowledgeBases, SimpleRagAgents, UserModelConfig, Users
 from backend.repositories import (
@@ -35,14 +36,6 @@ from backend.schemas.agent import (
     ToolConfig,
 )
 from backend.schemas.knowledge import BatchResult, PaginatedResponse
-
-# 默认 RAG 模板（{agent_name} 在创建时替换为实际名称）
-DEFAULT_SYSTEM_PROMPT = (
-    "你是「{agent_name}」，一个基于知识库回答问题的 AI 助手。\n"
-    "请仅依据提供的资料片段回答用户问题，引用资料时标注来源编号（如 [1]）。\n"
-    "如果资料不足以回答，请如实说明\"知识库中没有相关信息\"，不要编造。\n"
-    "回答使用中文，简洁准确。"
-)
 
 
 class AgentService:
