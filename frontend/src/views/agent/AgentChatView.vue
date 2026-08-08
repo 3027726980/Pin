@@ -35,7 +35,14 @@
                     <span class="citation-doc">《{{ c.document_name }}》</span>
                     <n-tag size="tiny" type="info" :bordered="false">相似度 {{ c.score.toFixed(2) }}</n-tag>
                   </div>
-                  <div class="citation-content">{{ c.content }}</div>
+                  <div class="citation-content" :class="{ expanded: isCitationExpanded(msg, i) }">{{ c.content }}</div>
+                  <div
+                    v-if="c.content && c.content.length > 100"
+                    class="citation-toggle"
+                    @click="toggleCitation(msg, i)"
+                  >
+                    {{ isCitationExpanded(msg, i) ? '收起 ▲' : '展开 ▼' }}
+                  </div>
                 </div>
               </n-collapse-item>
             </n-collapse>
@@ -85,6 +92,8 @@ import { getAgent, chatAgentStream, type AgentDetail, type ChatMessage, type Cha
 interface DisplayMessage extends ChatMessage {
   citations?: ChatCitation[]
   error?: boolean
+  /** 每条引用的展开状态（索引 → 是否展开） */
+  expandedCitations?: Record<number, boolean>
 }
 
 const route = useRoute()
@@ -173,6 +182,18 @@ function onInputKeydown(e: KeyboardEvent) {
 
 function clearChat() {
   messages.value = []
+}
+
+// ── 引用展开/收起 ───────────────────────
+function isCitationExpanded(msg: DisplayMessage, idx: number): boolean {
+  return !!msg.expandedCitations?.[idx]
+}
+
+function toggleCitation(msg: DisplayMessage, idx: number) {
+  if (!msg.expandedCitations) {
+    msg.expandedCitations = {}
+  }
+  msg.expandedCitations[idx] = !msg.expandedCitations[idx]
 }
 </script>
 
@@ -269,6 +290,22 @@ function clearChat() {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+.citation-content.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  white-space: pre-wrap;
+}
+.citation-toggle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #2080f0;
+  cursor: pointer;
+  user-select: none;
+}
+.citation-toggle:hover {
+  opacity: 0.8;
 }
 
 .streaming-cursor {
