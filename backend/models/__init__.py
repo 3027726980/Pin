@@ -10,20 +10,22 @@ from .ModelProviders import ModelProviders
 from .ModelTypes import ModelTypes
 from .DefaultModelConfig import DefaultModelConfig
 from .UserModelConfig import UserModelConfig
-from .Agents import Agents
+from .SimpleRagAgents import SimpleRagAgents
+from .GeneralAgents import GeneralAgents
 
 __all__ = [
     "AccessTokenWhitelist",
-    "Agents",
     "Base",
     "Chunks",
     "DefaultModelConfig",
     "Documents",
     "Embeddings",
+    "GeneralAgents",
     "KnowledgeBases",
     "ModelProviders",
     "ModelTypes",
     "RefreshTokenWhitelist",
+    "SimpleRagAgents",
     "UserModelConfig",
     "Users",
 ]

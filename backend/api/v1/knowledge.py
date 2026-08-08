@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.deps import get_current_user
 from backend.core.config import settings
 from backend.core.database import get_db
+from backend.core.utils import parse_page, parse_page_size
 from backend.models import Users
 from backend.schemas.common import SuccessResponse
 from backend.schemas.knowledge import (
@@ -32,31 +33,7 @@ from backend.services.knowledge import _get_kb_for_user
 router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["知识库"])
 
 
-# ── 工具函数 ────────────────────────────
-
-def _parse_page(raw: str) -> int:
-    """安全解析分页参数：空/非数字 → py出默认值"""
-    val = raw.strip() if raw else ""
-    if not val:
-        return settings.pagination.default_page
-    try:
-        n = int(val)
-        return n if n > 0 else settings.pagination.default_page
-    except ValueError:
-        return settings.pagination.default_page
-
-
-def _parse_page_size(raw: str) -> int:
-    """安全解析每页条数：空/非数字 → py出默认值，上限受 max_page_size 约束"""
-    val = raw.strip() if raw else ""
-    if not val:
-        return settings.pagination.default_page_size
-    try:
-        n = int(val)
-        n = n if n > 0 else settings.pagination.default_page_size
-        return min(n, settings.pagination.max_page_size)
-    except ValueError:
-        return settings.pagination.default_page_size
+# ── 分页解析：使用 backend/core/utils.py 公共函数 parse_page / parse_page_size ──
 
 
 # ── 知识库 CRUD ────────────────────────
@@ -69,7 +46,7 @@ async def list_kb(
     user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.list_by_user(
-        db, user, _parse_page(page), _parse_page_size(page_size)
+        db, user, parse_page(page), parse_page_size(page_size)
     )
     return SuccessResponse(result=result)
 
@@ -228,7 +205,7 @@ async def list_files(
     user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.list_files(
-        db, user, kb_id, _parse_page(page), _parse_page_size(page_size)
+        db, user, kb_id, parse_page(page), parse_page_size(page_size)
     )
     return SuccessResponse(result=result)
 

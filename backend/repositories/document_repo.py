@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models import Chunks, Documents, Embeddings
 from backend.models import Documents
 
 
@@ -154,7 +155,6 @@ class DocumentRepo:
         仅检索启用状态（e.status=1, c.status=1）的分块
         返回 [{chunk_id, content, filename, score}, ...]，按相似度降序
         """
-        from backend.models import Chunks, Documents, Embeddings
 
         q = (
             select(

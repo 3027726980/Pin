@@ -1,34 +1,52 @@
 """
 Agent 请求/响应 Schema
 
-- AgentCreate / AgentUpdate：创建/编辑请求
-- ToolConfig：工具配置（type + 自带参数），Agent 持有工具列表
-- AgentResponse：详情 + 创建/编辑 响应（含工具 kb 名称、LLM 配置摘要）
-- AgentListItem：列表响应（精简，仅表格需要）
-- ChatRequest / ChatResponse / Citation：RAG 对话
+Agent 分类（type 字段区分，不同表存储）：
+  - simple_rag：简单 RAG Agent，仅 RAG 功能，知识库直接绑定（kb_id/top_k/score_threshold 为表字段）
+  - general：综合 Agent，能力以工具列表注册（tools JSONB）
+  - workflow：MVP 不做，后续新增
+
+请求：AgentCreate 为 discriminated union（按 type 精确校验各类型必填字段）
+响应：统一结构（type + 各类型字段可空），前端按 type 渲染
 """
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal, Union
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
-# ── 工具配置 ────────────────────────────
+# ── 工具配置（general Agent 用）─────────
 
 class ToolConfig(BaseModel):
     """工具配置：MVP 仅 rag（知识库检索），扩展新工具时扩充 type 并加字段"""
     type: Literal["rag"]
     kb_id: UUID = Field(..., description="rag 工具绑定的知识库 ID")
-    top_k: int = Field(5, ge=1, le=50, description="检索返回块数")
-    score_threshold: float = Field(0.3, ge=0.0, le=1.0, description="相似度阈值（余弦相似度，低于则丢弃）")
+    top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
+    score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
     kb_name: str | None = Field(None, description="响应补全：知识库名称（请求时忽略）")
 
 
-# ── Agent CRUD ──────────────────────────
+# ── 创建请求（discriminated union）──────
 
-class AgentCreate(BaseModel):
-    """创建 Agent"""
+class SimpleRagAgentCreate(BaseModel):
+    """简单 RAG Agent：仅 RAG 功能，知识库直接绑定"""
+    type: Literal["simple_rag"] = "simple_rag"
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str | None = None
+    kb_id: UUID = Field(..., description="绑定的知识库 ID")
+    llm_config_id: UUID = Field(..., description="LLM 模型配置 ID（model_type=2）")
+    top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
+    score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
+    system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    top_p: float = Field(0.9, ge=0.0, le=1.0)
+    welcome_message: str | None = Field(None, max_length=500)
+
+
+class GeneralAgentCreate(BaseModel):
+    """综合 Agent：能力以工具列表注册"""
+    type: Literal["general"] = "general"
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = None
     llm_config_id: UUID = Field(..., description="LLM 模型配置 ID（model_type=2）")
@@ -39,12 +57,23 @@ class AgentCreate(BaseModel):
     welcome_message: str | None = Field(None, max_length=500)
 
 
+AgentCreate = Annotated[
+    Union[SimpleRagAgentCreate, GeneralAgentCreate],
+    Field(discriminator="type"),
+]
+
+
+# ── 编辑请求（统一结构，全部可选）──────
+
 class AgentUpdate(BaseModel):
-    """编辑 Agent（全部可选）"""
+    """编辑 Agent（全部可选；type 不可改，后端按库中类型更新对应表）"""
     name: str | None = Field(None, min_length=1, max_length=200)
     description: str | None = None
     llm_config_id: UUID | None = None
-    tools: list[ToolConfig] | None = Field(None, min_length=1, description="工具配置列表，整体替换")
+    kb_id: UUID | None = Field(None, description="simple_rag 类型专用")
+    top_k: int | None = Field(None, ge=1, le=50)
+    score_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    tools: list[ToolConfig] | None = Field(None, min_length=1, description="general 类型专用，整体替换")
     system_prompt: str | None = None
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     top_p: float | None = Field(None, ge=0.0, le=1.0)
@@ -52,14 +81,21 @@ class AgentUpdate(BaseModel):
     status: int | None = Field(None, ge=0, le=9)
 
 
+# ── 响应 ────────────────────────────────
+
 class AgentResponse(BaseModel):
-    """Agent 详情/创建/编辑 响应"""
+    """Agent 详情/创建/编辑 响应（统一结构，按 type 填充对应字段）"""
     id: UUID
+    type: Literal["simple_rag", "general"]
     name: str
     description: str | None
     llm_config_id: UUID
     llm_provider: str | None = None
     llm_model: str | None = None
+    kb_id: UUID | None = None
+    kb_name: str | None = None
+    top_k: int | None = None
+    score_threshold: float | None = None
     tools: list[ToolConfig] = []
     system_prompt: str
     temperature: float
@@ -75,9 +111,12 @@ class AgentResponse(BaseModel):
 class AgentListItem(BaseModel):
     """Agent 列表项（仅表格需要）"""
     id: UUID
+    type: Literal["simple_rag", "general"]
     name: str
     description: str | None
     llm_model: str | None = None
+    kb_id: UUID | None = None
+    kb_name: str | None = None
     tools: list[ToolConfig] = []
     status: int
     created_at: datetime
@@ -91,7 +130,7 @@ class BatchAgentAction(BaseModel):
     action: Literal["enable", "disable", "delete"]
 
 
-# ── RAG 对话 ────────────────────────────
+# ── 对话 ────────────────────────────────
 
 class ChatMessage(BaseModel):
     """对话历史消息"""

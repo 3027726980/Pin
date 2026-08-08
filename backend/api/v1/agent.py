@@ -12,8 +12,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import get_current_user
-from backend.core.config import settings
 from backend.core.database import get_db
+from backend.core.utils import parse_page, parse_page_size
 from backend.models import Users
 from backend.schemas.agent import (
     AgentCreate,
@@ -30,49 +30,23 @@ from backend.services.chat import ChatService
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 
 
-# ── 工具函数 ────────────────────────────
-
-def _parse_page(raw: str) -> int:
-    """安全解析分页参数：空/非数字 → 默认值"""
-    val = raw.strip() if raw else ""
-    if not val:
-        return settings.pagination.default_page
-    try:
-        n = int(val)
-        return n if n > 0 else settings.pagination.default_page
-    except ValueError:
-        return settings.pagination.default_page
-
-
-def _parse_page_size(raw: str) -> int:
-    """安全解析每页条数：上限受 max_page_size 约束"""
-    val = raw.strip() if raw else ""
-    if not val:
-        return settings.pagination.default_page_size
-    try:
-        n = int(val)
-        n = n if n > 0 else settings.pagination.default_page_size
-        return min(n, settings.pagination.max_page_size)
-    except ValueError:
-        return settings.pagination.default_page_size
-
-
 # ── CRUD ────────────────────────────────
 
-@router.get("", response_model=SuccessResponse[PaginatedResponse], summary="获取当前用户的 Agent 列表", description="自动过滤已删除(status=9)的记录，按创建时间倒序")
+@router.get("", response_model=SuccessResponse[PaginatedResponse], summary="获取当前用户的 Agent 列表", description="自动过滤已删除(status=9)的记录，按创建时间倒序；type 可选：simple_rag / general")
 async def list_agents(
     page: str = Query("", description="页码，默认 1"),
     page_size: str = Query("", description="每页条数，默认 20"),
+    type: str | None = Query(None, description="Agent 类型筛选：simple_rag / general"),
     db: AsyncSession = Depends(get_db),
     user: Users = Depends(get_current_user),
 ):
     result = await AgentService.list_by_user(
-        db, user, _parse_page(page), _parse_page_size(page_size)
+        db, user, parse_page(page), parse_page_size(page_size), type
     )
     return SuccessResponse(result=result)
 
 
-@router.post("", response_model=SuccessResponse[AgentResponse], summary="创建新 Agent", description="绑定知识库 + LLM 模型配置，支持检索/采样参数")
+@router.post("", response_model=SuccessResponse[AgentResponse], summary="创建新 Agent", description="type=simple_rag（知识库直接绑定）或 general（工具注册）；校验 LLM 配置与知识库归属")
 async def create_agent(
     body: AgentCreate,
     db: AsyncSession = Depends(get_db),

@@ -1,0 +1,48 @@
+from sqlalchemy import Float, ForeignKey, SmallInteger, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+from uuid import UUID
+
+from backend.models.Base import Base
+
+
+class GeneralAgents(Base):
+    """综合 Agent：RAG 等能力以工具形式注册，可组合多个工具"""
+
+    __tablename__ = "general_agents"
+    __table_args__ = {"comment": "综合 Agent 表：能力以工具列表（tools JSONB）形式注册"}
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id"), nullable=False, comment="创建者用户 ID"
+    )
+    name: Mapped[str] = mapped_column(
+        String(200), nullable=False, comment="Agent 名称"
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="描述"
+    )
+    llm_config_id: Mapped[UUID] = mapped_column(
+        ForeignKey("user_model_config.id"), nullable=False, comment="LLM 模型配置 ID（model_type=2）"
+    )
+    tools: Mapped[list] = mapped_column(
+        JSONB, default=list, nullable=False,
+        comment='工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]',
+    )
+    system_prompt: Mapped[str] = mapped_column(
+        Text, nullable=False, comment="系统提示词（RAG 模板，可编辑）"
+    )
+    temperature: Mapped[float] = mapped_column(
+        Float, default=0.7, nullable=False, comment="LLM 温度"
+    )
+    top_p: Mapped[float] = mapped_column(
+        Float, default=0.9, nullable=False, comment="LLM 核采样"
+    )
+    welcome_message: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, comment="欢迎语（Phase 5 浮窗使用）"
+    )
+    status: Mapped[int] = mapped_column(
+        SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=软删除"
+    )
+
+    def __repr__(self) -> str:
+        return f"<GeneralAgents(id={self.id}, name={self.name})>"

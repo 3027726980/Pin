@@ -1,14 +1,15 @@
 from sqlalchemy import Float, ForeignKey, Integer, SmallInteger, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid import UUID
 
 from backend.models.Base import Base
 
 
-class Agents(Base):
-    __tablename__ = "agents"
-    __table_args__ = {"comment": "Agent 表：LLM 配置 + 工具列表（工具自带配置）的可对话实体"}
+class SimpleRagAgents(Base):
+    """简单 RAG Agent：仅有知识库检索（RAG）功能，知识库直接绑定为字段"""
+
+    __tablename__ = "simple_rag_agents"
+    __table_args__ = {"comment": "简单 RAG Agent 表：仅 RAG 功能，知识库直接绑定"}
 
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False, comment="创建者用户 ID"
@@ -19,12 +20,17 @@ class Agents(Base):
     description: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="描述"
     )
+    kb_id: Mapped[UUID] = mapped_column(
+        ForeignKey("knowledge_bases.id"), nullable=False, comment="绑定的知识库 ID"
+    )
     llm_config_id: Mapped[UUID] = mapped_column(
         ForeignKey("user_model_config.id"), nullable=False, comment="LLM 模型配置 ID（model_type=2）"
     )
-    tools: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False,
-        comment='工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]',
+    top_k: Mapped[int] = mapped_column(
+        Integer, default=5, nullable=False, comment="检索返回块数（默认取 config.yaml tools.default_top_k）"
+    )
+    score_threshold: Mapped[float] = mapped_column(
+        Float, default=0.3, nullable=False, comment="相似度阈值（默认取 config.yaml tools.default_score_threshold）"
     )
     system_prompt: Mapped[str] = mapped_column(
         Text, nullable=False, comment="系统提示词（RAG 模板，可编辑）"
@@ -43,4 +49,4 @@ class Agents(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Agents(id={self.id}, name={self.name})>"
+        return f"<SimpleRagAgents(id={self.id}, name={self.name})>"

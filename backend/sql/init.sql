@@ -1,7 +1,7 @@
 -- ============================================================
 -- Pin 数据库初始化脚本
 -- 数据库: PostgreSQL 17 + pgvector
--- 版本  : v0.5.1 (Phase 4)
+-- 版本  : v0.6 (Phase 4)
 -- ============================================================
 
 -- 1. 扩展
@@ -331,12 +331,50 @@ COMMENT ON INDEX idx_umc_user_id                IS '按用户查询索引';
 COMMENT ON INDEX idx_umc_type                   IS '按类型查询索引：快速找 embedding 或 LLM 配置';
 
 -- ============================================================
--- 12. Agent 表
---      Phase 4：Agent 绑定 LLM 配置 + 工具列表（工具自带配置）
---      tools JSONB: [{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]
---      迁移来源：006（建表）+ 007（工具化重构：kb_id/top_k/score_threshold 移入 tools）
+-- 12. Agent 表（分类分表）
+--      Phase 4：Agent 按类型分表存储（字段需求不同）
+--      simple_rag_agents：简单 RAG Agent，仅 RAG 功能，知识库直接绑定
+--      general_agents：综合 Agent，能力以工具列表注册（tools JSONB）
+--      workflow：预留，MVP 不做
+--      迁移来源：006（建表）→ 007（工具化）→ 008（分类分表）
 -- ============================================================
-CREATE TABLE IF NOT EXISTS agents (
+CREATE TABLE IF NOT EXISTS simple_rag_agents (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id          UUID         NOT NULL REFERENCES users(id),
+    name             VARCHAR(200) NOT NULL,
+    description      TEXT,
+    kb_id            UUID         NOT NULL REFERENCES knowledge_bases(id),
+    llm_config_id    UUID         NOT NULL REFERENCES user_model_config(id),
+    top_k            INT          NOT NULL DEFAULT 5,
+    score_threshold  FLOAT        NOT NULL DEFAULT 0.3,
+    system_prompt    TEXT         NOT NULL,
+    temperature      FLOAT        NOT NULL DEFAULT 0.7,
+    top_p            FLOAT        NOT NULL DEFAULT 0.9,
+    welcome_message  VARCHAR(500),
+    status           SMALLINT     NOT NULL DEFAULT 1,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sra_user   ON simple_rag_agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_sra_kb     ON simple_rag_agents(kb_id);
+CREATE INDEX IF NOT EXISTS idx_sra_status ON simple_rag_agents(status);
+
+COMMENT ON TABLE simple_rag_agents IS '简单 RAG Agent 表：仅 RAG 功能，知识库直接绑定';
+COMMENT ON COLUMN simple_rag_agents.user_id IS '创建者用户 ID';
+COMMENT ON COLUMN simple_rag_agents.name IS 'Agent 名称';
+COMMENT ON COLUMN simple_rag_agents.description IS '描述';
+COMMENT ON COLUMN simple_rag_agents.kb_id IS '绑定的知识库 ID';
+COMMENT ON COLUMN simple_rag_agents.llm_config_id IS 'LLM 模型配置 ID（user_model_config.model_type=2）';
+COMMENT ON COLUMN simple_rag_agents.top_k IS '检索返回块数（默认取 config.yaml tools.default_top_k）';
+COMMENT ON COLUMN simple_rag_agents.score_threshold IS '相似度阈值（默认取 config.yaml tools.default_score_threshold）';
+COMMENT ON COLUMN simple_rag_agents.system_prompt IS '系统提示词（RAG 模板，可编辑）';
+COMMENT ON COLUMN simple_rag_agents.temperature IS 'LLM 温度';
+COMMENT ON COLUMN simple_rag_agents.top_p IS 'LLM 核采样';
+COMMENT ON COLUMN simple_rag_agents.welcome_message IS '欢迎语（Phase 5 浮窗使用）';
+COMMENT ON COLUMN simple_rag_agents.status IS '0=禁用, 1=启用, 9=软删除';
+
+CREATE TABLE IF NOT EXISTS general_agents (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id         UUID          NOT NULL REFERENCES users(id),
     name            VARCHAR(200)  NOT NULL,
@@ -352,17 +390,17 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_agents_user   ON agents(user_id);
-CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+CREATE INDEX IF NOT EXISTS idx_general_agents_user   ON general_agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_general_agents_status ON general_agents(status);
 
-COMMENT ON TABLE agents                    IS 'Agent 表：LLM 配置 + 工具列表（工具自带配置）的可对话实体';
-COMMENT ON COLUMN agents.user_id           IS '创建者用户 ID';
-COMMENT ON COLUMN agents.name              IS 'Agent 名称';
-COMMENT ON COLUMN agents.description       IS '描述';
-COMMENT ON COLUMN agents.llm_config_id     IS 'LLM 模型配置 ID（user_model_config.model_type=2）';
-COMMENT ON COLUMN agents.tools             IS '工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]';
-COMMENT ON COLUMN agents.system_prompt     IS '系统提示词（RAG 模板，可编辑）';
-COMMENT ON COLUMN agents.temperature       IS 'LLM 温度';
-COMMENT ON COLUMN agents.top_p             IS 'LLM 核采样';
-COMMENT ON COLUMN agents.welcome_message   IS '欢迎语（Phase 5 浮窗使用）';
-COMMENT ON COLUMN agents.status            IS '0=禁用, 1=启用, 9=软删除';
+COMMENT ON TABLE general_agents IS '综合 Agent 表：能力以工具列表（tools JSONB）形式注册';
+COMMENT ON COLUMN general_agents.user_id IS '创建者用户 ID';
+COMMENT ON COLUMN general_agents.name IS 'Agent 名称';
+COMMENT ON COLUMN general_agents.description IS '描述';
+COMMENT ON COLUMN general_agents.llm_config_id IS 'LLM 模型配置 ID（user_model_config.model_type=2）';
+COMMENT ON COLUMN general_agents.tools IS '工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]';
+COMMENT ON COLUMN general_agents.system_prompt IS '系统提示词（RAG 模板，可编辑）';
+COMMENT ON COLUMN general_agents.temperature IS 'LLM 温度';
+COMMENT ON COLUMN general_agents.top_p IS 'LLM 核采样';
+COMMENT ON COLUMN general_agents.welcome_message IS '欢迎语（Phase 5 浮窗使用）';
+COMMENT ON COLUMN general_agents.status IS '0=禁用, 1=启用, 9=软删除';
