@@ -76,7 +76,7 @@ class RAGTool(BaseTool):
                 return json.dumps({"error": e.detail}, ensure_ascii=False)
             if citations_store is not None:
                 citations_store.extend(cits)
-            return json.dumps([c.model_dump() for c in cits], ensure_ascii=False)
+            return json.dumps([c.model_dump(mode="json") for c in cits], ensure_ascii=False)
 
         return rag
 
