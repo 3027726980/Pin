@@ -6,7 +6,7 @@ MVP 仅支持 openai（OpenAI 兼容协议，base_url 可覆盖为任意兼容�
 """
 import logging
 from collections.abc import AsyncIterator
-
+from openai import AsyncOpenAI
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +64,7 @@ class LLMService:
 
 def _build_client(api_key: str, base_url: str | None):
     """构建 AsyncOpenAI 客户端（base_url 为空则用官方地址）"""
-    from openai import AsyncOpenAI
+
 
     return AsyncOpenAI(
         api_key=api_key,
