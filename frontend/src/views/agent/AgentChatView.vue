@@ -13,7 +13,11 @@
           </n-tag>
           <span class="chat-name">{{ agent?.name || '加载中...' }}</span>
         </div>
-        <n-button size="small" quaternary @click="clearChat">清空</n-button>
+        <div class="chat-header-right">
+          <span class="stream-option">流式输出</span>
+          <n-switch v-model:value="streamMode" size="small" />
+          <n-button size="small" quaternary @click="clearChat">清空</n-button>
+        </div>
       </div>
     </n-card>
 
@@ -87,7 +91,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowBackOutline, SendOutline, StopOutline } from '@vicons/ionicons5'
-import { getAgent, chatAgentStream, type AgentDetail, type ChatMessage, type ChatCitation } from '@/api/agent'
+import { getAgent, chatAgent, chatAgentStream, type AgentDetail, type ChatMessage, type ChatCitation } from '@/api/agent'
 
 interface DisplayMessage extends ChatMessage {
   citations?: ChatCitation[]
@@ -107,6 +111,8 @@ const messages = ref<DisplayMessage[]>([])
 const inputText = ref('')
 const sending = ref(false)
 const streaming = ref(false)
+// 流式输出开关（默认开启；关闭时走非流式一次性返回）
+const streamMode = ref(true)
 let abortCtrl: AbortController | null = null
 
 // ── 加载 Agent 信息 ──────────────────────
@@ -137,6 +143,23 @@ async function send() {
   streaming.value = true
   sending.value = true
   abortCtrl = new AbortController()
+
+  // 非流式：一次性返回 answer + citations
+  if (!streamMode.value) {
+    try {
+      const res = await chatAgent(agentId, { message: text, history })
+      assistantMsg.content = res.answer
+      assistantMsg.citations = res.citations
+    } catch (e) {
+      assistantMsg.error = true
+      assistantMsg.content = `[错误] ${(e as Error).message}`
+    } finally {
+      streaming.value = false
+      sending.value = false
+      abortCtrl = null
+    }
+    return
+  }
 
   try {
     await chatAgentStream(
@@ -211,6 +234,15 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.stream-option {
+  font-size: 13px;
+  color: var(--n-text-color-3);
 }
 .chat-title {
   display: flex;
