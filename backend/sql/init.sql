@@ -1,7 +1,7 @@
 -- ============================================================
 -- Pin 数据库初始化脚本
 -- 数据库: PostgreSQL 17 + pgvector
--- 版本  : v0.2 (Phase 2)
+-- 版本  : v0.5.1 (Phase 4)
 -- ============================================================
 
 -- 1. 扩展
@@ -329,3 +329,40 @@ COMMENT ON COLUMN user_model_config.dimension    IS '向量维度（embedding �
 COMMENT ON COLUMN user_model_config.is_active    IS '是否启用。向量化时只取 active 且 model_type=1 的';
 COMMENT ON INDEX idx_umc_user_id                IS '按用户查询索引';
 COMMENT ON INDEX idx_umc_type                   IS '按类型查询索引：快速找 embedding 或 LLM 配置';
+
+-- ============================================================
+-- 12. Agent 表
+--      Phase 4：Agent 绑定 LLM 配置 + 工具列表（工具自带配置）
+--      tools JSONB: [{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]
+--      迁移来源：006（建表）+ 007（工具化重构：kb_id/top_k/score_threshold 移入 tools）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agents (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id         UUID          NOT NULL REFERENCES users(id),
+    name            VARCHAR(200)  NOT NULL,
+    description     TEXT,
+    llm_config_id   UUID          NOT NULL REFERENCES user_model_config(id),
+    tools           JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    system_prompt   TEXT          NOT NULL,
+    temperature     FLOAT         NOT NULL DEFAULT 0.7,
+    top_p           FLOAT         NOT NULL DEFAULT 0.9,
+    welcome_message VARCHAR(500),
+    status          SMALLINT      NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_user   ON agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+
+COMMENT ON TABLE agents                    IS 'Agent 表：LLM 配置 + 工具列表（工具自带配置）的可对话实体';
+COMMENT ON COLUMN agents.user_id           IS '创建者用户 ID';
+COMMENT ON COLUMN agents.name              IS 'Agent 名称';
+COMMENT ON COLUMN agents.description       IS '描述';
+COMMENT ON COLUMN agents.llm_config_id     IS 'LLM 模型配置 ID（user_model_config.model_type=2）';
+COMMENT ON COLUMN agents.tools             IS '工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]';
+COMMENT ON COLUMN agents.system_prompt     IS '系统提示词（RAG 模板，可编辑）';
+COMMENT ON COLUMN agents.temperature       IS 'LLM 温度';
+COMMENT ON COLUMN agents.top_p             IS 'LLM 核采样';
+COMMENT ON COLUMN agents.welcome_message   IS '欢迎语（Phase 5 浮窗使用）';
+COMMENT ON COLUMN agents.status            IS '0=禁用, 1=启用, 9=软删除';
