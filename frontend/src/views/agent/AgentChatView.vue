@@ -88,7 +88,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowBackOutline, SendOutline, StopOutline } from '@vicons/ionicons5'
 import { getAgent, chatAgent, chatAgentStream, type AgentDetail, type ChatMessage, type ChatCitation } from '@/api/agent'
@@ -136,8 +136,8 @@ async function send() {
   // 组装 history（最近 10 条，不含刚加入的这条）
   const history: ChatMessage[] = messages.value.slice(-11, -1).map(m => ({ role: m.role, content: m.content }))
 
-  // 占位助手消息（流式追加内容）
-  const assistantMsg: DisplayMessage = { role: 'assistant', content: '', citations: [] }
+  // 占位助手消息（reactive：push 的是代理本身，流式增量修改实时触发视图更新）
+  const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [] })
   messages.value.push(assistantMsg)
 
   streaming.value = true
