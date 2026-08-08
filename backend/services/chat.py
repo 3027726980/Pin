@@ -165,7 +165,7 @@ class ChatService:
             yield {"type": "done"}
             return
 
-        yield {"type": "citations", "citations": [c.model_dump() for c in citations]}
+        yield {"type": "citations", "citations": [c.model_dump(mode="json") for c in citations]}
         yield {"type": "done"}
 
     # ═══════════════════════════════════════════════
@@ -247,7 +247,7 @@ class ChatService:
             yield {"type": "done"}
             return
 
-        yield {"type": "citations", "citations": [c.model_dump() for c in citations_store]}
+        yield {"type": "citations", "citations": [c.model_dump(mode="json") for c in citations_store]}
         yield {"type": "done"}
 
     # ═══════════════════════════════════════════════
