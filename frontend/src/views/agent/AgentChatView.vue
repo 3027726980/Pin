@@ -226,7 +226,9 @@ async function send() {
           assistantMsg.citations = event.citations.filter((_, i) => used.has(i + 1))
         } else if (event.type === 'error') {
           assistantMsg.error = true
-          assistantMsg.content = (assistantMsg.content || '') + `\n[错误] ${event.message}`
+          // 已有内容时换行分隔错误信息，空内容时不加换行
+          const sep = assistantMsg.content ? '\n' : ''
+          assistantMsg.content = assistantMsg.content + sep + `[错误] ${event.message}`
         }
       },
       abortCtrl.signal,
@@ -236,7 +238,9 @@ async function send() {
       // 用户主动停止：保留已输出内容
     } else {
       assistantMsg.error = true
-      assistantMsg.content = (assistantMsg.content || '') + `\n[错误] ${(e as Error).message}`
+      // 已有内容时换行分隔错误信息，空内容时不加换行
+      const sep = assistantMsg.content ? '\n' : ''
+      assistantMsg.content = assistantMsg.content + sep + `[错误] ${(e as Error).message}`
     }
   } finally {
     streaming.value = false
