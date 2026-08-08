@@ -84,7 +84,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const typeFilter = ref<'' | AgentType>('')
-const checkedRowKeys = ref<string[]>([])
+const checkedRowKeys = ref<(string | number)[]>([])
 
 // ── 弹窗状态 ────────────────────────────
 const modalShow = ref(false)
@@ -243,7 +243,7 @@ async function handleToggleStatus(row: AgentListItem, enabled: boolean) {
 async function batchAction(action: 'enable' | 'disable' | 'delete') {
   if (checkedRowKeys.value.length === 0) return
   try {
-    const res = await batchAgents([...checkedRowKeys.value], action)
+    const res = await batchAgents(checkedRowKeys.value.map(String), action)
     const label = { enable: '批量启用', disable: '批量禁用', delete: '批量删除' }[action]
     message.success(`${label}完成：成功 ${res.success_count}，失败 ${res.fail_count}`)
     checkedRowKeys.value = []
