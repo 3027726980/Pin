@@ -13,7 +13,7 @@ from backend.core.security import hash_password
 from backend.core.config import settings
 from backend.models import Users, ModelProviders, ModelTypes, DefaultModelConfig
 from backend.repositories import UserRepo
-from backend.api.v1 import auth_router, knowledge_router, user_model_config_router
+from backend.api.v1 import agent_router, auth_router, knowledge_router, user_model_config_router
 
 
 # ── 种子管理员 ──────────────────────────────────────
@@ -107,6 +107,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 # ── 注册路由 ────────────────────────────────────────
+app.include_router(agent_router)
 app.include_router(auth_router)
 app.include_router(knowledge_router)
 app.include_router(user_model_config_router)
