@@ -62,3 +62,9 @@ backend/scripts-dev/
 
 # 本地模型缓存
 backend/embedding_models/
+
+# 本地开发规范（个人使用，不提交）
+AGENTS.md
+
+# Windows 误创建的设备名文件
+nul
