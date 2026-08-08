@@ -1,16 +1,18 @@
 """
-Agent 业务逻辑（分类分表，统一入口）
+Agent 业务逻辑（分类分表 + 索引表，统一入口）
 
-类型：
-  - simple_rag：SimpleRagAgentRepo（simple_rag_agents 表，知识库直接绑定）
-  - general：GeneralAgentRepo（general_agents 表，工具注册）
+数据模型：
+  - agent_index：索引表（所有 Agent 基础信息，id 与类型表共用）—— 列表/定位走此表
+  - simple_rag_agents：简单 RAG Agent 类型表（知识库直接绑定）
+  - general_agents：综合 Agent 类型表（工具注册）
   - workflow：预留，MVP 不做
 
+一致性：创建/编辑/删除时事务内双写（索引表 + 类型表），id 共用。
 校验：LLM 配置归属且 model_type=2；simple_rag 的知识库 / general 工具中的知识库归属当前用户
 默认 system_prompt：不传时使用 RAG 模板（{agent_name} 占位替换）
 默认检索参数：top_k / score_threshold 不传时取 config.yaml tools 节点
 """
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -18,9 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.constants import DEFAULT_SYSTEM_PROMPT
-from backend.core.utils import to_uuid
 from backend.models import GeneralAgents, KnowledgeBases, SimpleRagAgents, UserModelConfig, Users
 from backend.repositories import (
+    AgentIndexRepo,
     GeneralAgentRepo,
     KnowledgeBaseRepo,
     SimpleRagAgentRepo,
@@ -52,7 +54,7 @@ class AgentService:
         data: AgentCreate,
     ) -> AgentResponse:
         """
-        创建 Agent（按 type 分发到不同表）
+        创建 Agent（按 type 分发到不同类型表，事务内双写索引表）
 
         校验：LLM 配置归属且 model_type=2；知识库归属（simple_rag 的 kb_id / general 工具的 kb_id）
         """
@@ -71,57 +73,63 @@ class AgentService:
         type_filter: str | None = None,
     ) -> PaginatedResponse:
         """
-        当前用户的 Agent 列表（分页，可按 type 筛选）
+        当前用户的 Agent 列表（索引表单表 SQL 分页，可按 type 筛选）
 
-        两种类型各查各表，合并后按创建时间倒序分页
+        展示字段（llm_model / kb_name / tools）按类型批量查类型表补全
         """
         if type_filter not in (None, "simple_rag", "general"):
             raise HTTPException(status_code=400, detail=f"不支持的 Agent 类型: {type_filter}")
 
-        simple_items = []
-        general_items = []
-        if type_filter in (None, "simple_rag"):
-            simple_items, _ = await SimpleRagAgentRepo.list_by_user(db, user.id, 1, 100000)
-        if type_filter in (None, "general"):
-            general_items, _ = await GeneralAgentRepo.list_by_user(db, user.id, 1, 100000)
+        items, total = await AgentIndexRepo.list_by_user(db, user.id, page, page_size, type_filter)
 
-        # 合并 + 按创建时间倒序
-        all_items: list = sorted(
-            [("simple_rag", a) for a in simple_items] + [("general", a) for a in general_items],
-            key=lambda x: x[1].created_at,
-            reverse=True,
+        # 按类型批量查类型表（补 llm_config_id / kb_id / tools 等详情）
+        detail_map: dict[UUID, object] = {}
+        type_ids: dict[str, list[UUID]] = {}
+        for it in items:
+            type_ids.setdefault(it.type, []).append(it.id)
+        for t, ids in type_ids.items():
+            model = SimpleRagAgents if t == "simple_rag" else GeneralAgents
+            rows = (await db.execute(select(model).where(model.id.in_(ids)))).scalars().all()
+            for r in rows:
+                detail_map[r.id] = r
+
+        # 展示字段收集
+        llm_models = await AgentService._llm_model_map(
+            db, user.id, [detail_map[i.id].llm_config_id for i in items if i.id in detail_map]
         )
-        total = len(all_items)
-        paged = all_items[(page - 1) * page_size : page * page_size]
-
-        # simple_rag：kb_id 直接查名称；general：工具声明引用（kb_id）查名称后补全
         from backend.tools import ToolRegistry
 
-        simple_kb_ids = [a.kb_id for atype, a in paged if atype == "simple_rag"]
+        simple_kb_ids = [
+            detail_map[i.id].kb_id for i in items
+            if i.type == "simple_rag" and i.id in detail_map
+        ]
         simple_kb_names = await AgentService._kb_name_map(db, user.id, simple_kb_ids)
-        general_tools = [t for _, a in paged if hasattr(a, "tools") for t in a.tools]
+        general_tools = [
+            t for i in items if i.id in detail_map and hasattr(detail_map[i.id], "tools")
+            for t in detail_map[i.id].tools
+        ]
         refs = ToolRegistry.collect_refs(general_tools)
         ref_names: dict = {}
         if refs.get("kb_id"):
             ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
-        llm_models = await AgentService._llm_model_map(db, user.id, [a.llm_config_id for _, a in paged])
 
         result_items = []
-        for atype, a in paged:
+        for it in items:
+            detail = detail_map.get(it.id)
             item = AgentListItem(
-                id=a.id,
-                type=atype,
-                name=a.name,
-                description=a.description,
-                llm_model=llm_models.get(a.llm_config_id),
-                status=a.status,
-                created_at=a.created_at,
+                id=it.id,
+                type=it.type,
+                name=it.name,
+                description=it.description,
+                llm_model=llm_models.get(detail.llm_config_id) if detail else None,
+                status=it.status,
+                created_at=it.created_at,
             )
-            if atype == "simple_rag":
-                item.kb_id = a.kb_id
-                item.kb_name = simple_kb_names.get(a.kb_id)
-            else:
-                item.tools = ToolRegistry.enrich_tools(a.tools, ref_names)
+            if it.type == "simple_rag" and detail:
+                item.kb_id = detail.kb_id
+                item.kb_name = simple_kb_names.get(detail.kb_id)
+            elif it.type == "general" and detail:
+                item.tools = ToolRegistry.enrich_tools(detail.tools, ref_names)
             result_items.append(item)
 
         return PaginatedResponse(
@@ -138,7 +146,7 @@ class AgentService:
         agent_id: UUID,
     ) -> AgentResponse:
         """
-        获取单个 Agent 详情（自动定位类型）
+        获取单个 Agent 详情（索引表定位类型 → 类型表查详情）
 
         校验：存在性 → 归属 → 未删除
         """
@@ -153,7 +161,7 @@ class AgentService:
         data: AgentUpdate,
     ) -> AgentResponse:
         """
-        编辑 Agent（type 不可改，按库中类型更新对应表字段）
+        编辑 Agent（type 不可改，索引表定位类型，双表更新）
 
         simple_rag：kb_id/top_k/score_threshold 等
         general：tools（整体替换）
@@ -197,6 +205,16 @@ class AgentService:
                 status=data.status,
             )
 
+        # 索引表基础字段同步
+        entry = await AgentIndexRepo.get_by_id(db, agent_id)
+        if entry is not None:
+            await AgentIndexRepo.update(
+                db, entry,
+                name=data.name,
+                description=data.description,
+                status=data.status,
+            )
+
         await db.commit()
         await db.refresh(agent)
         return await AgentService._to_response(db, user, atype, agent)
@@ -207,12 +225,15 @@ class AgentService:
         user: Users,
         agent_id: UUID,
     ) -> None:
-        """软删除 Agent（status → 9）"""
+        """软删除 Agent（双表：类型表 + 索引表，status → 9）"""
         atype, agent = await AgentService._find_agent(db, user, agent_id)
         if atype == "simple_rag":
             await SimpleRagAgentRepo.soft_delete(db, agent)
         else:
             await GeneralAgentRepo.soft_delete(db, agent)
+        entry = await AgentIndexRepo.get_by_id(db, agent_id)
+        if entry is not None:
+            await AgentIndexRepo.soft_delete(db, entry)
         await db.commit()
 
     # ═══════════════════════════════════════════════
@@ -229,21 +250,20 @@ class AgentService:
         """
         批量操作 Agent：enable / disable / delete
 
-        ids 可能混合两种类型：分别按归属更新对应表，合并统计
+        索引表 + 两张类型表同步更新（ids 可能混合类型）
         """
         if action not in ("enable", "disable", "delete"):
             raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
         status = 9 if action == "delete" else (1 if action == "enable" else 0)
 
-        # 按类型分组更新（各表只更新属于该用户且未删除的记录）
+        affected_index = await AgentIndexRepo.batch_update_status(db, user.id, ids, status)
         affected_simple = await SimpleRagAgentRepo.batch_update_status(db, user.id, ids, status)
         affected_general = await GeneralAgentRepo.batch_update_status(db, user.id, ids, status)
-        affected = affected_simple + affected_general
 
         await db.commit()
         return BatchResult(
-            success_count=affected,
-            fail_count=len(ids) - affected,
+            success_count=affected_index,
+            fail_count=len(ids) - affected_index,
         )
 
     # ═══════════════════════════════════════════════
@@ -256,7 +276,7 @@ class AgentService:
         user: Users,
         data: SimpleRagAgentCreate,
     ) -> AgentResponse:
-        """创建简单 RAG Agent：校验知识库，直接绑定字段"""
+        """创建简单 RAG Agent：校验知识库，类型表 + 索引表双写（同 id）"""
         await AgentService._ensure_kb(db, user, data.kb_id)
 
         prompt = data.system_prompt or DEFAULT_SYSTEM_PROMPT.replace("{agent_name}", data.name)
@@ -274,6 +294,10 @@ class AgentService:
             top_p=data.top_p,
             welcome_message=data.welcome_message,
         )
+        # 索引表（id 共用）
+        await AgentIndexRepo.create(
+            db, agent.id, user.id, "simple_rag", agent.name, agent.description
+        )
         await db.commit()
         return await AgentService._to_response(db, user, "simple_rag", agent)
 
@@ -283,7 +307,7 @@ class AgentService:
         user: Users,
         data: GeneralAgentCreate,
     ) -> AgentResponse:
-        """创建综合 Agent：校验工具列表，工具配置入库"""
+        """创建综合 Agent：校验工具列表，类型表 + 索引表双写（同 id）"""
         await AgentService._ensure_tools(db, user, data.tools)
 
         prompt = data.system_prompt or DEFAULT_SYSTEM_PROMPT.replace("{agent_name}", data.name)
@@ -299,6 +323,10 @@ class AgentService:
             top_p=data.top_p,
             welcome_message=data.welcome_message,
         )
+        # 索引表（id 共用）
+        await AgentIndexRepo.create(
+            db, agent.id, user.id, "general", agent.name, agent.description
+        )
         await db.commit()
         return await AgentService._to_response(db, user, "general", agent)
 
@@ -313,20 +341,23 @@ class AgentService:
         agent_id: UUID,
     ) -> tuple[str, object]:
         """
-        按 id 定位 Agent（先查 general 再查 simple_rag）并校验归属 + 未删除
+        索引表定位 Agent（type）→ 类型表查详情，校验归属 + 未删除
 
         返回 (type, orm对象)
         Raises: HTTPException 404
         """
-        general = await GeneralAgentRepo.get_by_id(db, agent_id)
-        if general is not None and general.status != 9 and general.user_id == user.id:
-            return "general", general
+        entry = await AgentIndexRepo.get_by_id(db, agent_id)
+        if entry is None or entry.status == 9 or entry.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Agent 不存在")
 
-        simple = await SimpleRagAgentRepo.get_by_id(db, agent_id)
-        if simple is not None and simple.status != 9 and simple.user_id == user.id:
-            return "simple_rag", simple
+        if entry.type == "simple_rag":
+            agent = await SimpleRagAgentRepo.get_by_id(db, agent_id)
+        else:
+            agent = await GeneralAgentRepo.get_by_id(db, agent_id)
 
-        raise HTTPException(status_code=404, detail="Agent 不存在")
+        if agent is None or agent.status == 9:
+            raise HTTPException(status_code=404, detail="Agent 不存在")
+        return entry.type, agent
 
     @staticmethod
     async def _ensure_llm_config(db: AsyncSession, user: Users, cfg_id: UUID) -> None:

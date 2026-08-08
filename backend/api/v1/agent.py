@@ -101,7 +101,7 @@ async def batch_agents(
 
 # ── RAG 对话 ────────────────────────────
 
-@router.post("/{agent_id}/chat", summary="与 Agent 对话（RAG）", description="基于绑定知识库检索回答；stream=true 时返回 SSE 流式事件（delta/citations/done）")
+@router.post("/{agent_id}/chat", summary="与 Agent 对话", description="按 Agent 类型分发：simple_rag 固定检索知识库回答；general 由 LLM 自主决策调用工具（可多轮）；stream=true 时返回 SSE 流式事件（delta/citations/done）")
 async def chat_agent(
     agent_id: UUID,
     body: ChatRequest,

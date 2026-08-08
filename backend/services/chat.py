@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Users
 from backend.repositories import (
+    AgentIndexRepo,
     GeneralAgentRepo,
     SimpleRagAgentRepo,
     UserModelConfigRepo,
@@ -265,14 +266,19 @@ class ChatService:
         返回 (type, agent_orm, llm_cfg)
         Raises: HTTPException 404/400
         """
-        # 先查 general，再查 simple_rag
-        agent = await GeneralAgentRepo.get_by_id(db, agent_id)
-        atype = "general"
-        if agent is None or agent.status == 9 or agent.user_id != user.id:
+        # 索引表定位类型 → 类型表查详情
+        entry = await AgentIndexRepo.get_by_id(db, agent_id)
+        if entry is None or entry.status == 9 or entry.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Agent 不存在")
+
+        if entry.type == "simple_rag":
             agent = await SimpleRagAgentRepo.get_by_id(db, agent_id)
             atype = "simple_rag"
+        else:
+            agent = await GeneralAgentRepo.get_by_id(db, agent_id)
+            atype = "general"
 
-        if agent is None or agent.status == 9 or agent.user_id != user.id:
+        if agent is None or agent.status == 9:
             raise HTTPException(status_code=404, detail="Agent 不存在")
         if agent.status == 0:
             raise HTTPException(status_code=400, detail="Agent 已禁用")

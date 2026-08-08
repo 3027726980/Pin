@@ -11,7 +11,113 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import GeneralAgents, SimpleRagAgents
+from backend.models import AgentIndex, GeneralAgents, SimpleRagAgents
+
+
+class AgentIndexRepo:
+    """agent_index 表 CRUD —— 只写 SQL，不管业务规则"""
+
+    @staticmethod
+    async def create(
+        db: AsyncSession,
+        agent_id: UUID,
+        user_id: UUID,
+        type: str,
+        name: str,
+        description: str | None,
+    ) -> AgentIndex:
+        """
+        创建索引记录（id 与类型表共用）
+
+        只做 insert + flush，不 commit（由调用方控制事务）
+        """
+        entry = AgentIndex(
+            id=agent_id,
+            user_id=user_id,
+            type=type,
+            name=name,
+            description=description,
+        )
+        db.add(entry)
+        await db.flush()
+        return entry
+
+    @staticmethod
+    async def get_by_id(db: AsyncSession, agent_id: UUID) -> AgentIndex | None:
+        """按主键查询单条（不做状态过滤，调用方自行判断）"""
+        return await db.get(AgentIndex, agent_id)
+
+    @staticmethod
+    async def list_by_user(
+        db: AsyncSession,
+        user_id: UUID,
+        page: int = 1,
+        page_size: int = 20,
+        type_filter: str | None = None,
+    ) -> tuple[list[AgentIndex], int]:
+        """
+        按用户分页查询（过滤 status=9，可按 type 筛选，按创建时间倒序）
+
+        返回 (列表, 总数)
+        """
+        cond = [AgentIndex.user_id == user_id, AgentIndex.status != 9]
+        if type_filter:
+            cond.append(AgentIndex.type == type_filter)
+
+        count_q = select(func.count()).where(*cond)
+        total = (await db.execute(count_q)).scalar() or 0
+
+        q = (
+            select(AgentIndex)
+            .where(*cond)
+            .order_by(AgentIndex.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = (await db.execute(q)).scalars().all()
+        return list(items), total
+
+    @staticmethod
+    async def update(
+        db: AsyncSession,
+        entry: AgentIndex,
+        **kwargs,
+    ) -> AgentIndex:
+        """更新基础字段（仅更新传入的非 None 值），只 flush 不 commit"""
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(entry, key, value)
+        await db.flush()
+        return entry
+
+    @staticmethod
+    async def soft_delete(db: AsyncSession, entry: AgentIndex) -> None:
+        """软删除：status → 9，只 flush 不 commit"""
+        entry.status = 9
+        await db.flush()
+
+    @staticmethod
+    async def batch_update_status(
+        db: AsyncSession,
+        user_id: UUID,
+        ids: list[UUID],
+        status: int,
+    ) -> int:
+        """批量更新状态（仅属于该用户且未删除），返回实际更新行数"""
+        from sqlalchemy import update as _update
+
+        stmt = (
+            _update(AgentIndex)
+            .where(
+                AgentIndex.id.in_(ids),
+                AgentIndex.user_id == user_id,
+                AgentIndex.status != 9,
+            )
+            .values(status=status)
+        )
+        result = await db.execute(stmt)
+        await db.flush()
+        return result.rowcount
 
 
 class SimpleRagAgentRepo:

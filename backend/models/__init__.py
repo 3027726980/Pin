@@ -12,9 +12,11 @@ from .DefaultModelConfig import DefaultModelConfig
 from .UserModelConfig import UserModelConfig
 from .SimpleRagAgents import SimpleRagAgents
 from .GeneralAgents import GeneralAgents
+from .AgentIndex import AgentIndex
 
 __all__ = [
     "AccessTokenWhitelist",
+    "AgentIndex",
     "Base",
     "Chunks",
     "DefaultModelConfig",
