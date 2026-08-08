@@ -404,3 +404,32 @@ COMMENT ON COLUMN general_agents.temperature IS 'LLM 温度';
 COMMENT ON COLUMN general_agents.top_p IS 'LLM 核采样';
 COMMENT ON COLUMN general_agents.welcome_message IS '欢迎语（Phase 5 浮窗使用）';
 COMMENT ON COLUMN general_agents.status IS '0=禁用, 1=启用, 9=软删除';
+
+-- ============================================================
+-- 13. Agent 索引表
+--      Phase 4：所有 Agent 的基础信息，id 与类型表共用主键
+--      用途：用户 Agent 列表（单表 SQL 分页）/ 类型定位
+--      创建 Agent 时事务内双写（索引表 + 类型表，同 id）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_index (
+    id          UUID PRIMARY KEY,
+    user_id     UUID         NOT NULL REFERENCES users(id),
+    type        VARCHAR(20)  NOT NULL,
+    name        VARCHAR(200) NOT NULL,
+    description TEXT,
+    status      SMALLINT     NOT NULL DEFAULT 1,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_index_user   ON agent_index(user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_index_type   ON agent_index(type);
+CREATE INDEX IF NOT EXISTS idx_agent_index_status ON agent_index(status);
+
+COMMENT ON TABLE agent_index IS 'Agent 索引表：所有 Agent 的基础信息，id 与类型表共用主键（simple_rag_agents / general_agents）';
+COMMENT ON COLUMN agent_index.id IS 'Agent ID（与类型表主键共用）';
+COMMENT ON COLUMN agent_index.user_id IS '创建者用户 ID';
+COMMENT ON COLUMN agent_index.type IS 'Agent 类型：simple_rag / general / workflow（预留）';
+COMMENT ON COLUMN agent_index.name IS 'Agent 名称（冗余，列表查询免 join 类型表）';
+COMMENT ON COLUMN agent_index.description IS '描述（冗余）';
+COMMENT ON COLUMN agent_index.status IS '0=禁用, 1=启用, 9=软删除';
