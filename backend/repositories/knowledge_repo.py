@@ -154,10 +154,11 @@ class KnowledgeBaseRepo:
         db: AsyncSession,
         config_id: UUID,
     ) -> list[KnowledgeBases]:
-        """查找使用指定模型配置的所有知识库（未删除）"""
-        q = select(KnowledgeBases).where(
-            KnowledgeBases.user_model_config_id == config_id,
-            KnowledgeBases.status != 9,
-        )
+        """
+        查找使用指定模型配置的所有知识库（含软删除）
+
+        软删除记录仍占用外键，需全部计入才能避免删除配置时 FK 冲突
+        """
+        q = select(KnowledgeBases).where(KnowledgeBases.user_model_config_id == config_id)
         result = await db.execute(q)
         return list(result.scalars().all())

@@ -235,6 +235,20 @@ class SimpleRagAgentRepo:
         await db.flush()
         return result.rowcount
 
+    @staticmethod
+    async def find_by_model_config(
+        db: AsyncSession,
+        config_id: UUID,
+    ) -> list[SimpleRagAgents]:
+        """
+        查找使用指定 LLM 配置的所有简单 RAG Agent（含软删除）
+
+        软删除记录仍占用外键，需全部计入才能避免删除配置时 FK 冲突
+        """
+        q = select(SimpleRagAgents).where(SimpleRagAgents.llm_config_id == config_id)
+        result = await db.execute(q)
+        return list(result.scalars().all())
+
 
 class GeneralAgentRepo:
     """general_agents 表 CRUD —— 只写 SQL，不管业务规则"""
@@ -346,3 +360,17 @@ class GeneralAgentRepo:
         result = await db.execute(stmt)
         await db.flush()
         return result.rowcount
+
+    @staticmethod
+    async def find_by_model_config(
+        db: AsyncSession,
+        config_id: UUID,
+    ) -> list[GeneralAgents]:
+        """
+        查找使用指定 LLM 配置的所有综合 Agent（含软删除）
+
+        软删除记录仍占用外键，需全部计入才能避免删除配置时 FK 冲突
+        """
+        q = select(GeneralAgents).where(GeneralAgents.llm_config_id == config_id)
+        result = await db.execute(q)
+        return list(result.scalars().all())
