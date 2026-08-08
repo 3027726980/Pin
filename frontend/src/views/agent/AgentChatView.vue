@@ -29,7 +29,22 @@
 
       <div v-for="(msg, idx) in messages" :key="idx" class="msg-row" :class="msg.role">
         <div class="msg-bubble" :class="msg.role">
-          <!-- 内容分段渲染：文本 + [N] 可点击引用标注 -->
+          <!-- 当前等待/生成中的助手消息：气泡内直接显示加载状态 -->
+          <template v-if="isPendingMsg(msg)">
+            <template v-if="streaming">
+              <template v-if="currentStage === 'retrieving'">
+                <n-spin size="small" />
+                <span class="stage-text">正在检索知识库...</span>
+              </template>
+              <span v-else class="streaming-cursor">▍</span>
+            </template>
+            <template v-else>
+              <n-spin size="small" />
+              <span class="stage-text">正在生成回答...</span>
+            </template>
+          </template>
+          <!-- 正常内容：分段渲染（文本 + [N] 可点击引用标注） -->
+          <template v-else>
           <div class="msg-content">
             <template v-for="(part, i) in splitRefs(msg.content)" :key="i">
               <span v-if="part.type === 'text'">{{ part.value }}</span>
@@ -72,26 +87,7 @@
               </n-collapse-item>
             </n-collapse>
           </div>
-        </div>
-      </div>
-
-      <div v-if="streaming" class="msg-row assistant">
-        <div class="msg-bubble assistant">
-          <!-- 检索/处理阶段：加载圈 + 状态文字 -->
-          <template v-if="currentStage === 'retrieving'">
-            <n-spin size="small" />
-            <span class="stage-text">正在检索知识库...</span>
           </template>
-          <!-- 生成阶段：流式光标 -->
-          <span v-else class="streaming-cursor">▍</span>
-        </div>
-      </div>
-
-      <!-- 非流式：请求中加载圈 -->
-      <div v-else-if="sending" class="msg-row assistant">
-        <div class="msg-bubble assistant">
-          <n-spin size="small" />
-          <span class="stage-text">正在生成回答...</span>
         </div>
       </div>
     </n-card>
@@ -264,6 +260,12 @@ function onInputKeydown(e: KeyboardEvent) {
 
 function clearChat() {
   messages.value = []
+}
+
+/** 是否为当前正在等待/生成中的消息（最后一条 + 请求中） */
+function isPendingMsg(msg: DisplayMessage): boolean {
+  const last = messages.value[messages.value.length - 1]
+  return (streaming.value || sending.value) && last === msg
 }
 
 // ── 引用标注解析与定位 ───────────────────
