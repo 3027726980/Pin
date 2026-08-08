@@ -56,7 +56,21 @@
 
       <div v-if="streaming" class="msg-row assistant">
         <div class="msg-bubble assistant">
-          <span class="streaming-cursor">▍</span>
+          <!-- 检索/处理阶段：加载圈 + 状态文字 -->
+          <template v-if="currentStage === 'retrieving'">
+            <n-spin size="small" />
+            <span class="stage-text">正在检索知识库...</span>
+          </template>
+          <!-- 生成阶段：流式光标 -->
+          <span v-else class="streaming-cursor">▍</span>
+        </div>
+      </div>
+
+      <!-- 非流式：请求中加载圈 -->
+      <div v-else-if="sending" class="msg-row assistant">
+        <div class="msg-bubble assistant">
+          <n-spin size="small" />
+          <span class="stage-text">正在生成回答...</span>
         </div>
       </div>
     </n-card>
@@ -113,6 +127,8 @@ const sending = ref(false)
 const streaming = ref(false)
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
+// 当前阶段（流式）：retrieving=检索/处理中，generating=生成中
+const currentStage = ref<'idle' | 'retrieving' | 'generating'>('idle')
 let abortCtrl: AbortController | null = null
 
 // ── 加载 Agent 信息 ──────────────────────
@@ -142,6 +158,7 @@ async function send() {
 
   streaming.value = true
   sending.value = true
+  currentStage.value = 'retrieving'
   abortCtrl = new AbortController()
 
   // 非流式：一次性返回 answer + citations
@@ -156,6 +173,7 @@ async function send() {
     } finally {
       streaming.value = false
       sending.value = false
+      currentStage.value = 'idle'
       abortCtrl = null
     }
     return
@@ -170,6 +188,8 @@ async function send() {
           assistantMsg.content += event.content
         } else if (event.type === 'citations') {
           assistantMsg.citations = event.citations
+        } else if (event.type === 'status') {
+          currentStage.value = event.stage
         } else if (event.type === 'error') {
           assistantMsg.error = true
           assistantMsg.content = (assistantMsg.content || '') + `\n[错误] ${event.message}`
@@ -187,6 +207,7 @@ async function send() {
   } finally {
     streaming.value = false
     sending.value = false
+    currentStage.value = 'idle'
     abortCtrl = null
   }
 }
@@ -346,6 +367,11 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
+}
+.stage-text {
+  margin-left: 8px;
+  font-size: 13px;
+  color: var(--n-text-color-3);
 }
 
 .chat-input-row {
