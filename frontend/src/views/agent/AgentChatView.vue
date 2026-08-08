@@ -186,11 +186,13 @@ async function send() {
       { message: text, history, stream: true },
       (event) => {
         if (event.type === 'delta') {
+          // 首个 delta 到达 → 检索完成，进入生成阶段（打字机）
+          if (currentStage.value === 'retrieving') {
+            currentStage.value = 'generating'
+          }
           assistantMsg.content += event.content
         } else if (event.type === 'citations') {
           assistantMsg.citations = event.citations
-        } else if (event.type === 'status') {
-          currentStage.value = event.stage
         } else if (event.type === 'error') {
           assistantMsg.error = true
           assistantMsg.content = (assistantMsg.content || '') + `\n[错误] ${event.message}`
