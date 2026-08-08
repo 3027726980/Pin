@@ -4,6 +4,15 @@ Pin 后端入口
 Phase 1：FastAPI 启动 → 建表 → 种子管理员 → 注册认证路由
 """
 
+# 屏蔽 pydub 的 ffmpeg 缺失警告（markitdown 音频转录转换器触发，本项目不使用音频解析）
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="Couldn't find ffmpeg or avconv.*",
+    category=RuntimeWarning,
+)
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
