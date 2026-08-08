@@ -2,7 +2,7 @@
 Agent 业务逻辑
 
 - Agent CRUD：创建 → 列表 → 详情 → 编辑 → 软删除 → 批量
-- 校验：知识库归属当前用户、LLM 配置归属当前用户且 model_type=2
+- 校验：LLM 配置归属当前用户且 model_type=2；工具配置中的知识库归属当前用户
 - 默认 system_prompt：不传时使用 RAG 模板（{agent_name} 占位替换）
 """
 from uuid import UUID
@@ -19,6 +19,7 @@ from backend.schemas.agent import (
     AgentListItem,
     AgentResponse,
     AgentUpdate,
+    ToolConfig,
 )
 from backend.schemas.knowledge import BatchResult, PaginatedResponse
 
@@ -47,11 +48,11 @@ class AgentService:
         """
         创建 Agent
 
-        校验：知识库归属 + LLM 配置归属且为 LLM 类型（model_type=2）
+        校验：LLM 配置归属且为 LLM 类型（model_type=2）；工具配置中的知识库归属
         system_prompt 不传 → 使用默认 RAG 模板
         """
-        await AgentService._ensure_kb(db, user, data.kb_id)
         await AgentService._ensure_llm_config(db, user, data.llm_config_id)
+        await AgentService._ensure_tools(db, user, data.tools)
 
         prompt = data.system_prompt or DEFAULT_SYSTEM_PROMPT.replace("{agent_name}", data.name)
         agent = await AgentRepo.create(
@@ -59,11 +60,9 @@ class AgentService:
             user_id=user.id,
             name=data.name,
             description=data.description,
-            kb_id=data.kb_id,
             llm_config_id=data.llm_config_id,
+            tools=[t.model_dump(mode="json", exclude={"kb_name"}) for t in data.tools],
             system_prompt=prompt,
-            top_k=data.top_k,
-            score_threshold=data.score_threshold,
             temperature=data.temperature,
             top_p=data.top_p,
             welcome_message=data.welcome_message,
@@ -84,13 +83,14 @@ class AgentService:
         自动过滤 status=9，按创建时间倒序
         """
         items, total = await AgentRepo.list_by_user(db, user.id, page, page_size)
-        kb_names = await AgentService._kb_name_map(db, user.id, [a.kb_id for a in items])
+        kb_ids = {UUID(tool["kb_id"]) for a in items for tool in a.tools if tool.get("type") == "rag"}
+        kb_names = await AgentService._kb_name_map(db, user.id, list(kb_ids))
         llm_models = await AgentService._llm_model_map(db, user.id, [a.llm_config_id for a in items])
 
         result_items = []
         for a in items:
             item = AgentListItem.model_validate(a)
-            item.kb_name = kb_names.get(a.kb_id)
+            item.tools = AgentService._tools_with_kb_name(a.tools, kb_names)
             item.llm_model = llm_models.get(a.llm_config_id)
             result_items.append(item)
 
@@ -125,24 +125,22 @@ class AgentService:
         """
         编辑 Agent
 
-        仅更新传入的非 None 字段；kb_id / llm_config_id 变更时重新校验
+        仅更新传入的非 None 字段；llm_config_id / tools 变更时重新校验
         """
         agent = await AgentService._get_agent_for_user(db, user, agent_id)
 
-        if data.kb_id is not None and data.kb_id != agent.kb_id:
-            await AgentService._ensure_kb(db, user, data.kb_id)
         if data.llm_config_id is not None and data.llm_config_id != agent.llm_config_id:
             await AgentService._ensure_llm_config(db, user, data.llm_config_id)
+        if data.tools is not None:
+            await AgentService._ensure_tools(db, user, data.tools)
 
         agent = await AgentRepo.update(
             db, agent,
             name=data.name,
             description=data.description,
-            kb_id=data.kb_id,
             llm_config_id=data.llm_config_id,
+            tools=([t.model_dump(mode="json", exclude={"kb_name"}) for t in data.tools] if data.tools is not None else None),
             system_prompt=data.system_prompt,
-            top_k=data.top_k,
-            score_threshold=data.score_threshold,
             temperature=data.temperature,
             top_p=data.top_p,
             welcome_message=data.welcome_message,
@@ -217,6 +215,20 @@ class AgentService:
         return agent
 
     @staticmethod
+    async def _ensure_llm_config(db: AsyncSession, user: Users, cfg_id: UUID) -> None:
+        """校验 LLM 配置：存在 + 归属 + model_type=2"""
+        cfg = await UserModelConfigRepo.get_by_id(db, cfg_id)
+        if cfg is None or cfg.user_id != user.id or cfg.model_type != 2:
+            raise HTTPException(status_code=400, detail="LLM 模型配置无效")
+
+    @staticmethod
+    async def _ensure_tools(db: AsyncSession, user: Users, tools: list[ToolConfig]) -> None:
+        """校验工具配置：rag 工具的知识库归属 + 未删除 + 启用"""
+        for tool in tools:
+            if tool.type == "rag":
+                await AgentService._ensure_kb(db, user, tool.kb_id)
+
+    @staticmethod
     async def _ensure_kb(db: AsyncSession, user: Users, kb_id: UUID) -> None:
         """校验知识库归属 + 未删除 + 启用"""
         kb = await KnowledgeBaseRepo.get_by_id(db, kb_id)
@@ -226,24 +238,29 @@ class AgentService:
             raise HTTPException(status_code=400, detail="知识库已禁用")
 
     @staticmethod
-    async def _ensure_llm_config(db: AsyncSession, user: Users, cfg_id: UUID) -> None:
-        """校验 LLM 配置：存在 + 归属 + model_type=2"""
-        cfg = await UserModelConfigRepo.get_by_id(db, cfg_id)
-        if cfg is None or cfg.user_id != user.id or cfg.model_type != 2:
-            raise HTTPException(status_code=400, detail="LLM 模型配置无效")
-
-    @staticmethod
     async def _to_response(db: AsyncSession, agent: Agents) -> AgentResponse:
-        """ORM → Response，补全 kb_name / llm_provider / llm_model"""
+        """ORM → Response，补全 llm 配置摘要 + 工具 kb 名称"""
         resp = AgentResponse.model_validate(agent)
-
-        kb = await KnowledgeBaseRepo.get_by_id(db, agent.kb_id)
-        resp.kb_name = kb.name if kb else None
 
         llm_cfg = await UserModelConfigRepo.get_by_id(db, agent.llm_config_id)
         resp.llm_provider = llm_cfg.provider if llm_cfg else None
         resp.llm_model = llm_cfg.model_name if llm_cfg else None
+
+        kb_ids = {UUID(t["kb_id"]) for t in agent.tools if t.get("type") == "rag"}
+        kb_names = await AgentService._kb_name_map(db, user_id=agent.user_id, kb_ids=list(kb_ids))
+        resp.tools = AgentService._tools_with_kb_name(agent.tools, kb_names)
         return resp
+
+    @staticmethod
+    def _tools_with_kb_name(tools: list[dict], kb_names: dict[UUID, str]) -> list[ToolConfig]:
+        """工具 dict → ToolConfig，补全 rag 工具的 kb_name"""
+        result = []
+        for t in tools:
+            cfg = ToolConfig.model_validate(t)
+            if cfg.type == "rag":
+                cfg.kb_name = kb_names.get(cfg.kb_id)
+            result.append(cfg)
+        return result
 
     @staticmethod
     async def _kb_name_map(

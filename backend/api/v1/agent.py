@@ -25,7 +25,7 @@ from backend.schemas.agent import (
 from backend.schemas.common import SuccessResponse
 from backend.schemas.knowledge import BatchResult, PaginatedResponse
 from backend.services import AgentService
-from backend.services.rag import RAGService
+from backend.services.chat import ChatService
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 
@@ -135,12 +135,12 @@ async def chat_agent(
     user: Users = Depends(get_current_user),
 ):
     if not body.stream:
-        result = await RAGService.chat(db, user, agent_id, body)
+        result = await ChatService.chat(db, user, agent_id, body)
         return SuccessResponse(result=result)
 
     async def event_gen():
         try:
-            async for event in RAGService.chat_stream(db, user, agent_id, body):
+            async for event in ChatService.chat_stream(db, user, agent_id, body):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except HTTPException as e:
             # 校验类错误（如 Agent 不存在）在 SSE 中作为 error 事件返回
