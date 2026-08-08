@@ -295,10 +295,12 @@ function locateCitation(msg: DisplayMessage, n: number) {
     msg.expandedCitations = {}
   }
   msg.expandedCitations[n - 1] = true
-  // 等渲染完成后滚动到对应条目
+  // 等折叠面板展开动画完成后再滚动定位（n-collapse 动画约 300ms）
   nextTick(() => {
-    const el = document.querySelector(`[data-citation-index="${msg.uid}-${n - 1}"]`)
-    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    window.setTimeout(() => {
+      const el = document.querySelector(`[data-citation-index="${msg.uid}-${n - 1}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 300)
   })
 }
 
