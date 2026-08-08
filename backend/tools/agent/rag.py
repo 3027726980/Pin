@@ -24,6 +24,10 @@ from backend.tools.common.base import BaseTool
 logger = logging.getLogger(__name__)
 
 
+# 工具描述（供 LLM 判断是否调用）
+RAG_TOOL_DESCRIPTION = "检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"
+
+
 class RAGTool(BaseTool):
     """RAG 检索工具：知识库向量检索，返回命中的引用块列表"""
 
@@ -99,3 +103,33 @@ class RAGTool(BaseTool):
             )
             for cid, (content, filename, score) in ranked
         ]
+
+
+def build_langchain_tool(db, user, config: dict, citations_store: list) -> "BaseTool":
+    """
+    构建 LangChain 工具（闭包绑定 db/user/config，供 create_agent 注册）
+
+    参数:
+        db: AsyncSession
+        user: 当前用户
+        config: 工具配置（来自 general_agents.tools，如 {kb_id, top_k, score_threshold}）
+        citations_store: 外部列表，工具执行结果追加至此（用于响应回传引用）
+
+    返回: LangChain 工具对象（@tool），LLM 仅需提供 query 参数
+    工具异常时返回 JSON 错误信息（让 LLM 自行决定下一步），不抛给框架
+    """
+    import json
+
+    from langchain_core.tools import tool
+
+    @tool
+    async def rag(query: str) -> str:
+        """检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"""
+        try:
+            cits = await RAGTool.execute(db, user, config, query)
+        except HTTPException as e:
+            return json.dumps({"error": e.detail}, ensure_ascii=False)
+        citations_store.extend(cits)
+        return json.dumps([c.model_dump() for c in cits], ensure_ascii=False)
+
+    return rag

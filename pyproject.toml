@@ -25,4 +25,5 @@ dependencies = [
     "dashscope>=1.26.6",
     "langchain-community>=0.4.2",
     "flagembedding>=1.4.0",
+    "langchain-openai>=1.4.2",
 ]
