@@ -132,10 +132,7 @@ class ChatService:
         llm_cfg: object,
         request: ChatRequest,
     ) -> AsyncIterator[dict]:
-        """简单 RAG 流式：检索（status=retrieving）→ 无命中短路 → 生成（status=generating）"""
-        # 阶段事件：检索中（embedding + 向量检索）
-        yield {"type": "status", "stage": "retrieving"}
-
+        """简单 RAG 流式：检索 → 无命中短路 → 流式生成"""
         config = {
             "type": "rag",
             "kb_id": str(agent.kb_id),
@@ -149,9 +146,6 @@ class ChatService:
             yield {"type": "citations", "citations": []}
             yield {"type": "done"}
             return
-
-        # 阶段事件：开始生成
-        yield {"type": "status", "stage": "generating"}
 
         messages = ChatService._build_messages(agent, request, citations)
         try:
@@ -231,10 +225,7 @@ class ChatService:
         llm_cfg: object,
         request: ChatRequest,
     ) -> AsyncIterator[dict]:
-        """综合 Agent 流式：处理（status=retrieving）→ 首个生成 token 前（status=generating）"""
-        # 阶段事件：工具执行/处理中
-        yield {"type": "status", "stage": "retrieving"}
-
+        """综合 Agent 流式：create_agent.astream 逐 token 输出（工具调用轮不输出）"""
         citations_store: list[Citation] = []
         tools = ToolRegistry.build_langchain_tools(
             db, user, agent.tools, citations_store=citations_store
@@ -246,13 +237,9 @@ class ChatService:
         messages.append(("user", request.message))
 
         try:
-            started = False
             async for chunk, _meta in lc_agent.astream({"messages": messages}, stream_mode="messages"):
-                # 工具执行阶段结束、首个生成 token 到达前 → 阶段切换
+                # 只输出 AI 生成的内容增量（工具调用/工具结果轮次无 content，自动跳过）
                 if isinstance(chunk, AIMessageChunk) and chunk.content:
-                    if not started:
-                        yield {"type": "status", "stage": "generating"}
-                        started = True
                     yield {"type": "delta", "content": chunk.content}
         except Exception as e:
             logger.error(f"general Agent 流式调用失败: {e}")

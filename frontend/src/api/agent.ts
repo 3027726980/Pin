@@ -85,7 +85,6 @@ export interface ChatResult {
 export type ChatEvent =
   | { type: 'delta'; content: string }
   | { type: 'citations'; citations: ChatCitation[] }
-  | { type: 'status'; stage: 'retrieving' | 'generating' }
   | { type: 'done' }
   | { type: 'error'; code: number; message: string }
 

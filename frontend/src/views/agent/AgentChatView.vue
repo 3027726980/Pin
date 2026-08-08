@@ -127,7 +127,8 @@ const sending = ref(false)
 const streaming = ref(false)
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
-// 当前阶段（流式）：retrieving=检索/处理中，generating=生成中
+// 当前阶段：retrieving=检索中（加载圈），generating=生成中（打字机）
+// 无后端事件：发送后即 retrieving，收到首个 delta 自动切换 generating
 const currentStage = ref<'idle' | 'retrieving' | 'generating'>('idle')
 let abortCtrl: AbortController | null = null
 
