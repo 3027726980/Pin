@@ -36,6 +36,8 @@ export interface AgentDetail extends AgentListItem {
   system_prompt: string
   temperature: number
   top_p: number
+  top_k: number | null
+  score_threshold: number | null
   welcome_message: string | null
   updated_at: string
 }

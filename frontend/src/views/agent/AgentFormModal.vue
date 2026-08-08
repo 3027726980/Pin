@@ -113,6 +113,12 @@ const emit = defineEmits<{
   saved: []
 }>()
 
+// v-model:show 桥接（props 只读，需经 emit 回写）
+const show = computed({
+  get: () => props.show,
+  set: (val: boolean) => emit('update:show', val),
+})
+
 const message = useMessage()
 
 // ── 选项数据 ────────────────────────────
