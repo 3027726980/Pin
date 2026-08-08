@@ -241,11 +241,14 @@ class SimpleRagAgentRepo:
         config_id: UUID,
     ) -> list[SimpleRagAgents]:
         """
-        查找使用指定 LLM 配置的所有简单 RAG Agent（含软删除）
+        查找使用指定 LLM 配置的简单 RAG Agent（仅未删除）
 
-        软删除记录仍占用外键，需全部计入才能避免删除配置时 FK 冲突
+        软删除记录不拦截配置删除（FK 为 ON DELETE SET NULL，自动置空）
         """
-        q = select(SimpleRagAgents).where(SimpleRagAgents.llm_config_id == config_id)
+        q = select(SimpleRagAgents).where(
+            SimpleRagAgents.llm_config_id == config_id,
+            SimpleRagAgents.status != 9,
+        )
         result = await db.execute(q)
         return list(result.scalars().all())
 
@@ -367,10 +370,13 @@ class GeneralAgentRepo:
         config_id: UUID,
     ) -> list[GeneralAgents]:
         """
-        查找使用指定 LLM 配置的所有综合 Agent（含软删除）
+        查找使用指定 LLM 配置的综合 Agent（仅未删除）
 
-        软删除记录仍占用外键，需全部计入才能避免删除配置时 FK 冲突
+        软删除记录不拦截配置删除（FK 为 ON DELETE SET NULL，自动置空）
         """
-        q = select(GeneralAgents).where(GeneralAgents.llm_config_id == config_id)
+        q = select(GeneralAgents).where(
+            GeneralAgents.llm_config_id == config_id,
+            GeneralAgents.status != 9,
+        )
         result = await db.execute(q)
         return list(result.scalars().all())

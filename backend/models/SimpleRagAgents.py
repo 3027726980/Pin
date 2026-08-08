@@ -23,8 +23,8 @@ class SimpleRagAgents(Base):
     kb_id: Mapped[UUID] = mapped_column(
         ForeignKey("knowledge_bases.id"), nullable=False, comment="绑定的知识库 ID"
     )
-    llm_config_id: Mapped[UUID] = mapped_column(
-        ForeignKey("user_model_config.id"), nullable=False, comment="LLM 模型配置 ID（model_type=2）"
+    llm_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="LLM 模型配置 ID（model_type=2，配置删除后为 NULL）"
     )
     top_k: Mapped[int] = mapped_column(
         Integer, default=5, nullable=False, comment="检索返回块数（默认取 config.yaml tools.default_top_k）"

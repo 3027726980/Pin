@@ -21,8 +21,8 @@ class GeneralAgents(Base):
     description: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="描述"
     )
-    llm_config_id: Mapped[UUID] = mapped_column(
-        ForeignKey("user_model_config.id"), nullable=False, comment="LLM 模型配置 ID（model_type=2）"
+    llm_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="LLM 模型配置 ID（model_type=2，配置删除后为 NULL）"
     )
     tools: Mapped[list] = mapped_column(
         JSONB, default=list, nullable=False,

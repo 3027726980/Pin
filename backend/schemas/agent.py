@@ -89,7 +89,7 @@ class AgentResponse(BaseModel):
     type: Literal["simple_rag", "general"]
     name: str
     description: str | None
-    llm_config_id: UUID
+    llm_config_id: UUID | None
     llm_provider: str | None = None
     llm_model: str | None = None
     kb_id: UUID | None = None

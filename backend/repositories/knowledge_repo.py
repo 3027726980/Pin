@@ -155,10 +155,13 @@ class KnowledgeBaseRepo:
         config_id: UUID,
     ) -> list[KnowledgeBases]:
         """
-        查找使用指定模型配置的所有知识库（含软删除）
+        查找使用指定模型配置的知识库（仅未删除）
 
-        软删除记录仍占用外键，需全部计入才能避免删除配置时 FK 冲突
+        软删除记录不拦截配置删除（FK 为 ON DELETE SET NULL，自动置空）
         """
-        q = select(KnowledgeBases).where(KnowledgeBases.user_model_config_id == config_id)
+        q = select(KnowledgeBases).where(
+            KnowledgeBases.user_model_config_id == config_id,
+            KnowledgeBases.status != 9,
+        )
         result = await db.execute(q)
         return list(result.scalars().all())
