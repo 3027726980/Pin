@@ -12,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import get_current_user
+from backend.core.config import settings
+from backend.core.constants import DEFAULT_SYSTEM_PROMPT
 from backend.core.database import get_db
 from backend.core.utils import parse_page, parse_page_size
 from backend.models import Users
@@ -54,6 +56,17 @@ async def create_agent(
 ):
     result = await AgentService.create(db, user, body)
     return SuccessResponse(result=result)
+
+
+@router.get("/defaults", response_model=SuccessResponse[dict], summary="获取 Agent 默认配置", description="默认系统提示词模板（含 {agent_name} 占位）与默认检索参数（config.yaml tools 节点）", include_in_schema=True)
+async def get_agent_defaults(
+    user: Users = Depends(get_current_user),
+):
+    return SuccessResponse(result={
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
+        "default_top_k": settings.tools.default_top_k,
+        "default_score_threshold": settings.tools.default_score_threshold,
+    })
 
 
 @router.get("/{agent_id}", response_model=SuccessResponse[AgentResponse], summary="获取指定 Agent 的详细信息", description="包含绑定的知识库名称、LLM 配置摘要")

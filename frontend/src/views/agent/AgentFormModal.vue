@@ -97,6 +97,7 @@ import type { FormInst, FormRules, SelectOption } from 'naive-ui'
 import {
   createAgent,
   updateAgent,
+  getAgentDefaults,
   type AgentDetail,
   type AgentCreatePayload,
   type ToolConfig,
@@ -180,12 +181,23 @@ const rules: FormRules = {
   },
 }
 
+// 默认配置（新建时系统提示词默认填入默认模板）
+const defaults = ref<{ system_prompt: string }>({ system_prompt: '' })
+
+async function fetchDefaults() {
+  try {
+    defaults.value = await getAgentDefaults()
+  } catch {
+    /* 默认模板不可用则保持空 */
+  }
+}
+
 // ── 弹窗开关：编辑时回填 ────────────────
 watch(
   () => props.show,
   async (val) => {
     if (!val) return
-    await Promise.all([fetchKbs(), fetchModelConfigs()])
+    await Promise.all([fetchKbs(), fetchModelConfigs(), fetchDefaults()])
     if (props.editing) {
       const e = props.editing
       formData.value = {
@@ -210,7 +222,8 @@ watch(
       formData.value = {
         type: 'simple_rag', name: '', description: '', llm_config_id: '',
         kb_id: null, top_k: null, score_threshold: null,
-        temperature: 0.7, top_p: 0.9, welcome_message: '', system_prompt: '',
+        temperature: 0.7, top_p: 0.9, welcome_message: '',
+        system_prompt: defaults.value.system_prompt || '',
       }
       toolKbId.value = null
       toolTopK.value = null

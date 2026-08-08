@@ -90,6 +90,15 @@ export type ChatEvent =
 
 // ── Agent CRUD ──────────────────────────
 
+/** 获取 Agent 默认配置（默认系统提示词模板 + 默认检索参数） */
+export function getAgentDefaults(): Promise<{
+  system_prompt: string
+  default_top_k: number
+  default_score_threshold: number
+}> {
+  return request.get('/v1/agents/defaults')
+}
+
 /** 获取 Agent 列表（type 可选筛选） */
 export function listAgents(page = 1, pageSize = 20, type?: AgentType): Promise<{ items: AgentListItem[]; total: number; page: number; page_size: number }> {
   return request.get('/v1/agents', {
