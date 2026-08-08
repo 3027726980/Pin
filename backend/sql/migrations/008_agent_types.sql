@@ -23,6 +23,12 @@ ALTER TABLE agents RENAME TO general_agents;
 ALTER INDEX idx_agents_user   RENAME TO idx_general_agents_user;
 ALTER INDEX idx_agents_status RENAME TO idx_general_agents_status;
 
+-- 1.1 约束/主键索引改名（表改名后约束名保持 agents_*，统一为 general_agents_*）
+ALTER TABLE general_agents RENAME CONSTRAINT agents_pkey TO general_agents_pkey;
+ALTER INDEX agents_pkey RENAME TO general_agents_pkey;
+ALTER TABLE general_agents RENAME CONSTRAINT agents_user_id_fkey TO general_agents_user_id_fkey;
+ALTER TABLE general_agents RENAME CONSTRAINT agents_llm_config_id_fkey TO general_agents_llm_config_id_fkey;
+
 COMMENT ON TABLE general_agents IS '综合 Agent 表：能力以工具列表（tools JSONB）形式注册';
 
 -- 2. 新建 simple_rag_agents 表（简单 RAG Agent，仅 RAG 功能）
