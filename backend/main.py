@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from backend.core.database import async_session_local, init_db
 from backend.core.security import hash_password
 from backend.core.config import settings
+from backend.core.checkpointer import get_checkpointer
 from backend.models import Users, ModelProviders, ModelTypes, DefaultModelConfig
 from backend.repositories import UserRepo
 from backend.api.v1 import agent_router, auth_router, knowledge_router, user_model_config_router
@@ -91,6 +92,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
     await seed_model_config()
+    await get_checkpointer()   # 初始化 checkpoint 表(幂等)
     yield
 
 
