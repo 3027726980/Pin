@@ -4,12 +4,16 @@ from backend.repositories.knowledge_repo import KnowledgeBaseRepo
 from backend.repositories.document_repo import DocumentRepo
 from backend.repositories.user_model_config_repo import UserModelConfigRepo
 from backend.repositories.agent_repo import AgentIndexRepo, GeneralAgentRepo, SimpleRagAgentRepo
+from backend.repositories.conversation_repo import ConversationRepo
+from backend.repositories.message_repo import MessageRepo
 
 __all__ = [
     "AgentIndexRepo",
+    "ConversationRepo",
     "DocumentRepo",
     "GeneralAgentRepo",
     "KnowledgeBaseRepo",
+    "MessageRepo",
     "SimpleRagAgentRepo",
     "TokenWhitelistRepo",
     "UserModelConfigRepo",
