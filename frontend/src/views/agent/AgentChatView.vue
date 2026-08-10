@@ -133,13 +133,13 @@
     <!-- 会话抽屉 -->
     <n-drawer v-model:show="drawerShow" :width="340" placement="right">
       <n-drawer-content title="历史会话" closable>
-        <template #header-extra>
+        <div class="conv-toolbar">
           <n-button size="small" type="primary" :disabled="streaming" @click="newConversation">
             <template #icon><n-icon><AddOutline /></n-icon></template>
             新会话
           </n-button>
-        </template>
-        <n-scrollbar style="height: 100%" @scroll="onConvScroll">
+        </div>
+        <n-scrollbar style="height: calc(100% - 44px)" @scroll="onConvScroll">
           <div v-if="conversations.length === 0" class="conv-empty">
             <n-empty description="暂无会话" size="small" />
           </div>
@@ -159,7 +159,7 @@
             </div>
             <n-popconfirm
               :disabled="streaming"
-              @confirm="deleteConversation(conv)"
+              @positive-click="deleteConversation(conv)"
             >
               <template #trigger>
                 <n-button
@@ -712,6 +712,11 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 }
 
 /* ── 会话抽屉 ─────────────────────── */
+.conv-toolbar {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--n-border-color);
+  margin-bottom: 8px;
+}
 .conv-empty {
   padding: 40px 0;
 }
