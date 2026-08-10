@@ -433,3 +433,43 @@ COMMENT ON COLUMN agent_index.type IS 'Agent 类型：simple_rag / general / wor
 COMMENT ON COLUMN agent_index.name IS 'Agent 名称（冗余，列表查询免 join 类型表）';
 COMMENT ON COLUMN agent_index.description IS '描述（冗余）';
 COMMENT ON COLUMN agent_index.status IS '0=禁用, 1=启用, 9=软删除';
+
+-- ============================================================
+-- 14. 会话表（Phase 4.5）
+--      id 即 LangGraph checkpoint 的 thread_id
+--      checkpoint 表由 AsyncPostgresSaver.setup() 自动创建,不在此建
+-- ============================================================
+CREATE TABLE IF NOT EXISTS conversations (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id),
+    agent_id    UUID NOT NULL REFERENCES agent_index(id),
+    title       VARCHAR(100),
+    status      SMALLINT NOT NULL DEFAULT 1,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_conversations_user_id ON conversations(user_id);
+CREATE INDEX IF NOT EXISTS ix_conversations_agent_id ON conversations(agent_id);
+COMMENT ON TABLE conversations IS '会话表：id 即 checkpoint thread_id';
+
+-- ============================================================
+-- 15. 会话消息表（Phase 4.5）
+--      每轮问答落库（含引用），历史查看数据源；与 checkpoint 解耦
+-- ============================================================
+CREATE TABLE IF NOT EXISTS messages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversations(id),
+    role            VARCHAR(20) NOT NULL,
+    content         TEXT NOT NULL,
+    citations       JSONB,
+    status          SMALLINT NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages(conversation_id);
+COMMENT ON TABLE messages IS '会话消息表：历史留痕（与 checkpoint 解耦）';
+
+-- Agent 总结模型配置（Phase 4.5,SummarizationMiddleware 用）
+ALTER TABLE simple_rag_agents
+    ADD COLUMN IF NOT EXISTS summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL;
+ALTER TABLE general_agents
+    ADD COLUMN IF NOT EXISTS summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL;

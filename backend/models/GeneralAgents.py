@@ -24,6 +24,9 @@ class GeneralAgents(Base):
     llm_config_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="LLM 模型配置 ID（model_type=2，配置删除后为 NULL）"
     )
+    summary_llm_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="总结模型配置 ID（SummarizationMiddleware 用，空=跟随对话模型）"
+    )
     tools: Mapped[list] = mapped_column(
         JSONB, default=list, nullable=False,
         comment='工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]',

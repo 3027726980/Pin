@@ -26,6 +26,9 @@ class SimpleRagAgents(Base):
     llm_config_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="LLM 模型配置 ID（model_type=2，配置删除后为 NULL）"
     )
+    summary_llm_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="总结模型配置 ID（SummarizationMiddleware 用，空=跟随对话模型）"
+    )
     top_k: Mapped[int] = mapped_column(
         Integer, default=5, nullable=False, comment="检索返回块数（默认取 config.yaml tools.default_top_k）"
     )

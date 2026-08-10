@@ -13,17 +13,21 @@ from .UserModelConfig import UserModelConfig
 from .SimpleRagAgents import SimpleRagAgents
 from .GeneralAgents import GeneralAgents
 from .AgentIndex import AgentIndex
+from .Conversations import Conversations
+from .Messages import Messages
 
 __all__ = [
     "AccessTokenWhitelist",
     "AgentIndex",
     "Base",
     "Chunks",
+    "Conversations",
     "DefaultModelConfig",
     "Documents",
     "Embeddings",
     "GeneralAgents",
     "KnowledgeBases",
+    "Messages",
     "ModelProviders",
     "ModelTypes",
     "RefreshTokenWhitelist",
