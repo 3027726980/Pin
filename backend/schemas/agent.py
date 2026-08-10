@@ -36,6 +36,8 @@ class SimpleRagAgentCreate(BaseModel):
     description: str | None = None
     kb_id: UUID = Field(..., description="绑定的知识库 ID")
     llm_config_id: UUID = Field(..., description="LLM 模型配置 ID（model_type=2）")
+    summary_llm_config_id: UUID | None = Field(
+        None, description="总结模型配置 ID（model_type=2）；空 = 跟随对话模型")
     top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
     score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
     system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
@@ -50,6 +52,8 @@ class GeneralAgentCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = None
     llm_config_id: UUID = Field(..., description="LLM 模型配置 ID（model_type=2）")
+    summary_llm_config_id: UUID | None = Field(
+        None, description="总结模型配置 ID（model_type=2）；空 = 跟随对话模型")
     tools: list[ToolConfig] = Field(..., min_length=1, description="工具配置列表，至少一个工具")
     system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
     temperature: float = Field(0.7, ge=0.0, le=2.0)
@@ -70,6 +74,7 @@ class AgentUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     description: str | None = None
     llm_config_id: UUID | None = None
+    summary_llm_config_id: UUID | None = None
     kb_id: UUID | None = Field(None, description="simple_rag 类型专用")
     top_k: int | None = Field(None, ge=1, le=50)
     score_threshold: float | None = Field(None, ge=0.0, le=1.0)
@@ -92,6 +97,7 @@ class AgentResponse(BaseModel):
     llm_config_id: UUID | None
     llm_provider: str | None = None
     llm_model: str | None = None
+    summary_llm_config_id: UUID | None = None
     kb_id: UUID | None = None
     kb_name: str | None = None
     top_k: int | None = None
@@ -139,9 +145,10 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """对话请求"""
+    """对话请求(记忆由服务端 checkpoint 管理,前端不传 history)"""
     message: str = Field(..., min_length=1, max_length=4000)
-    history: list[ChatMessage] = Field(default_factory=list, max_length=10, description="最近对话历史，最多 10 条")
+    conversation_id: UUID | None = Field(
+        None, description="会话 ID;缺省时后端自动创建并随响应返回")
     stream: bool = Field(False, description="true=SSE 流式返回")
 
 
@@ -155,5 +162,6 @@ class Citation(BaseModel):
 
 class ChatResponse(BaseModel):
     """非流式对话响应"""
+    conversation_id: UUID
     answer: str
     citations: list[Citation] = []
