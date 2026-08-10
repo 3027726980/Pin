@@ -23,15 +23,21 @@ with open(_yaml_path, encoding="utf-8") as f:
 
 settings = _dict_to_namespace(_raw)
 
+
 # ── 环境变量覆盖（生产环境不把敏感信息写 YAML）──
-if (env_secret := os.getenv("JWT_SECRET_KEY")):
-    settings.jwt.secret_key = env_secret
-if (env_admin_user := os.getenv("ADMIN_USERNAME")):
-    settings.admin.username = env_admin_user
-if (env_admin_pass := os.getenv("ADMIN_PASSWORD")):
-    settings.admin.password = env_admin_pass
-if (env_checkpoint_url := os.getenv("CHECKPOINT_URL")):
-    settings.checkpoint.url = env_checkpoint_url
+def _apply_env_overrides(cfg) -> None:
+    """应用环境变量覆盖(可测试:传入独立配置对象验证覆盖逻辑)"""
+    if (env_secret := os.getenv("JWT_SECRET_KEY")):
+        cfg.jwt.secret_key = env_secret
+    if (env_admin_user := os.getenv("ADMIN_USERNAME")):
+        cfg.admin.username = env_admin_user
+    if (env_admin_pass := os.getenv("ADMIN_PASSWORD")):
+        cfg.admin.password = env_admin_pass
+    if (env_checkpoint_url := os.getenv("CHECKPOINT_URL")):
+        cfg.checkpoint.url = env_checkpoint_url
+
+
+_apply_env_overrides(settings)
 
 # ── 安全检查：默认 secret_key 不允许用于生产 ──
 _prod_unsafe = "change-me-in-production"
