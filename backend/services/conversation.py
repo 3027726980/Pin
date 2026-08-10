@@ -16,6 +16,13 @@ class ConversationService:
     async def create(db: AsyncSession, user: Users, agent_id: UUID,
                      title: str | None = None) -> ConversationResponse:
         """创建会话;未传标题时取该 Agent 最近会话首条用户消息前 20 字,无则'新会话'"""
+        # 校验 Agent:存在 + 归属 + 未删除
+        from backend.repositories import AgentIndexRepo
+
+        entry = await AgentIndexRepo.get_by_id(db, agent_id)
+        if entry is None or entry.status == 9 or entry.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Agent 不存在")
+
         if title is None:
             title = await ConversationService._auto_title(db, user, agent_id)
         conv = await ConversationRepo.create(
