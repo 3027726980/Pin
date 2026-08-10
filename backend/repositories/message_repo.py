@@ -21,6 +21,18 @@ class MessageRepo:
         return msg
 
     @staticmethod
+    async def first_user_message(db: AsyncSession,
+                                conversation_id: UUID) -> Messages | None:
+        """取会话首条 user 消息(按创建时间正序,过滤已删除)"""
+        q = (select(Messages)
+             .where(Messages.conversation_id == conversation_id,
+                    Messages.role == "user",
+                    Messages.status != 9)
+             .order_by(Messages.created_at.asc())
+             .limit(1))
+        return (await db.execute(q)).scalar_one_or_none()
+
+    @staticmethod
     async def list_by_conversation(db: AsyncSession, conversation_id: UUID,
                                    page: int = 1, page_size: int = 20
                                    ) -> tuple[list[Messages], int]:
