@@ -8,6 +8,9 @@ from backend.models import Users
 from backend.repositories import ConversationRepo, MessageRepo
 from backend.schemas.conversation import ConversationResponse
 
+# 会话默认标题(首轮对话后自动用首条用户消息命名)
+DEFAULT_CONV_TITLE = "新会话"
+from backend.repositories import AgentIndexRepo
 
 class ConversationService:
     """会话业务逻辑"""
@@ -17,8 +20,6 @@ class ConversationService:
                      title: str | None = None) -> ConversationResponse:
         """创建会话;未传标题时取该 Agent 最近会话首条用户消息前 20 字,无则'新会话'"""
         # 校验 Agent:存在 + 归属 + 未删除
-        from backend.repositories import AgentIndexRepo
-
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
         if entry is None or entry.status == 9 or entry.user_id != user.id:
             raise HTTPException(status_code=404, detail="Agent 不存在")
@@ -40,10 +41,10 @@ class ConversationService:
         convs, _ = await ConversationRepo.list_by_user(
             db, user.id, page=1, page_size=1, agent_id=agent_id)
         if not convs:
-            return "新会话"
+            return DEFAULT_CONV_TITLE
         msg = await MessageRepo.first_user_message(db, convs[0].id)
         if msg is None:
-            return "新会话"
+            return DEFAULT_CONV_TITLE
         return msg.content[:20]
 
     @staticmethod

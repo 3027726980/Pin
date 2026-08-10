@@ -61,7 +61,7 @@ class ChatService:
                 db, user, agent, llm_cfg, conv, request)
 
         await ChatService._persist_messages(
-            db, conv.id, request.message, answer, citations)
+            db, conv, request.message, answer, citations)
         return ChatResponse(conversation_id=conv.id, answer=answer,
                             citations=citations)
 
@@ -90,7 +90,7 @@ class ChatService:
                     yield event
         finally:
             await ChatService._persist_messages(
-                db, conv.id, request.message, "".join(full_answer), citations)
+                db, conv, request.message, "".join(full_answer), citations)
 
     # ═══════════════════════════════════════════════
     # simple_rag(预检索 + create_agent)
@@ -239,11 +239,76 @@ class ChatService:
         return {"configurable": {"thread_id": str(conv.id), "checkpoint_ns": ""}}
 
     @staticmethod
+    async def _repair_checkpoint(conv: object) -> None:
+        """对话前修复 checkpoint 消息序列:孤立 tool_calls 补 ToolMessage(防 LLM 400)
+
+        场景:流式对话被中断(abort)时,LangGraph 可能已写入带 tool_calls 的
+        AIMessage 但未写入 ToolMessage,下次对话 OpenAI 兼容 API 会报
+        "assistant message with tool_calls must be followed by tool messages"。
+
+        注意:checkpoint_blobs 按 (thread_id, checkpoint_ns, channel, version)
+        UNIQUE 且 DO NOTHING(同版本不可变),因此修复后必须递增 messages
+        的版本号,否则新内容不会落库。
+        """
+        from backend.core.checkpointer import get_checkpointer
+
+        cp = await get_checkpointer()
+        config = ChatService._thread_config(conv)
+        tup = await cp.aget_tuple(config)
+        if tup is None:
+            return
+        msgs = list(tup.checkpoint.get("channel_values", {}).get("messages", []))
+        fixed = ChatService._repair_messages(msgs)
+        if len(fixed) != len(msgs):
+            # 递增 messages 版本号(blob 同版本 DO NOTHING,必须换新版本)
+            cur_ver = str(tup.checkpoint.get("channel_versions", {}).get("messages", "0"))
+            new_ver = (str(int(cur_ver) + 1) if cur_ver.isdigit()
+                       else f"{cur_ver}.{datetime.now(timezone.utc).timestamp()}")
+            tup.checkpoint["channel_versions"]["messages"] = new_ver
+            tup.checkpoint["channel_values"]["messages"] = fixed
+            await cp.aput(config, tup.checkpoint, tup.metadata or {},
+                          {"messages": new_ver})
+
+    @staticmethod
+    def _repair_messages(msgs: list) -> list:
+        """清洗消息列表:assistant 的 tool_calls 后缺失对应 ToolMessage 时自动补齐
+
+        返回:修复后的新列表(无断裂时不新增元素)
+        """
+        from langchain_core.messages import ToolMessage
+
+        result = list(msgs)
+        inserted = 0  # 已插入数量(修正后续插入位置)
+        for i, m in enumerate(list(result)):
+            if not (hasattr(m, "tool_calls") and m.tool_calls):
+                continue
+            for tc in m.tool_calls:
+                tc_id = tc.get("id") or tc.get("tool_call_id")
+                if not tc_id:
+                    continue
+                # 向后查找该 tool_call_id 的 ToolMessage
+                has = any(
+                    isinstance(x, ToolMessage) and x.tool_call_id == tc_id
+                    for x in result[i + 1 + inserted:])
+                if not has:
+                    result.insert(
+                        i + 1 + inserted,
+                        ToolMessage(
+                            content="工具调用已被中断，未执行。请直接回答用户或重新调用工具。",
+                            tool_call_id=tc_id,
+                            name=tc.get("name") or "tool",
+                        ),
+                    )
+                    inserted += 1
+        return result
+
+    @staticmethod
     async def _invoke_agent(db: AsyncSession, user: Users, agent: object,
                             llm_cfg: object, conv: object, tools: list,
                             user_content: str,
                             citations_store: list | None = None) -> str:
         """非流式:create_agent.ainvoke(thread_id = conversation_id)"""
+        await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(db, user, agent, llm_cfg, tools)
         try:
             result = await lc_agent.ainvoke(
@@ -261,6 +326,7 @@ class ChatService:
                                    citations_store: list | None = None
                                    ) -> AsyncIterator[dict]:
         """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)"""
+        await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(db, user, agent, llm_cfg, tools)
         try:
             async for chunk, _meta in lc_agent.astream(
@@ -357,18 +423,18 @@ class ChatService:
                 ts=datetime.now(timezone.utc).isoformat(),
                 id=str(uuid4()),
                 channel_values={"messages": []},
-                channel_versions={"messages": 1},
+                channel_versions={"messages": "1"},
                 versions_seen={},
                 pending_sends=[],
             )
             messages: list = []
             metadata: dict = {}
-            new_versions: dict = {"messages": 1}
+            new_versions: dict = {"messages": "1"}
         else:
             checkpoint = tup.checkpoint
             messages = list(checkpoint.get("channel_values", {}).get("messages", []))
             metadata = tup.metadata or {}
-            new_versions = tup.new_versions or {}
+            new_versions = checkpoint.get("channel_versions", {})
 
         messages.append(HumanMessage(content=user_message))
         messages.append(AIMessage(content="知识库中没有相关信息。"))
@@ -376,13 +442,20 @@ class ChatService:
         await cp.aput(config, checkpoint, metadata, new_versions)
 
     @staticmethod
-    async def _persist_messages(db: AsyncSession, conversation_id: UUID,
+    async def _persist_messages(db: AsyncSession, conv: object,
                                 user_msg: str, assistant_msg: str,
                                 citations: list[Citation]) -> None:
-        """双写 messages 表(user 原始问题 + assistant 回答含引用)"""
-        await MessageRepo.create(db, conversation_id, "user", user_msg, None)
+        """双写 messages 表(user 原始问题 + assistant 回答含引用)
+
+        首轮对话自动命名:会话标题仍为默认值时,用首条用户消息前 20 字更新
+        """
+        from backend.services.conversation import DEFAULT_CONV_TITLE
+
+        if conv.title is None or conv.title == DEFAULT_CONV_TITLE:
+            await ConversationRepo.update_title(db, conv, user_msg[:20])
+        await MessageRepo.create(db, conv.id, "user", user_msg, None)
         await MessageRepo.create(
-            db, conversation_id, "assistant", assistant_msg,
+            db, conv.id, "assistant", assistant_msg,
             [c.model_dump(mode="json") for c in citations] if citations else None)
         await db.commit()
 

@@ -48,6 +48,13 @@ class ConversationRepo:
         await db.flush()
 
     @staticmethod
+    async def update_title(db: AsyncSession, conv: Conversations,
+                           title: str) -> None:
+        """更新会话标题(首轮对话自动命名用)"""
+        conv.title = title
+        await db.flush()
+
+    @staticmethod
     async def soft_delete_messages(db: AsyncSession, conv_id: UUID) -> int:
         """软删除会话下全部消息,返回行数"""
         from sqlalchemy import update as _update
