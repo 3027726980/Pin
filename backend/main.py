@@ -4,6 +4,14 @@ Pin 后端入口
 Phase 1：FastAPI 启动 → 建表 → 种子管理员 → 注册认证路由
 """
 
+# Windows:psycopg async 不支持 ProactorEventLoop,需切换 SelectorEventLoop
+# (必须在使用事件循环前设置,uvicorn 导入本模块时生效)
+import asyncio
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 # 屏蔽 pydub 的 ffmpeg 缺失警告（markitdown 音频转录转换器触发，本项目不使用音频解析）
 import warnings
 
