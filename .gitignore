@@ -68,3 +68,5 @@ AGENTS.md
 
 # Windows 误创建的设备名文件
 nul
+# 测试目录(不入库,含本地数据库连接信息)
+tests/
