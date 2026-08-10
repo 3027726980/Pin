@@ -38,13 +38,13 @@ function rejectPending(err: Error) {
   pendingQueue = []
 }
 
-/** 退出登录 */
+/** 退出登录(带 expired 标记,登录页弹出过期提示) */
 function forceLogout() {
   storage.remove(TOKEN_KEY)
   storage.remove(REFRESH_TOKEN_KEY)
   isRefreshing = false
   rejectPending(new Error('Token 已过期，请重新登录'))
-  window.location.href = '/login'
+  window.location.href = '/login?expired=1'
 }
 
 // ── 请求拦截 ────────────────────────────

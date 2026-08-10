@@ -40,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { PersonOutline, LockClosedOutline } from '@vicons/ionicons5'
 import type { FormInst, FormRules } from 'naive-ui'
@@ -51,6 +51,13 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 const message = useMessage()
+
+// ── token 失效/过期跳转提示 ────────────
+onMounted(() => {
+  if (route.query.expired === '1') {
+    message.warning('登录已过期，请重新登录')
+  }
+})
 
 const formRef = ref<FormInst>()
 const loading = ref(false)
