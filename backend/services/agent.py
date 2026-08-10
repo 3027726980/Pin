@@ -56,9 +56,13 @@ class AgentService:
         """
         创建 Agent（按 type 分发到不同类型表，事务内双写索引表）
 
-        校验：LLM 配置归属且 model_type=2；知识库归属（simple_rag 的 kb_id / general 工具的 kb_id）
+        校验：LLM 配置归属且 model_type=2；知识库归属（simple_rag 的 kb_id / general 工具的 kb_id）；
+        总结模型配置（summary_llm_config_id 非空时同 LLM 校验）
         """
         await AgentService._ensure_llm_config(db, user, data.llm_config_id)
+        if data.summary_llm_config_id is not None:
+            await AgentService._ensure_llm_config(
+                db, user, data.summary_llm_config_id)
 
         if data.type == "simple_rag":
             return await AgentService._create_simple_rag(db, user, data)
@@ -170,6 +174,10 @@ class AgentService:
 
         if data.llm_config_id is not None and data.llm_config_id != agent.llm_config_id:
             await AgentService._ensure_llm_config(db, user, data.llm_config_id)
+        if (data.summary_llm_config_id is not None
+                and data.summary_llm_config_id != agent.summary_llm_config_id):
+            await AgentService._ensure_llm_config(
+                db, user, data.summary_llm_config_id)
 
         if atype == "simple_rag":
             if data.kb_id is not None and data.kb_id != agent.kb_id:
@@ -187,6 +195,7 @@ class AgentService:
                 top_p=data.top_p,
                 welcome_message=data.welcome_message,
                 status=data.status,
+                summary_llm_config_id=data.summary_llm_config_id,
             )
         else:
             if data.tools is not None:
@@ -203,6 +212,7 @@ class AgentService:
                 top_p=data.top_p,
                 welcome_message=data.welcome_message,
                 status=data.status,
+                summary_llm_config_id=data.summary_llm_config_id,
             )
 
         # 索引表基础字段同步
@@ -293,6 +303,7 @@ class AgentService:
             temperature=data.temperature,
             top_p=data.top_p,
             welcome_message=data.welcome_message,
+            summary_llm_config_id=data.summary_llm_config_id,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -322,6 +333,7 @@ class AgentService:
             temperature=data.temperature,
             top_p=data.top_p,
             welcome_message=data.welcome_message,
+            summary_llm_config_id=data.summary_llm_config_id,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -398,6 +410,7 @@ class AgentService:
             name=agent.name,
             description=agent.description,
             llm_config_id=agent.llm_config_id,
+            summary_llm_config_id=agent.summary_llm_config_id,
             system_prompt=agent.system_prompt,
             temperature=agent.temperature,
             top_p=agent.top_p,

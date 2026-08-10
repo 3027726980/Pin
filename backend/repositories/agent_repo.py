@@ -137,6 +137,7 @@ class SimpleRagAgentRepo:
         temperature: float = 0.7,
         top_p: float = 0.9,
         welcome_message: str | None = None,
+        summary_llm_config_id: UUID | None = None,
     ) -> SimpleRagAgents:
         """
         创建简单 RAG Agent 记录
@@ -156,6 +157,7 @@ class SimpleRagAgentRepo:
             temperature=temperature,
             top_p=top_p,
             welcome_message=welcome_message,
+            summary_llm_config_id=summary_llm_config_id,
         )
         db.add(agent)
         await db.flush()
@@ -268,6 +270,7 @@ class GeneralAgentRepo:
         temperature: float = 0.7,
         top_p: float = 0.9,
         welcome_message: str | None = None,
+        summary_llm_config_id: UUID | None = None,
     ) -> GeneralAgents:
         """
         创建综合 Agent 记录
@@ -285,6 +288,7 @@ class GeneralAgentRepo:
             temperature=temperature,
             top_p=top_p,
             welcome_message=welcome_message,
+            summary_llm_config_id=summary_llm_config_id,
         )
         db.add(agent)
         await db.flush()
