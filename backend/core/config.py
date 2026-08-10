@@ -30,6 +30,8 @@ if (env_admin_user := os.getenv("ADMIN_USERNAME")):
     settings.admin.username = env_admin_user
 if (env_admin_pass := os.getenv("ADMIN_PASSWORD")):
     settings.admin.password = env_admin_pass
+if (env_checkpoint_url := os.getenv("CHECKPOINT_URL")):
+    settings.checkpoint.url = env_checkpoint_url
 
 # ── 安全检查：默认 secret_key 不允许用于生产 ──
 _prod_unsafe = "change-me-in-production"
