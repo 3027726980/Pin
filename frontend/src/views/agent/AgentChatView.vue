@@ -12,11 +12,21 @@
             {{ agent?.type === 'simple_rag' ? '简单 RAG' : '综合 Agent' }}
           </n-tag>
           <span class="chat-name">{{ agent?.name || '加载中...' }}</span>
+          <span v-if="activeConv" class="chat-conv-title" :title="activeConv.title || ''">
+            · {{ activeConv.title || '新会话' }}
+          </span>
         </div>
         <div class="chat-header-right">
           <span class="stream-option">流式输出</span>
           <n-switch v-model:value="streamMode" size="small" />
-          <n-button size="small" quaternary @click="clearChat">清空</n-button>
+          <n-button size="small" :disabled="streaming" @click="newConversation">
+            <template #icon><n-icon><AddOutline /></n-icon></template>
+            新会话
+          </n-button>
+          <n-button size="small" :disabled="streaming" @click="drawerShow = true">
+            <template #icon><n-icon><ChatbubblesOutline /></n-icon></template>
+            会话
+          </n-button>
         </div>
       </div>
     </n-card>
@@ -29,8 +39,12 @@
 
       <div v-for="(msg, idx) in messages" :key="idx" class="msg-row" :class="msg.role">
         <div class="msg-bubble" :class="msg.role">
+          <!-- 欢迎语（本地虚拟气泡，不落库） -->
+          <template v-if="msg.welcome">
+            <div class="welcome-text">{{ msg.content }}</div>
+          </template>
           <!-- 当前等待/生成中的助手消息：气泡内直接显示加载状态 -->
-          <template v-if="isPendingMsg(msg)">
+          <template v-else-if="isPendingMsg(msg)">
             <template v-if="streaming">
               <template v-if="currentStage === 'retrieving'">
                 <n-spin size="small" />
@@ -115,14 +129,87 @@
         </div>
       </div>
     </n-card>
+
+    <!-- 会话抽屉 -->
+    <n-drawer v-model:show="drawerShow" :width="340" placement="right">
+      <n-drawer-content title="历史会话" closable>
+        <template #header-extra>
+          <n-button size="small" type="primary" :disabled="streaming" @click="newConversation">
+            <template #icon><n-icon><AddOutline /></n-icon></template>
+            新会话
+          </n-button>
+        </template>
+        <n-scrollbar style="height: 100%" @scroll="onConvScroll">
+          <div v-if="conversations.length === 0" class="conv-empty">
+            <n-empty description="暂无会话" size="small" />
+          </div>
+          <div
+            v-for="conv in conversations"
+            :key="conv.id"
+            class="conv-item"
+            :class="{ active: activeConv && activeConv.id === conv.id }"
+            :disabled="streaming"
+            @click="openConversation(conv)"
+          >
+            <div class="conv-item-main">
+              <div class="conv-item-title">{{ conv.title || '新会话' }}</div>
+              <div class="conv-item-meta">
+                {{ conv.message_count }} 条消息 · {{ formatTime(conv.updated_at) }}
+              </div>
+            </div>
+            <n-popconfirm
+              :disabled="streaming"
+              @confirm="deleteConversation(conv)"
+            >
+              <template #trigger>
+                <n-button
+                  quaternary
+                  circle
+                  size="tiny"
+                  class="conv-item-del"
+                  :disabled="streaming"
+                  @click.stop
+                >
+                  <template #icon><n-icon><TrashOutline /></n-icon></template>
+                </n-button>
+              </template>
+              删除该会话？此操作不可恢复。
+            </n-popconfirm>
+          </div>
+          <div v-if="convLoading" class="conv-loading"><n-spin size="small" /></div>
+          <div v-else-if="conversations.length < convTotal" class="conv-more" @click="loadMoreConversations">加载更多</div>
+        </n-scrollbar>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowBackOutline, SendOutline, StopOutline } from '@vicons/ionicons5'
-import { getAgent, chatAgent, chatAgentStream, type AgentDetail, type ChatMessage, type ChatCitation } from '@/api/agent'
+import {
+  AddOutline,
+  ArrowBackOutline,
+  ChatbubblesOutline,
+  SendOutline,
+  StopOutline,
+  TrashOutline,
+} from '@vicons/ionicons5'
+import {
+  getAgent,
+  chatAgent,
+  chatAgentStream,
+  type AgentDetail,
+  type ChatMessage,
+  type ChatCitation,
+} from '@/api/agent'
+import {
+  createConversation,
+  listConversations,
+  listConversationMessages,
+  deleteConversation as apiDeleteConversation,
+  type ConversationItem,
+} from '@/api/conversation'
 
 interface DisplayMessage extends ChatMessage {
   /** 消息唯一标识（引用定位锚点用） */
@@ -131,6 +218,8 @@ interface DisplayMessage extends ChatMessage {
   /** 完整引用列表（过滤前，保留原始编号用） */
   rawCitations?: ChatCitation[]
   error?: boolean
+  /** 欢迎语虚拟气泡（本地展示，不落库） */
+  welcome?: boolean
   /** 每条引用的展开状态（原始索引 → 是否展开） */
   expandedCitations?: Record<number, boolean>
   /** 引用面板是否展开 */
@@ -152,30 +241,136 @@ const streaming = ref(false)
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
 // 当前阶段：retrieving=检索中（加载圈），generating=生成中（打字机）
-// 无后端事件：发送后即 retrieving，收到首个 delta 自动切换 generating
 const currentStage = ref<'idle' | 'retrieving' | 'generating'>('idle')
 let abortCtrl: AbortController | null = null
 
-// ── 加载 Agent 信息 ──────────────────────
+// ── 会话状态 ────────────────────────────
+const drawerShow = ref(false)
+const conversations = ref<ConversationItem[]>([])
+const activeConv = ref<ConversationItem | null>(null)
+const convPage = ref(1)
+const convTotal = ref(0)
+const convLoading = ref(false)
+const msgLoading = ref(false)
+
+// ── 页面初始化 ──────────────────────────
 onMounted(async () => {
   try {
     agent.value = await getAgent(agentId)
   } catch (e) {
     message.error((e as Error).message || 'Agent 不存在')
     router.replace('/agent')
+    return
+  }
+  await loadConversations(1)
+  if (conversations.value.length > 0) {
+    // 有历史会话 → 打开最近一个
+    await openConversation(conversations.value[0])
+  } else {
+    // 无会话 → 自动创建 + 欢迎语
+    await newConversation()
   }
 })
+
+// ── 会话列表 ────────────────────────────
+async function loadConversations(page: number) {
+  convLoading.value = true
+  try {
+    const res = await listConversations(agentId, page, 20)
+    if (page === 1) {
+      conversations.value = res.items
+    } else {
+      conversations.value = [...conversations.value, ...res.items]
+    }
+    convTotal.value = res.total
+    convPage.value = page
+  } catch (e) {
+    message.error((e as Error).message || '会话列表加载失败')
+  } finally {
+    convLoading.value = false
+  }
+}
+
+function loadMoreConversations() {
+  if (!convLoading.value && conversations.value.length < convTotal.value) {
+    loadConversations(convPage.value + 1)
+  }
+}
+
+function onConvScroll(e: Event) {
+  const el = e.target as HTMLElement
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+    loadMoreConversations()
+  }
+}
+
+// ── 会话切换 ────────────────────────────
+async function openConversation(conv: ConversationItem) {
+  if (streaming.value || msgLoading.value) return
+  activeConv.value = conv
+  msgLoading.value = true
+  try {
+    const res = await listConversationMessages(conv.id, 1, 100)
+    messages.value = res.items.map(m => ({
+      role: m.role,
+      content: m.content,
+      uid: ++msgUid,
+      citations: m.citations || [],
+      rawCitations: m.citations || [],
+    }))
+  } catch (e) {
+    message.error((e as Error).message || '历史消息加载失败')
+  } finally {
+    msgLoading.value = false
+  }
+}
+
+// ── 新会话（自动创建 + 欢迎语）──────────
+async function newConversation() {
+  if (streaming.value) return
+  try {
+    const conv = await createConversation(agentId)
+    activeConv.value = conv
+    conversations.value.unshift(conv)
+    convTotal.value += 1
+    // 欢迎语：本地虚拟气泡（不落库）
+    messages.value = agent.value?.welcome_message
+      ? [{ role: 'assistant', content: agent.value.welcome_message, uid: ++msgUid, welcome: true }]
+      : []
+    drawerShow.value = false
+  } catch (e) {
+    message.error((e as Error).message || '创建会话失败')
+  }
+}
+
+// ── 删除会话 ────────────────────────────
+async function deleteConversation(conv: ConversationItem) {
+  try {
+    await apiDeleteConversation(conv.id)
+    conversations.value = conversations.value.filter(c => c.id !== conv.id)
+    convTotal.value = Math.max(0, convTotal.value - 1)
+    if (activeConv.value && activeConv.value.id === conv.id) {
+      // 删除当前会话 → 自动新建
+      await newConversation()
+    }
+    message.success('会话已删除')
+  } catch (e) {
+    message.error((e as Error).message || '删除失败')
+  }
+}
 
 // ── 发送 ────────────────────────────────
 async function send() {
   const text = inputText.value.trim()
   if (!text || streaming.value) return
+  // 前置保证：先有会话再对话（新会话由 newConversation 创建）
+  if (!activeConv.value) {
+    await newConversation()
+    if (!activeConv.value) return
+  }
 
   messages.value.push({ role: 'user', content: text, uid: ++msgUid })
   inputText.value = ''
-
-  // 组装 history（最近 10 条，不含刚加入的这条）
-  const history: ChatMessage[] = messages.value.slice(-11, -1).map(m => ({ role: m.role, content: m.content }))
 
   // 占位助手消息（reactive：push 的是代理本身，流式增量修改实时触发视图更新）
   const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [], uid: ++msgUid })
@@ -185,11 +380,12 @@ async function send() {
   sending.value = true
   currentStage.value = 'retrieving'
   abortCtrl = new AbortController()
+  const conversationId = activeConv.value.id
 
   // 非流式：一次性返回 answer + citations
   if (!streamMode.value) {
     try {
-      const res = await chatAgent(agentId, { message: text, history })
+      const res = await chatAgent(agentId, { message: text, conversation_id: conversationId })
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
     } catch (e) {
@@ -207,7 +403,7 @@ async function send() {
   try {
     await chatAgentStream(
       agentId,
-      { message: text, history, stream: true },
+      { message: text, conversation_id: conversationId, stream: true },
       (event) => {
         if (event.type === 'delta') {
           // 首个 delta 到达 → 检索完成，进入生成阶段（打字机）
@@ -258,14 +454,22 @@ function onInputKeydown(e: KeyboardEvent) {
   }
 }
 
-function clearChat() {
-  messages.value = []
-}
-
 /** 是否为当前正在等待/生成中的消息（最后一条 + 请求中） */
 function isPendingMsg(msg: DisplayMessage): boolean {
   const last = messages.value[messages.value.length - 1]
   return (streaming.value || sending.value) && last === msg
+}
+
+// ── 工具函数 ────────────────────────────
+
+function formatTime(iso: string): string {
+  const d = new Date(iso)
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (sameDay) return hm
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
 }
 
 // ── 引用标注解析与定位 ───────────────────
@@ -356,6 +560,14 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
   font-size: 16px;
   font-weight: 600;
 }
+.chat-conv-title {
+  font-size: 13px;
+  color: var(--n-text-color-3);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .chat-body {
   flex: 1;
@@ -398,6 +610,10 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 .msg-bubble.assistant {
   background: var(--n-color-embedded);
   border-top-left-radius: 2px;
+}
+.welcome-text {
+  color: var(--n-text-color-3);
+  font-style: italic;
 }
 
 .msg-citations {
@@ -493,5 +709,65 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 }
 .chat-input-actions {
   display: flex;
+}
+
+/* ── 会话抽屉 ─────────────────────── */
+.conv-empty {
+  padding: 40px 0;
+}
+.conv-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.conv-item:hover {
+  background: var(--n-color-hover);
+}
+.conv-item.active {
+  background: rgba(32, 128, 240, 0.1);
+}
+.conv-item[disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.conv-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.conv-item-title {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-item-meta {
+  font-size: 12px;
+  color: var(--n-text-color-3);
+  margin-top: 2px;
+}
+.conv-item-del {
+  visibility: hidden;
+}
+.conv-item:hover .conv-item-del {
+  visibility: visible;
+}
+.conv-loading,
+.conv-more {
+  text-align: center;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--n-text-color-3);
+}
+.conv-more {
+  cursor: pointer;
+}
+.conv-more:hover {
+  color: #2080f0;
 }
 </style>

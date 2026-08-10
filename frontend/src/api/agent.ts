@@ -33,6 +33,7 @@ export interface AgentListItem {
 export interface AgentDetail extends AgentListItem {
   llm_config_id: string
   llm_provider: string | null
+  summary_llm_config_id: string | null
   system_prompt: string
   temperature: number
   top_p: number
@@ -47,6 +48,7 @@ export interface AgentCreatePayload {
   name: string
   description?: string | null
   llm_config_id: string
+  summary_llm_config_id?: string | null
   kb_id?: string | null
   top_k?: number | null
   score_threshold?: number | null
@@ -133,8 +135,8 @@ export function batchAgents(ids: string[], action: 'enable' | 'disable' | 'delet
 
 // ── 对话 ────────────────────────────────
 
-/** 非流式对话 */
-export function chatAgent(agentId: string, body: { message: string; history: ChatMessage[]; stream?: boolean }): Promise<ChatResult> {
+/** 非流式对话(记忆由服务端 checkpoint 管理,前端不传 history) */
+export function chatAgent(agentId: string, body: { message: string; conversation_id?: string | null; stream?: boolean }): Promise<ChatResult & { conversation_id: string }> {
   return request.post(`/v1/agents/${agentId}/chat`, body)
 }
 
@@ -144,7 +146,7 @@ export function chatAgent(agentId: string, body: { message: string; history: Cha
  */
 export async function chatAgentStream(
   agentId: string,
-  body: { message: string; history: ChatMessage[]; stream: true },
+  body: { message: string; conversation_id?: string | null; stream: true },
   onEvent: (e: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {

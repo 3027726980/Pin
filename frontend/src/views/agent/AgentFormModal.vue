@@ -35,6 +35,19 @@
         </n-select>
       </n-form-item>
 
+      <n-form-item label="总结模型">
+        <n-select
+          v-model:value="formData.summary_llm_config_id"
+          :options="summaryOptions"
+          placeholder="跟随对话模型"
+        >
+          <template #empty>
+            <div style="padding: 8px">暂无 LLM 配置，请先到「模型配置」页创建</div>
+          </template>
+        </n-select>
+        <template #feedback>长对话自动总结时使用的模型；不选则跟随对话模型</template>
+      </n-form-item>
+
       <!-- simple_rag：知识库直接绑定 -->
       <template v-if="formData.type === 'simple_rag'">
         <n-form-item label="知识库" path="kb_id">
@@ -135,6 +148,12 @@ const llmOptions = computed<SelectOption[]>(() =>
     .map(c => ({ label: `${c.provider} / ${c.model_name}`, value: c.id })),
 )
 
+// 总结模型选项：跟随对话模型（''）+ LLM 配置列表（提交时 '' → null）
+const summaryOptions = computed<SelectOption[]>(() => [
+  { label: '跟随对话模型', value: '' },
+  ...llmOptions.value,
+])
+
 // ── 表单状态 ────────────────────────────
 const formRef = ref<FormInst>()
 const submitting = ref(false)
@@ -144,6 +163,7 @@ const formData = ref<AgentCreatePayload & { description: string; welcome_message
   name: '',
   description: '',
   llm_config_id: '',
+  summary_llm_config_id: '',
   kb_id: null,
   top_k: null,
   score_threshold: null,
@@ -205,6 +225,7 @@ watch(
         name: e.name,
         description: e.description || '',
         llm_config_id: e.llm_config_id,
+        summary_llm_config_id: e.summary_llm_config_id || '',
         kb_id: e.kb_id,
         top_k: e.top_k,
         score_threshold: e.score_threshold,
@@ -221,6 +242,7 @@ watch(
     } else {
       formData.value = {
         type: 'simple_rag', name: '', description: '', llm_config_id: '',
+        summary_llm_config_id: '',
         kb_id: null, top_k: null, score_threshold: null,
         temperature: 0.7, top_p: 0.9, welcome_message: '',
         system_prompt: defaults.value.system_prompt || '',
@@ -245,6 +267,7 @@ async function handleSubmit() {
     name: formData.value.name,
     description: formData.value.description || null,
     llm_config_id: formData.value.llm_config_id,
+    summary_llm_config_id: formData.value.summary_llm_config_id || null,
     temperature: formData.value.temperature,
     top_p: formData.value.top_p,
     welcome_message: formData.value.welcome_message || null,
