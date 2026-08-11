@@ -40,6 +40,10 @@ export interface AgentDetail extends AgentListItem {
   top_k: number | null
   score_threshold: number | null
   welcome_message: string | null
+  // ── 嵌入治理参数（agent_index 表）──
+  rate_limit_per_min: number
+  allowed_domains: string[]
+  anonymous_retention_days: number
   updated_at: string
 }
 
@@ -59,7 +63,13 @@ export interface AgentCreatePayload {
   welcome_message?: string | null
 }
 
-export type AgentUpdatePayload = Partial<AgentCreatePayload> & { status?: number }
+export type AgentUpdatePayload = Partial<AgentCreatePayload> & {
+  status?: number
+  // 嵌入治理参数
+  rate_limit_per_min?: number
+  allowed_domains?: string[]
+  anonymous_retention_days?: number
+}
 
 export interface BatchAgentResult {
   success_count: number

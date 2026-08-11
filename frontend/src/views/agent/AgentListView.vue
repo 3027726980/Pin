@@ -55,6 +55,13 @@
 
     <!-- 创建/编辑弹窗 -->
     <AgentFormModal v-model:show="modalShow" :editing="editingAgent" @saved="fetchList" />
+    <!-- 嵌入设置弹窗 -->
+    <EmbedSettingsModal
+      v-if="embedVisible"
+      :show="embedVisible"
+      :agent-id="embedAgentId"
+      @close="embedVisible = false"
+    />
   </div>
 </template>
 
@@ -73,6 +80,7 @@ import {
   type AgentType,
 } from '@/api/agent'
 import AgentFormModal from './AgentFormModal.vue'
+import EmbedSettingsModal from './EmbedSettingsModal.vue'
 
 const router = useRouter()
 const message = useMessage()
@@ -89,6 +97,8 @@ const checkedRowKeys = ref<(string | number)[]>([])
 // ── 弹窗状态 ────────────────────────────
 const modalShow = ref(false)
 const editingAgent = ref<AgentDetail | null>(null)
+const embedVisible = ref(false)
+const embedAgentId = ref('')
 
 // ── 表格列 ──────────────────────────────
 const columns: DataTableColumns<AgentListItem> = [
@@ -147,7 +157,7 @@ const columns: DataTableColumns<AgentListItem> = [
   {
     title: '操作',
     key: 'actions',
-    width: 200,
+    width: 240,
     render(row) {
       return h(NSpace, {}, {
         default: () => [
@@ -160,6 +170,18 @@ const columns: DataTableColumns<AgentListItem> = [
             NButton,
             { size: 'small', quaternary: true, onClick: () => openEdit(row.id) },
             { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) },
+          ),
+          h(
+            NButton,
+            {
+              size: 'small',
+              quaternary: true,
+              onClick: () => {
+                embedAgentId.value = row.id
+                embedVisible.value = true
+              },
+            },
+            { default: () => '嵌入' },
           ),
           h(
             NPopconfirm,
