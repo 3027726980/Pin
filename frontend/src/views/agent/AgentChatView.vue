@@ -34,17 +34,13 @@
     <!-- 消息区 -->
     <n-card class="chat-body" :bordered="true">
       <div v-if="messages.length === 0" class="chat-empty">
-        <n-empty description="开始与 Agent 对话吧" />
+        <n-empty :description="agent?.welcome_message || '开始与 Agent 对话吧'" />
       </div>
 
       <div v-for="(msg, idx) in messages" :key="idx" class="msg-row" :class="msg.role">
         <div class="msg-bubble" :class="msg.role">
-          <!-- 欢迎语（本地虚拟气泡，不落库） -->
-          <template v-if="msg.welcome">
-            <div class="welcome-text">{{ msg.content }}</div>
-          </template>
           <!-- 当前等待/生成中的助手消息：气泡内直接显示加载状态 -->
-          <template v-else-if="isPendingMsg(msg)">
+          <template v-if="isPendingMsg(msg)">
             <template v-if="streaming">
               <template v-if="currentStage === 'retrieving'">
                 <n-spin size="small" />
@@ -218,8 +214,6 @@ interface DisplayMessage extends ChatMessage {
   /** 完整引用列表（过滤前，保留原始编号用） */
   rawCitations?: ChatCitation[]
   error?: boolean
-  /** 欢迎语虚拟气泡（本地展示，不落库） */
-  welcome?: boolean
   /** 每条引用的展开状态（原始索引 → 是否展开） */
   expandedCitations?: Record<number, boolean>
   /** 引用面板是否展开 */
@@ -333,10 +327,8 @@ async function newConversation() {
     activeConv.value = conv
     conversations.value.unshift(conv)
     convTotal.value += 1
-    // 欢迎语：本地虚拟气泡（不落库）
-    messages.value = agent.value?.welcome_message
-      ? [{ role: 'assistant', content: agent.value.welcome_message, uid: ++msgUid, welcome: true }]
-      : []
+    // 欢迎语不再作为消息气泡：由空状态占位文案显示（见 chat-empty）
+    messages.value = []
     drawerShow.value = false
   } catch (e) {
     message.error((e as Error).message || '创建会话失败')
@@ -371,6 +363,12 @@ async function send() {
 
   messages.value.push({ role: 'user', content: text, uid: ++msgUid })
   inputText.value = ''
+
+  // 首轮对话自动命名：与后端 _persist_messages 逻辑一致（标题仍为默认值时，用第一条消息前 10 字，超过则加省略号）
+  // activeConv 与会话列表同一对象引用，改这里列表同步生效，无需刷新
+  if (!activeConv.value.title || activeConv.value.title === '新会话') {
+    activeConv.value.title = text.length > 10 ? text.slice(0, 10) + '...' : text
+  }
 
   // 占位助手消息（reactive：push 的是代理本身，流式增量修改实时触发视图更新）
   const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [], uid: ++msgUid })
@@ -610,10 +608,6 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 .msg-bubble.assistant {
   background: var(--n-color-embedded);
   border-top-left-radius: 2px;
-}
-.welcome-text {
-  color: var(--n-text-color-3);
-  font-style: italic;
 }
 
 .msg-citations {

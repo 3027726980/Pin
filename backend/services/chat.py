@@ -447,12 +447,14 @@ class ChatService:
                                 citations: list[Citation]) -> None:
         """双写 messages 表(user 原始问题 + assistant 回答含引用)
 
-        首轮对话自动命名:会话标题仍为默认值时,用首条用户消息前 20 字更新
+        首轮对话自动命名:会话标题仍为默认值时,用当次首条用户消息前 10 字更新
+        (仅用第一条消息,不取后续消息;超过 10 字末尾加省略号)
         """
         from backend.services.conversation import DEFAULT_CONV_TITLE
 
         if conv.title is None or conv.title == DEFAULT_CONV_TITLE:
-            await ConversationRepo.update_title(db, conv, user_msg[:20])
+            title = user_msg if len(user_msg) <= 10 else user_msg[:10] + "..."
+            await ConversationRepo.update_title(db, conv, title)
         await MessageRepo.create(db, conv.id, "user", user_msg, None)
         await MessageRepo.create(
             db, conv.id, "assistant", assistant_msg,

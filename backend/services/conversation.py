@@ -5,12 +5,11 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Users
-from backend.repositories import ConversationRepo, MessageRepo
+from backend.repositories import ConversationRepo, MessageRepo, AgentIndexRepo
 from backend.schemas.conversation import ConversationResponse
 
 # 会话默认标题(首轮对话后自动用首条用户消息命名)
 DEFAULT_CONV_TITLE = "新会话"
-from backend.repositories import AgentIndexRepo
 
 class ConversationService:
     """会话业务逻辑"""
@@ -18,14 +17,15 @@ class ConversationService:
     @staticmethod
     async def create(db: AsyncSession, user: Users, agent_id: UUID,
                      title: str | None = None) -> ConversationResponse:
-        """创建会话;未传标题时取该 Agent 最近会话首条用户消息前 20 字,无则'新会话'"""
+        """创建会话;未传标题时使用默认标题'新会话',
+        首轮对话后由 chat 服务用首条用户消息前 10 字自动命名"""
         # 校验 Agent:存在 + 归属 + 未删除
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
         if entry is None or entry.status == 9 or entry.user_id != user.id:
             raise HTTPException(status_code=404, detail="Agent 不存在")
 
         if title is None:
-            title = await ConversationService._auto_title(db, user, agent_id)
+            title = DEFAULT_CONV_TITLE
         conv = await ConversationRepo.create(
             db, user_id=user.id, agent_id=agent_id, title=title)
         await db.commit()
@@ -34,18 +34,6 @@ class ConversationService:
             id=conv.id, agent_id=conv.agent_id, title=conv.title,
             message_count=0, created_at=conv.created_at,
             updated_at=conv.updated_at)
-
-    @staticmethod
-    async def _auto_title(db: AsyncSession, user: Users, agent_id: UUID) -> str:
-        """取该 Agent 最近会话的首条用户消息前 20 字作为标题"""
-        convs, _ = await ConversationRepo.list_by_user(
-            db, user.id, page=1, page_size=1, agent_id=agent_id)
-        if not convs:
-            return DEFAULT_CONV_TITLE
-        msg = await MessageRepo.first_user_message(db, convs[0].id)
-        if msg is None:
-            return DEFAULT_CONV_TITLE
-        return msg.content[:20]
 
     @staticmethod
     async def list_by_user(db: AsyncSession, user: Users,
