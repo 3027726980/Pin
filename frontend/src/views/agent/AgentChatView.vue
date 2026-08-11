@@ -41,17 +41,8 @@
         <div class="msg-bubble" :class="msg.role">
           <!-- 当前等待/生成中的助手消息：气泡内直接显示加载状态 -->
           <template v-if="isPendingMsg(msg)">
-            <template v-if="streaming">
-              <template v-if="currentStage === 'retrieving'">
-                <n-spin size="small" />
-                <span class="stage-text">正在检索知识库...</span>
-              </template>
-              <span v-else class="streaming-cursor">▍</span>
-            </template>
-            <template v-else>
-              <n-spin size="small" />
-              <span class="stage-text">正在生成回答...</span>
-            </template>
+            <n-spin size="small" />
+            <span class="stage-text">{{ loadingText }}</span>
           </template>
           <!-- 正常内容：分段渲染（文本 + [N] 可点击引用标注） -->
           <template v-else>
@@ -378,6 +369,7 @@ async function send() {
   sending.value = true
   currentStage.value = 'retrieving'
   abortCtrl = new AbortController()
+  startLoadingText()
   const conversationId = activeConv.value.id
 
   // 非流式：一次性返回 answer + citations
@@ -394,6 +386,7 @@ async function send() {
       sending.value = false
       currentStage.value = 'idle'
       abortCtrl = null
+      stopLoadingText()
     }
     return
   }
@@ -437,6 +430,7 @@ async function send() {
     sending.value = false
     currentStage.value = 'idle'
     abortCtrl = null
+    stopLoadingText()
   }
 }
 
@@ -449,6 +443,29 @@ function onInputKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     send()
+  }
+}
+
+// ── AI 加载状态文字（多文案轮换）────────────────────
+const loadingTexts = ['正在思考…', '正在查阅资料…', '正在组织语言…', '正在生成回答…']
+const loadingText = ref(loadingTexts[0])
+let loadingTimer: number | null = null
+
+/** 开始轮换加载文案（每 2 秒切换一条） */
+function startLoadingText() {
+  loadingText.value = loadingTexts[0]
+  if (loadingTimer) window.clearInterval(loadingTimer)
+  loadingTimer = window.setInterval(() => {
+    const idx = loadingTexts.indexOf(loadingText.value)
+    loadingText.value = loadingTexts[(idx + 1) % loadingTexts.length]
+  }, 2000)
+}
+
+/** 停止轮换（发送完成/出错/停止时调用） */
+function stopLoadingText() {
+  if (loadingTimer) {
+    window.clearInterval(loadingTimer)
+    loadingTimer = null
   }
 }
 

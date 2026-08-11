@@ -96,6 +96,9 @@ const STYLE = `
 }
 .pin-toast.show { display: block; }
 
+/* AI 加载状态文字 */
+.pin-loading { color: #999; font-size: 13px; }
+
 .pin-stop {
   border: none; border-radius: 8px; background: #ff4d4f; color: #fff;
   padding: 0 14px; cursor: pointer; font-size: 13px;
@@ -162,6 +165,10 @@ export class ChatWidget {
   private destroyed = false
   /** 两段式删除确认：记录处于「确认删除」态的会话 id（null = 无） */
   private pendingDelConvId: string | null = null
+  /** AI 加载状态文字（多文案轮换，每 2 秒切换） */
+  private static readonly LOADING_TEXTS = ['正在思考…', '正在查阅资料…', '正在组织语言…', '正在生成回答…']
+  private loadingIdx = 0
+  private loadingTimer: number | null = null
   /** toast 轻提示元素 + 自动消失计时器 */
   private toastEl: HTMLElement | null = null
   private toastTimer: number | null = null
@@ -394,6 +401,7 @@ export class ChatWidget {
     this.streaming = true
     this.abortCtrl = new AbortController()
     this.renderInputRow()
+    this.startLoadingText()
     try {
       await this.api.chatStream(
         this.agentId,
@@ -436,6 +444,7 @@ export class ChatWidget {
     } finally {
       this.streaming = false
       this.abortCtrl = null
+      this.stopLoadingText()
       this.renderInputRow()
       this.scrollBottom()
     }
@@ -508,7 +517,7 @@ export class ChatWidget {
 
   private renderMsg(m: Msg, idx: number): string {
     if (m.pending) {
-      return `<div class="pin-msg assistant"><div class="pin-bubble-msg"><span class="cursor">▍</span></div></div>`
+      return `<div class="pin-msg assistant"><div class="pin-bubble-msg"><span class="pin-loading">${escapeHtml(ChatWidget.LOADING_TEXTS[this.loadingIdx])}</span></div></div>`
     }
     const parts = splitRefs(m.content)
       .map(p => p.type === 'ref'
@@ -681,6 +690,26 @@ export class ChatWidget {
     }, 3000)
   }
 
+  /**
+   * 开始轮换 AI 加载文案（每 2 秒切换一条，并刷新最后一条 pending 消息）
+   * 发送开始调用；done/error/停止时由 stopLoadingText 清理。
+   */
+  private startLoadingText() {
+    this.loadingIdx = 0
+    this.stopLoadingText()
+    this.loadingTimer = window.setInterval(() => {
+      this.loadingIdx = (this.loadingIdx + 1) % ChatWidget.LOADING_TEXTS.length
+      this.updateLastAssistant()
+    }, 2000)
+  }
+
+  private stopLoadingText() {
+    if (this.loadingTimer) {
+      window.clearInterval(this.loadingTimer)
+      this.loadingTimer = null
+    }
+  }
+
   private scrollBottom() {
     if (this.destroyed) return
     this.bodyEl.scrollTop = this.bodyEl.scrollHeight
@@ -697,6 +726,7 @@ export class ChatWidget {
       window.clearTimeout(this.toastTimer)
       this.toastTimer = null
     }
+    this.stopLoadingText()
     this.abortCtrl?.abort()
     if (this.outsideClickHandler) {
       document.removeEventListener('click', this.outsideClickHandler)
