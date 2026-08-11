@@ -48,10 +48,17 @@ class ChatService:
         user: Users,
         agent_id: UUID,
         request: ChatRequest,
+        client_id: str | None = None,
+        exec_user: Users | None = None,
     ) -> ChatResponse:
-        """非流式对话(记忆由 checkpoint 持久化,双写 messages)"""
+        """非流式对话(记忆由 checkpoint 持久化,双写 messages)
+
+        client_id 非空 = 匿名访客场景（会话归属 client_id，user 为 Agent 所有者）；
+        为空 = 登录用户场景（会话归属 user.id）。
+        exec_user:公开接口登录场景的 Agent 所有者（agent/LLM 校验身份，会话仍归 user）。
+        """
         atype, agent, llm_cfg, conv = await ChatService._load_context(
-            db, user, agent_id, request.conversation_id)
+            db, user, agent_id, request.conversation_id, client_id, exec_user)
 
         if atype == "simple_rag":
             answer, citations = await ChatService._chat_simple_rag(
@@ -71,10 +78,16 @@ class ChatService:
         user: Users,
         agent_id: UUID,
         request: ChatRequest,
+        client_id: str | None = None,
+        exec_user: Users | None = None,
     ) -> AsyncIterator[dict]:
-        """流式对话,产出 SSE 事件 dict;流结束(含异常)后双写 messages"""
+        """流式对话,产出 SSE 事件 dict;流结束(含异常)后双写 messages
+
+        client_id 非空 = 匿名访客场景（会话归属 client_id）；
+        exec_user:公开接口登录场景的 Agent 所有者。
+        """
         atype, agent, llm_cfg, conv = await ChatService._load_context(
-            db, user, agent_id, request.conversation_id)
+            db, user, agent_id, request.conversation_id, client_id, exec_user)
         full_answer: list[str] = []
         citations: list[Citation] = []
         try:
@@ -347,24 +360,37 @@ class ChatService:
 
     @staticmethod
     async def _load_context(db: AsyncSession, user: Users, agent_id: UUID,
-                            conversation_id: UUID | None):
-        """定位 Agent + 校验 LLM 配置 + 获取/创建会话"""
+                            conversation_id: UUID | None,
+                            client_id: str | None = None,
+                            exec_user: Users | None = None):
+        """定位 Agent + 校验 LLM 配置 + 获取/创建会话（支持匿名 client_id / 执行身份）"""
         atype, agent, llm_cfg = await ChatService._load_agent_context(
-            db, user, agent_id)
+            db, user, agent_id, exec_user)
         conv = await ChatService._get_or_create_conversation(
-            db, user, agent_id, conversation_id)
+            db, user, agent_id, conversation_id, client_id, exec_user)
         return atype, agent, llm_cfg, conv
 
     @staticmethod
     async def _get_or_create_conversation(db: AsyncSession, user: Users,
                                           agent_id: UUID,
-                                          conversation_id: UUID | None):
-        """获取会话(校验归属 + Agent 匹配)或自动创建"""
+                                          conversation_id: UUID | None,
+                                          client_id: str | None = None,
+                                          exec_user: Users | None = None):
+        """获取会话(校验归属 + Agent 匹配)或自动创建
+
+        匿名场景：创建时 user_id 空 + client_id；获取时校验 conv.client_id 匹配。
+        """
         if conversation_id is None:
-            resp = await ConversationService.create(db, user, agent_id)
+            resp = await ConversationService.create(
+                db, user, agent_id, client_id=client_id, exec_user=exec_user)
             return await ConversationRepo.get_by_id(db, resp.id)
         conv = await ConversationRepo.get_by_id(db, conversation_id)
-        if conv is None or conv.status == 9 or conv.user_id != user.id:
+        if conv is None or conv.status == 9:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if client_id:
+            if conv.client_id != client_id:
+                raise HTTPException(status_code=404, detail="会话不存在")
+        elif conv.user_id != user.id:
             raise HTTPException(status_code=404, detail="会话不存在")
         if conv.agent_id != agent_id:
             raise HTTPException(status_code=400, detail="会话与 Agent 不匹配")
@@ -372,15 +398,19 @@ class ChatService:
 
     @staticmethod
     async def _load_agent_context(db: AsyncSession, user: Users,
-                                  agent_id: UUID) -> tuple[str, object, object]:
+                                  agent_id: UUID,
+                                  exec_user: Users | None = None) -> tuple[str, object, object]:
         """
         定位 Agent(索引表 → 类型表)并校验 LLM 配置
 
+        exec_user:公开接口登录场景传入 Agent 所有者，归属校验用它；
+        user 仅用于会话归属。
         返回 (type, agent_orm, llm_cfg)
         Raises: HTTPException 404/400
         """
+        check_user = exec_user or user
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
-        if entry is None or entry.status == 9 or entry.user_id != user.id:
+        if entry is None or entry.status == 9 or entry.user_id != check_user.id:
             raise HTTPException(status_code=404, detail="Agent 不存在")
 
         if entry.type == "simple_rag":
@@ -396,7 +426,7 @@ class ChatService:
             raise HTTPException(status_code=400, detail="Agent 已禁用")
 
         llm_cfg = await UserModelConfigRepo.get_by_id(db, agent.llm_config_id)
-        if llm_cfg is None or llm_cfg.user_id != user.id or llm_cfg.model_type != 2:
+        if llm_cfg is None or llm_cfg.user_id != check_user.id or llm_cfg.model_type != 2:
             raise HTTPException(status_code=400, detail="LLM 模型配置无效")
         if not llm_cfg.api_key:
             raise HTTPException(status_code=400, detail="LLM 配置缺少 API Key")

@@ -84,6 +84,13 @@ class AgentUpdate(BaseModel):
     top_p: float | None = Field(None, ge=0.0, le=1.0)
     welcome_message: str | None = Field(None, max_length=500)
     status: int | None = Field(None, ge=0, le=9)
+    # ── 嵌入治理参数（agent_index 表，数据库动态可改）──
+    rate_limit_per_min: int | None = Field(None, ge=1, le=10000,
+                                           description="公开接口限流（次/分钟）")
+    allowed_domains: list[str] | None = Field(
+        None, description="嵌入域名白名单，空数组=不限制")
+    anonymous_retention_days: int | None = Field(
+        None, ge=0, le=3650, description="匿名会话保留天数")
 
 
 # ── 响应 ────────────────────────────────
@@ -108,6 +115,10 @@ class AgentResponse(BaseModel):
     top_p: float
     welcome_message: str | None
     status: int
+    # ── 嵌入治理参数（agent_index 表）──
+    rate_limit_per_min: int = 60
+    allowed_domains: list[str] = []
+    anonymous_retention_days: int = 30
     created_at: datetime
     updated_at: datetime
 

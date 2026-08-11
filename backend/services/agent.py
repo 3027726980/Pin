@@ -223,6 +223,9 @@ class AgentService:
                 name=data.name,
                 description=data.description,
                 status=data.status,
+                rate_limit_per_min=data.rate_limit_per_min,
+                allowed_domains=data.allowed_domains,
+                anonymous_retention_days=data.anonymous_retention_days,
             )
 
         await db.commit()
@@ -423,6 +426,13 @@ class AgentService:
         llm_cfg = await UserModelConfigRepo.get_by_id(db, agent.llm_config_id)
         resp.llm_provider = llm_cfg.provider if llm_cfg else None
         resp.llm_model = llm_cfg.model_name if llm_cfg else None
+
+        # 嵌入治理参数（agent_index 表）
+        entry = await AgentIndexRepo.get_by_id(db, agent.id)
+        if entry is not None:
+            resp.rate_limit_per_min = entry.rate_limit_per_min
+            resp.allowed_domains = entry.allowed_domains or []
+            resp.anonymous_retention_days = entry.anonymous_retention_days
 
         if atype == "simple_rag":
             kb = await KnowledgeBaseRepo.get_by_id(db, agent.kb_id)

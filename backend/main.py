@@ -24,14 +24,23 @@ warnings.filterwarnings(
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from backend.core.database import async_session_local, init_db
 from backend.core.security import hash_password
 from backend.core.config import settings
 from backend.core.checkpointer import get_checkpointer
 from backend.models import Users, ModelProviders, ModelTypes, DefaultModelConfig
 from backend.repositories import UserRepo
-from backend.api.v1 import agent_router, auth_router, conversation_router, knowledge_router, user_model_config_router
+from backend.api.v1 import (
+    agent_api_key_router,
+    agent_router,
+    auth_router,
+    conversation_router,
+    knowledge_router,
+    public_router,
+    user_model_config_router,
+)
 
 
 # ── 种子管理员 ──────────────────────────────────────
@@ -131,3 +140,65 @@ app.include_router(auth_router)
 app.include_router(conversation_router)
 app.include_router(knowledge_router)
 app.include_router(user_model_config_router)
+app.include_router(agent_api_key_router)
+app.include_router(public_router)
+
+# ── 公开接口 CORS（仅 /api/v1/public/ 放开，主站保持同源）──────
+@app.middleware("http")
+async def public_cors_middleware(request: Request, call_next):
+    """公开接口跨域支持：动态回显 Origin；域名白名单由 deps_public 校验"""
+    if not request.url.path.startswith("/api/v1/public/"):
+        return await call_next(request)
+    origin = request.headers.get("origin")
+    # 预检请求直接放行
+    if request.method == "OPTIONS":
+        resp = JSONResponse(status_code=200, content={"code": 200, "message": "ok", "result": None})
+    else:
+        resp = await call_next(request)
+    if origin:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-API-Key"
+        resp.headers["Access-Control-Max-Age"] = "86400"
+    return resp
+
+
+# ── widget 静态托管 + 全屏聊天页 ───────────────────────
+import os
+
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_WIDGET_DIR = os.path.join(_STATIC_DIR, "widget")
+os.makedirs(_WIDGET_DIR, exist_ok=True)
+app.mount("/widget", StaticFiles(directory=_WIDGET_DIR), name="widget")
+
+
+@app.get("/chat/embed/{agent_id}", response_class=HTMLResponse,
+         summary="全屏聊天页（iframe 嵌入用）")
+async def chat_embed(agent_id: str, api_key: str = ""):
+    """全屏模式独立页面：宿主 iframe 直接嵌入
+
+    用法: <iframe src="https://host/chat/embed/{agent_id}?api_key=xxx">
+    """
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能助手</title>
+  <style>
+    html, body {{ margin: 0; padding: 0; height: 100%; overflow: hidden; background: #fff; }}
+  </style>
+</head>
+<body>
+  <div id="pin-widget-root"></div>
+  <script src="/widget/widget.js"></script>
+  <script>
+    window.PinWidget.init({{
+      agentId: {agent_id!r},
+      apiKey: {api_key!r},
+      mode: 'fullscreen',
+      root: '#pin-widget-root',
+    }});
+  </script>
+</body>
+</html>""")

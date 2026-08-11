@@ -418,6 +418,9 @@ CREATE TABLE IF NOT EXISTS agent_index (
     name        VARCHAR(200) NOT NULL,
     description TEXT,
     status      SMALLINT     NOT NULL DEFAULT 1,
+    rate_limit_per_min     INTEGER NOT NULL DEFAULT 60,
+    allowed_domains        JSONB    NOT NULL DEFAULT '[]',
+    anonymous_retention_days INTEGER NOT NULL DEFAULT 30,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -433,6 +436,26 @@ COMMENT ON COLUMN agent_index.type IS 'Agent 类型：simple_rag / general / wor
 COMMENT ON COLUMN agent_index.name IS 'Agent 名称（冗余，列表查询免 join 类型表）';
 COMMENT ON COLUMN agent_index.description IS '描述（冗余）';
 COMMENT ON COLUMN agent_index.status IS '0=禁用, 1=启用, 9=软删除';
+COMMENT ON COLUMN agent_index.rate_limit_per_min IS '公开接口限流（IP+agent 维度，次/分钟）';
+COMMENT ON COLUMN agent_index.allowed_domains IS '嵌入域名白名单，空数组=不限制';
+COMMENT ON COLUMN agent_index.anonymous_retention_days IS '匿名会话保留天数（超期无活动惰性清理）';
+
+-- ============================================================
+-- 13.5 Agent 嵌入密钥表（Phase 5）
+--      只存 SHA-256 哈希；明文仅生成时返回一次
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_api_keys (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id     UUID NOT NULL REFERENCES agent_index(id) ON DELETE CASCADE,
+    key_hash     VARCHAR(64) NOT NULL,
+    name         VARCHAR(100),
+    enabled      SMALLINT NOT NULL DEFAULT 1,
+    last_used_at TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_agent_api_keys_agent_id ON agent_api_keys(agent_id);
+COMMENT ON TABLE agent_api_keys IS 'Agent 嵌入密钥表（只存哈希）';
 
 -- ============================================================
 -- 14. 会话表（Phase 4.5）
@@ -441,8 +464,9 @@ COMMENT ON COLUMN agent_index.status IS '0=禁用, 1=启用, 9=软删除';
 -- ============================================================
 CREATE TABLE IF NOT EXISTS conversations (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id     UUID NOT NULL REFERENCES users(id),
+    user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
     agent_id    UUID NOT NULL REFERENCES agent_index(id),
+    client_id   VARCHAR(64),
     title       VARCHAR(100),
     status      SMALLINT NOT NULL DEFAULT 1,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -450,7 +474,9 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS ix_conversations_user_id ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS ix_conversations_agent_id ON conversations(agent_id);
-COMMENT ON TABLE conversations IS '会话表：id 即 checkpoint thread_id';
+CREATE INDEX IF NOT EXISTS ix_conversations_client_id ON conversations(client_id);
+CREATE INDEX IF NOT EXISTS ix_conversations_agent_client ON conversations(agent_id, client_id);
+COMMENT ON TABLE conversations IS '会话表：id 即 checkpoint thread_id；匿名会话 user_id 空 + client_id 非空';
 
 -- ============================================================
 -- 15. 会话消息表（Phase 4.5）

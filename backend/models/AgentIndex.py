@@ -1,4 +1,5 @@
 from sqlalchemy import ForeignKey, SmallInteger, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid import UUID
 
@@ -25,6 +26,17 @@ class AgentIndex(Base):
     )
     status: Mapped[int] = mapped_column(
         SmallInteger, default=1, nullable=False, comment="0=禁用, 1=启用, 9=软删除"
+    )
+    rate_limit_per_min: Mapped[int] = mapped_column(
+        SmallInteger, default=60, nullable=False,
+        comment="公开接口限流（IP+agent 维度，次/分钟）"
+    )
+    allowed_domains: Mapped[list] = mapped_column(
+        JSONB, default=list, nullable=False, comment="嵌入域名白名单，空数组=不限制"
+    )
+    anonymous_retention_days: Mapped[int] = mapped_column(
+        SmallInteger, default=30, nullable=False,
+        comment="匿名会话保留天数（超期无活动惰性清理）"
     )
 
     def __repr__(self) -> str:
