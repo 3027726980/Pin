@@ -69,6 +69,16 @@ const STYLE = `
   padding: 0 16px; cursor: pointer; font-size: 14px;
 }
 .pin-send:disabled { opacity: .5; cursor: not-allowed; }
+/* 轻提示：导航操作失败等场景的一次性提示（不污染消息列表） */
+.pin-toast {
+  position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%);
+  background: rgba(0,0,0,.78); color: #fff; font-size: 13px;
+  padding: 8px 14px; border-radius: 8px; z-index: 5;
+  display: none; max-width: 82%; text-align: center;
+  pointer-events: none; overflow: hidden; text-overflow: ellipsis;
+}
+.pin-toast.show { display: block; }
+
 .pin-stop {
   border: none; border-radius: 8px; background: #ff4d4f; color: #fff;
   padding: 0 14px; cursor: pointer; font-size: 13px;
@@ -123,6 +133,9 @@ export class ChatWidget {
   private outsideClickHandler: ((e: MouseEvent) => void) | null = null
   /** 销毁标记：销毁后所有渲染/交互短路（防异步回调操作已移除 DOM） */
   private destroyed = false
+  /** toast 轻提示元素 + 自动消失计时器 */
+  private toastEl: HTMLElement | null = null
+  private toastTimer: number | null = null
 
   // DOM 引用
   private el: Record<string, HTMLElement> = {}
@@ -310,7 +323,8 @@ export class ChatWidget {
       this.drawerEl.classList.remove('open')
       this.renderBody()
     } catch (e) {
-      this.showError((e as Error).message)
+      // 写操作失败（如限流 429）：轻提示，不污染当前消息列表
+      this.showToast((e as Error).message)
     }
   }
 
@@ -327,7 +341,8 @@ export class ChatWidget {
         this.scrollBottom()
       }
     } catch (e) {
-      this.showError((e as Error).message)
+      // 读操作失败（Key 失效/网络等）：轻提示，不污染当前消息列表
+      this.showToast((e as Error).message)
     }
   }
 
@@ -441,6 +456,9 @@ export class ChatWidget {
   // ── 渲染 ────────────────────────────────
   private renderBody() {
     if (this.destroyed) return
+    // 登录表单显示时隐藏输入区（表单替换消息区，输入框/按钮不应残留）
+    const inputRow = this.shadow.querySelector('.pin-input-row') as HTMLElement | null
+    if (inputRow) inputRow.style.display = this.loginOpen ? 'none' : ''
     if (this.loginOpen) {
       this.renderLoginForm()
       return
@@ -464,7 +482,7 @@ export class ChatWidget {
       .join('')
     const cites = m.citations && m.citations.length > 0
       ? `<div class="pin-cites">${m.citations.map((c, i) => `
-          <div class="pin-cite-item" data-cite="${idx}-${i}">
+          <div class="pin-cite-item" data-cite="${idx}-${i + 1}">
             <div class="doc">[${i + 1}] 《${escapeHtml(c.document_name)}》</div>
             <div class="txt">${escapeHtml(c.content)}</div>
           </div>`).join('')}</div>`
@@ -473,7 +491,7 @@ export class ChatWidget {
     return `<div class="pin-msg ${m.role}"><div class="pin-bubble-msg${errCls}">${parts}</div>${cites}</div>`
   }
 
-  /** 流式打字机：只更新最后一条助手消息 */
+  /** 流式打字机：更新最后一条助手消息（气泡 + 引用面板一起整条替换） */
   private updateLastAssistant() {
     if (this.destroyed) return
     const last = this.msgs[this.msgs.length - 1]
@@ -481,12 +499,9 @@ export class ChatWidget {
     const items = this.bodyEl.querySelectorAll('.pin-msg')
     const lastEl = items[items.length - 1]
     if (lastEl) {
-      const bubble = lastEl.querySelector('.pin-bubble-msg')!
-      bubble.innerHTML = splitRefs(last.content)
-        .map(p => p.type === 'ref'
-          ? `<span class="pin-ref" data-action="cite" data-msg="${this.msgs.length - 1}" data-idx="${p.index}">[${p.index}]</span>`
-          : escapeHtml(p.value))
-        .join('') + (last.pending ? '<span class="cursor">▍</span>' : '')
+      // outerHTML 整条替换：renderMsg 同时生成气泡和 .pin-cites 引用面板，
+      // 确保流式完成（done）后引用列表随 [N] 标注一起出现（此前只更新气泡，引用面板永不渲染）
+      lastEl.outerHTML = this.renderMsg(last, this.msgs.length - 1)
     }
     this.scrollBottom()
   }
@@ -529,9 +544,24 @@ export class ChatWidget {
     el?.classList.toggle('open')
   }
 
-  private showError(msg: string) {
-    this.msgs.push({ role: 'assistant', content: `[错误] ${msg}`, citations: [], rawCitations: [], error: true })
-    this.renderBody()
+  /**
+   * 轻提示：面板底部一次性 toast，3 秒自动消失（重复调用重置计时）
+   *
+   * 用于导航操作（新建/切换会话）失败场景——只提示、不污染消息列表。
+   */
+  private showToast(msg: string) {
+    if (this.destroyed) return
+    if (!this.toastEl) {
+      this.toastEl = document.createElement('div')
+      this.toastEl.className = 'pin-toast'
+      this.panel.appendChild(this.toastEl)
+    }
+    this.toastEl.textContent = msg
+    this.toastEl.classList.add('show')
+    if (this.toastTimer) window.clearTimeout(this.toastTimer)
+    this.toastTimer = window.setTimeout(() => {
+      this.toastEl?.classList.remove('show')
+    }, 3000)
   }
 
   private scrollBottom() {
@@ -546,6 +576,10 @@ export class ChatWidget {
    */
   destroy() {
     this.destroyed = true
+    if (this.toastTimer) {
+      window.clearTimeout(this.toastTimer)
+      this.toastTimer = null
+    }
     this.abortCtrl?.abort()
     if (this.outsideClickHandler) {
       document.removeEventListener('click', this.outsideClickHandler)

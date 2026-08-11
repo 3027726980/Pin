@@ -40,47 +40,62 @@ def _check_domain(agent: object, request: Request) -> None:
         raise HTTPException(status_code=403, detail="域名不在白名单内")
 
 
-async def get_public_agent(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
+def get_public_agent(kind: str = "write"):
     """
-    公开接口鉴权：X-API-Key（或 query api_key）→ 哈希比对 → 校验启用/Agent 存活
-    → 域名白名单 → 限流
+    公开接口鉴权依赖工厂：X-API-Key（或 query api_key）→ 哈希比对 → 校验启用/Agent 存活
+    → 域名白名单 → 按 kind 分级限流
+
+    kind:
+      - "write"：对话 / 创建会话等写操作，走 rate_limit_per_min 限流（与原来一致）
+      - "read"：会话列表 / 历史消息等读操作，鉴权后不限流（浏览历史不受限流影响）
+
+    鉴权三层（Key / 白名单 / 归属校验）两个 kind 完全一致——
+    读操作只是不限流，不是免鉴权；Key 错误/白名单外/agent 禁用照样 401/403/404。
+
+    注意：工厂本身必须是普通函数（非 async），返回内部 async 依赖；
+    若为 async def 则调用后返回协程对象，FastAPI 无法解析（TypeError: not a callable）。
 
     返回 (agent_index, owner_user)；供后续接口复用，注入为依赖。
     """
-    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="缺少 API Key")
 
-    key = await AgentApiKeyRepo.get_by_hash(db, hash_api_key(api_key))
-    if key is None or key.enabled != 1:
-        raise HTTPException(status_code=401, detail="API Key 无效或已禁用")
+    async def _dep(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+    ):
+        api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if not api_key:
+            raise HTTPException(status_code=401, detail="缺少 API Key")
 
-    agent = await AgentIndexRepo.get_by_id(db, key.agent_id)
-    if agent is None or agent.status == 9:
-        raise HTTPException(status_code=404, detail="Agent 不存在")
-    if agent.status == 0:
-        raise HTTPException(status_code=400, detail="Agent 已禁用")
+        key = await AgentApiKeyRepo.get_by_hash(db, hash_api_key(api_key))
+        if key is None or key.enabled != 1:
+            raise HTTPException(status_code=401, detail="API Key 无效或已禁用")
 
-    _check_domain(agent, request)
+        agent = await AgentIndexRepo.get_by_id(db, key.agent_id)
+        if agent is None or agent.status == 9:
+            raise HTTPException(status_code=404, detail="Agent 不存在")
+        if agent.status == 0:
+            raise HTTPException(status_code=400, detail="Agent 已禁用")
 
-    # 限流：key = IP:agent_id，阈值读 agent 表
-    client_ip = request.client.host if request.client else "unknown"
-    if not check_rate_limit(f"{client_ip}:{str(agent.id)}",
-                            agent.rate_limit_per_min):
-        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+        _check_domain(agent, request)
 
-    owner = await UserRepo.get_by_id(db, agent.user_id)
-    if owner is None or not owner.is_active:
-        raise HTTPException(status_code=403, detail="Agent 所有者不可用")
+        # 限流：仅写操作（对话/创建会话，防 LLM 成本被刷）；读操作鉴权后直接放行
+        if kind == "write":
+            client_ip = request.client.host if request.client else "unknown"
+            if not check_rate_limit(f"{client_ip}:{str(agent.id)}",
+                                    agent.rate_limit_per_min):
+                raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
 
-    # 记录最后使用时间（尽力而为）
-    await AgentApiKeyRepo.touch_used_at(db, key.id)
-    await db.commit()
+        owner = await UserRepo.get_by_id(db, agent.user_id)
+        if owner is None or not owner.is_active:
+            raise HTTPException(status_code=403, detail="Agent 所有者不可用")
 
-    return agent, owner
+        # 记录最后使用时间（尽力而为）
+        await AgentApiKeyRepo.touch_used_at(db, key.id)
+        await db.commit()
+
+        return agent, owner
+
+    return _dep
 
 
 async def get_optional_user(

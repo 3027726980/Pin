@@ -50,7 +50,7 @@ async def public_chat(
     body: PublicChatRequest,
     db: AsyncSession = Depends(get_db),
     user: Users | None = Depends(get_optional_user),
-    auth=Depends(get_public_agent),
+    auth=Depends(get_public_agent("write")),
 ):
     """API Key 鉴权对话；登录态会话归 user，匿名会话归 client_id"""
     agent, owner = auth
@@ -89,7 +89,7 @@ async def public_create_conversation(
     body: PublicConversationCreate,
     db: AsyncSession = Depends(get_db),
     user: Users | None = Depends(get_optional_user),
-    auth=Depends(get_public_agent),
+    auth=Depends(get_public_agent("write")),
 ):
     """创建会话（登录态归 user，匿名归 client_id）"""
     agent, owner = auth
@@ -110,7 +110,7 @@ async def public_list_conversations(
     page_size: str = Query("", description="每页条数，默认 20"),
     db: AsyncSession = Depends(get_db),
     user: Users | None = Depends(get_optional_user),
-    auth=Depends(get_public_agent),
+    auth=Depends(get_public_agent("read")),
 ):
     """会话列表：登录态按 user 查，匿名按 client_id 查（惰性清理超期匿名会话）"""
     agent, owner = auth
@@ -136,7 +136,7 @@ async def public_list_messages(
     client_id: str | None = Query(None, description="匿名访客标识"),
     db: AsyncSession = Depends(get_db),
     user: Users | None = Depends(get_optional_user),
-    auth=Depends(get_public_agent),
+    auth=Depends(get_public_agent("read")),
 ):
     """历史消息（校验归属：user 或 client_id）"""
     agent, owner = auth
