@@ -11,6 +11,8 @@ export interface ChatEvent {
   type: 'delta' | 'citations' | 'done' | 'error'
   content?: string
   citations?: Citation[]
+  /** 完整引用列表（未过滤，渲染时保留原始编号用；主站同款 rawCitations 语义） */
+  rawCitations?: Citation[]
   message?: string
   code?: number
 }
@@ -89,6 +91,18 @@ export class PublicApi {
     return data.result.items
   }
 
+  /** 删除会话（登录态按 user 归属，匿名按 client_id） */
+  async deleteConversation(convId: string): Promise<void> {
+    const params = this.identityParams({})
+    const qs = new URLSearchParams(params).toString()
+    const resp = await fetch(this.url(`/api/v1/public/conversations/${convId}${qs ? `?${qs}` : ''}`), {
+      method: 'DELETE',
+      headers: this.headers(),
+    })
+    const data = await resp.json()
+    if (!resp.ok || data.code !== 200) throw new Error(data.message || '删除会话失败')
+  }
+
   async listMessages(convId: string): Promise<Msg[]> {
     const params = this.identityParams({ page: '1', page_size: '100' })
     const resp = await fetch(this.url(`/api/v1/public/conversations/${convId}/messages?${new URLSearchParams(params)}`), {
@@ -148,6 +162,7 @@ export class PublicApi {
           type: 'done',
           content: fullContent,
           citations: filterUsedCitations(rawCitations, fullContent),
+          rawCitations,  // 完整列表：UI 渲染时按内容 [N] 过滤并保留原始编号
         })
       } else {
         onEvent(e)
@@ -172,7 +187,11 @@ export class PublicApi {
     }
     // 兜底：流结束但没收到 done（异常断流）
     if (rawCitations.length > 0 || fullContent) {
-      onEvent({ type: 'done', content: fullContent, citations: filterUsedCitations(rawCitations, fullContent) })
+      onEvent({
+        type: 'done', content: fullContent,
+        citations: filterUsedCitations(rawCitations, fullContent),
+        rawCitations,
+      })
     }
   }
 

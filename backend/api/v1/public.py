@@ -127,6 +127,23 @@ async def public_list_conversations(
         "items": items, "total": total, "page": p, "page_size": ps})
 
 
+@router.delete("/conversations/{conv_id}", response_model=SuccessResponse,
+              summary="公开删除会话")
+async def public_delete_conversation(
+    conv_id: UUID,
+    client_id: str | None = Query(None, description="匿名访客标识"),
+    db: AsyncSession = Depends(get_db),
+    user: Users | None = Depends(get_optional_user),
+    auth=Depends(get_public_agent("write")),
+):
+    """删除会话（登录态按 user 归属，匿名按 client_id；写操作走限流）"""
+    agent, owner = auth
+    resolved = _resolve_client_id(client_id, user)
+    await ConversationService.delete(
+        db, user if user else owner, conv_id, client_id=resolved)
+    return SuccessResponse(result=None)
+
+
 @router.get("/conversations/{conv_id}/messages", response_model=SuccessResponse,
             summary="公开历史消息")
 async def public_list_messages(

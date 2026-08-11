@@ -68,6 +68,9 @@
           <n-input v-model:value="embedBaseUrl" placeholder="https://pin.example.com" style="margin-bottom: 12px" />
           <span class="hint">widget 请求后端所用的地址（会显式写入嵌入代码）。默认取当前站点；</span>
           <span class="hint">同域部署无需修改；独立部署（前后端不同域名，如开发环境 8000/8001）时改为实际后端地址。</span>
+          <n-alert v-if="isBaseUrlSameAsCurrentSite" type="warning" style="margin-top: 8px">
+            ⚠️ 当前站点可能不是后端（/chat/embed 与 /widget 由后端提供）。若主站运行在开发服务器（如 8001），请将地址改为后端地址（如 http://localhost:8000），否则嵌入代码无法使用。
+          </n-alert>
         </div>
         <div class="embed-block">
           <div class="embed-label">① 浮窗 / 移动端（推荐，两行代码）</div>
@@ -78,6 +81,7 @@
           <div class="embed-label">② 全屏（iframe 方式）</div>
           <n-input type="textarea" :value="fullscreenCode" readonly :autosize="{ minRows: 3 }" />
           <n-button size="tiny" style="margin-top: 4px" @click="copy(fullscreenCode)">复制</n-button>
+          <span class="hint">高度默认 100vh（占满视口，自适应分辨率）；可根据页面布局修改 height，如 600px / calc(100vh - 80px)</span>
         </div>
       </n-tab-pane>
     </n-tabs>
@@ -340,6 +344,16 @@ function buildBaseUrl(): string {
   return embedBaseUrl.value.replace(/\/$/, '')
 }
 
+/**
+ * baseUrl 与当前站点是否一致（用于提示：嵌入代码必须指向后端，而非前端 dev 服务器）
+ * 注意：不能直接在模板里访问 location（不在 Vue 模板全局白名单，渲染会崩溃），
+ * 必须在 script 中取好再传入模板。
+ */
+const isBaseUrlSameAsCurrentSite = computed(() => {
+  const current = (window.location.origin || '').replace(/\/$/, '')
+  return buildBaseUrl() === current
+})
+
 /** 嵌入代码中的 apiKey：用户自填，留空显示占位 */
 function embedKey(): string {
   return embedApiKey.value.trim() || 'YOUR_API_KEY'
@@ -357,7 +371,7 @@ const floatCode = computed(() => `<script src="${buildBaseUrl()}/widget/widget.j
 <\/script>`)
 
 const fullscreenCode = computed(() => `<iframe src="${buildBaseUrl()}/chat/embed/${props.agentId}?api_key=${embedKey()}"
-        style="width:100%; height:600px; border:none;"></iframe>`)
+        style="width:100%; height:100vh; border:none;"></iframe>`)
 
 async function copy(text: string) {
   try {

@@ -70,3 +70,8 @@ AGENTS.md
 nul
 # 测试目录(不入库,含本地数据库连接信息)
 tests/
+
+# 本地测试/演示页（仅本地测试用，不提交）
+frontend/public/test.html
+frontend/public/fullscreen-demo.html
+frontend/public/fullscreen-test.html

@@ -3,7 +3,7 @@
  * 事件委托 + 局部更新；样式完全隔离在 shadow root 内
  */
 import { PublicApi } from '../core/api'
-import { splitRefs } from '../core/refs'
+import { extractRefIndexes, splitRefs } from '../core/refs'
 import { getToken, getUser, setToken, setUser, type ConvItem, type Msg } from '../core/state'
 import { themeVars, type WidgetTheme } from '../core/theme'
 
@@ -45,18 +45,35 @@ const STYLE = `
 
 .pin-body { flex: 1; overflow-y: auto; padding: 14px; background: #f7f8fa; }
 .pin-empty { text-align: center; color: #999; padding: 40px 0; font-size: 13px; }
-.pin-msg { margin-bottom: 12px; display: flex; }
-.pin-msg.user { justify-content: flex-end; }
+.pin-msg { margin-bottom: 12px; display: flex; flex-direction: column; }
+.pin-msg.user { align-items: flex-end; }
 .pin-bubble-msg { max-width: 82%; padding: 9px 12px; border-radius: 10px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .pin-msg.user .pin-bubble-msg { background: var(--pin-primary); color: #fff; border-bottom-right-radius: 2px; }
 .pin-msg.assistant .pin-bubble-msg { background: #fff; color: #333; border: 1px solid #eee; border-bottom-left-radius: 2px; }
 .pin-msg .err { color: #cf1322; }
 .pin-ref { display: inline-block; padding: 0 3px; margin: 0 1px; font-size: 12px; font-weight: 600; color: var(--pin-primary); cursor: pointer; }
 .pin-cites { margin-top: 8px; border-top: 1px dashed #eee; padding-top: 8px; }
-.pin-cite-item { font-size: 12px; color: #666; margin-bottom: 6px; display: none; }
-.pin-cite-item.open { display: block; }
-.pin-cite-item .doc { color: var(--pin-primary); font-weight: 600; margin-bottom: 2px; }
-.pin-cite-item .txt { max-height: 80px; overflow: hidden; text-overflow: ellipsis; }
+.pin-cites-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--pin-primary); cursor: pointer; user-select: none; padding: 2px 0;
+}
+.pin-cites-bar:hover { opacity: .8; }
+.pin-cites-arrow { transition: transform .15s; font-size: 10px; }
+.pin-cites.open .pin-cites-arrow { transform: rotate(180deg); }
+.pin-cites-body { display: none; margin-top: 6px; }
+.pin-cites.open .pin-cites-body { display: block; }
+.pin-cite-item { font-size: 12px; color: #666; margin-bottom: 8px; padding: 8px; background: #fafafa; border-radius: 6px; }
+.pin-cite-item .doc { color: var(--pin-primary); font-weight: 600; margin-bottom: 4px; display: flex; justify-content: space-between; gap: 8px; }
+.pin-cite-item .score { font-weight: 400; color: #999; font-size: 11px; flex-shrink: 0; }
+.pin-cite-item .txt {
+  max-height: 60px; overflow: hidden; line-height: 1.5; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.pin-cite-item.expanded .txt { max-height: none; -webkit-line-clamp: unset; display: block; }
+.cite-toggle {
+  margin-top: 4px; font-size: 12px; color: var(--pin-primary); cursor: pointer; text-align: right; user-select: none;
+}
+.cite-toggle:hover { opacity: .8; }
 
 .pin-input-row { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #eee; background: #fff; flex-shrink: 0; }
 .pin-input-row textarea {
@@ -91,10 +108,19 @@ const STYLE = `
 .pin-drawer-header { display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid #eee; font-weight: 600; font-size: 15px; }
 .pin-drawer-header .btn { margin-left: auto; background: none; border: none; font-size: 15px; cursor: pointer; color: #666; }
 .pin-drawer-body { flex: 1; overflow-y: auto; padding: 8px 0; }
-.pin-conv-item { padding: 10px 16px; cursor: pointer; font-size: 14px; color: #333; border-bottom: 1px solid #f5f5f5; }
+.pin-conv-item { display: flex; align-items: center; gap: 8px; padding: 10px 16px; cursor: pointer; font-size: 14px; color: #333; border-bottom: 1px solid #f5f5f5; }
 .pin-conv-item:hover { background: #f7f8fa; }
+.pin-conv-item .info { flex: 1; min-width: 0; }
 .pin-conv-item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pin-conv-item .meta { font-size: 12px; color: #999; margin-top: 2px; }
+.pin-conv-del {
+  flex-shrink: 0; border: none; background: none; color: #999; font-size: 13px;
+  cursor: pointer; padding: 4px 8px; border-radius: 4px; opacity: .7;
+}
+.pin-conv-del:hover { color: #cf1322; background: rgba(207,19,34,.08); opacity: 1; }
+.pin-conv-item.confirming .pin-conv-del {
+  color: #fff; background: #cf1322; opacity: 1; font-weight: 600;
+}
 .pin-new-conv { margin: 12px 16px; padding: 8px 0; text-align: center; background: var(--pin-primary); color: #fff; border-radius: 8px; cursor: pointer; font-size: 14px; }
 
 .pin-login { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -109,9 +135,10 @@ const STYLE = `
   .pin-panel { right: 0; bottom: 0; left: 0; width: 100%; height: 100%; max-height: none; border-radius: 0; }
 }
 
-/* 全屏模式：容器占满宿主给定区域 */
-.pin-root-full .pin-panel { position: absolute; inset: 0; right: auto; bottom: auto; width: 100%; height: 100%; max-height: none; border-radius: 0; display: flex; }
-.pin-root-full .pin-bubble { display: none; }
+/* 全屏模式：容器占满宿主给定区域
+   注意：类加在 shadow host 上，必须用 :host() 伪类匹配（普通类选择器选不到 host） */
+:host(.pin-root-full) .pin-panel { position: absolute; inset: 0; right: auto; bottom: auto; width: 100%; height: 100%; max-height: none; border-radius: 0; display: flex; }
+:host(.pin-root-full) .pin-bubble { display: none; }
 `
 
 export class ChatWidget {
@@ -133,6 +160,8 @@ export class ChatWidget {
   private outsideClickHandler: ((e: MouseEvent) => void) | null = null
   /** 销毁标记：销毁后所有渲染/交互短路（防异步回调操作已移除 DOM） */
   private destroyed = false
+  /** 两段式删除确认：记录处于「确认删除」态的会话 id（null = 无） */
+  private pendingDelConvId: string | null = null
   /** toast 轻提示元素 + 自动消失计时器 */
   private toastEl: HTMLElement | null = null
   private toastTimer: number | null = null
@@ -239,12 +268,15 @@ export class ChatWidget {
       else if (action === 'close') this.panel.classList.remove('open')
       else if (action === 'drawer') this.toggleDrawer()
       else if (action === 'close-drawer') this.toggleDrawer(false)
-      else if (action === 'new-conv') this.newConversation()
+      else if (action === 'new-conv') { this.pendingDelConvId = null; this.newConversation() }
       else if (action === 'login') this.toggleLogin()
       else if (action === 'logout') this.logout()
       else if (action === 'stop') this.stopStream()
-      else if (action === 'open-conv') this.openConversation((target as HTMLElement).dataset.convId!)
+      else if (action === 'del-conv') this.handleDeleteConversation((target as HTMLElement).dataset.convId!)
+      else if (action === 'open-conv') { this.pendingDelConvId = null; this.openConversation((target as HTMLElement).dataset.convId!) }
       else if (action === 'cite') this.toggleCite((target as HTMLElement).dataset.msg!, (target as HTMLElement).dataset.idx!)
+      else if (action === 'toggle-cites') this.toggleCites((target as HTMLElement).dataset.msg!)
+      else if (action === 'toggle-cite-content') this.toggleCiteContent((target as HTMLElement).dataset.msg!, (target as HTMLElement).dataset.idx!)
       else if (action === 'send') this.send()
     })
     this.inputEl.addEventListener('keydown', (e) => {
@@ -275,6 +307,8 @@ export class ChatWidget {
   private toggleDrawer(force?: boolean) {
     this.drawerOpen = force === undefined ? !this.drawerOpen : force
     this.drawerEl.classList.toggle('open', this.drawerOpen)
+    // 关闭抽屉时取消删除确认态
+    if (!this.drawerOpen) this.pendingDelConvId = null
     if (this.drawerOpen) {
       this.loginOpen = false
       this.renderDrawerBody()
@@ -373,7 +407,8 @@ export class ChatWidget {
           } else if (e.type === 'done') {
             assistantMsg.content = e.content || assistantMsg.content
             assistantMsg.citations = e.citations || []
-            assistantMsg.rawCitations = assistantMsg.citations
+            // 完整列表优先（保留原始编号供引用面板渲染）；兼容无 rawCitations 的旧事件
+            assistantMsg.rawCitations = e.rawCitations || assistantMsg.citations
             assistantMsg.pending = false
             this.updateLastAssistant()
             // 首轮命名同步（后端一致：前 10 字 + 省略号）
@@ -480,13 +515,31 @@ export class ChatWidget {
         ? `<span class="pin-ref" data-action="cite" data-msg="${idx}" data-idx="${p.index}">[${p.index}]</span>`
         : escapeHtml(p.value))
       .join('')
-    const cites = m.citations && m.citations.length > 0
-      ? `<div class="pin-cites">${m.citations.map((c, i) => `
-          <div class="pin-cite-item" data-cite="${idx}-${i + 1}">
-            <div class="doc">[${i + 1}] 《${escapeHtml(c.document_name)}》</div>
-            <div class="txt">${escapeHtml(c.content)}</div>
-          </div>`).join('')}</div>`
-      : ''
+    // 引用来源：仅渲染回答中实际引用的条目（与主站逻辑一致——无 [N] 标注不显示引用面板）
+    // 用 rawCitations（完整列表）保留原始编号，避免过滤后编号错位
+    const cites = (() => {
+      const raw = m.rawCitations && m.rawCitations.length > 0 ? m.rawCitations : (m.citations || [])
+      if (raw.length === 0) return ''
+      const used = extractRefIndexes(m.content)
+      const items = raw.map((c, i) => ({ c, n: i + 1 })).filter(({ n }) => used.has(n))
+      if (items.length === 0) return ''  // 回答未引用任何条目 → 不显示引用面板
+      return `<div class="pin-cites" data-msg="${idx}">
+          <div class="pin-cites-bar" data-action="toggle-cites" data-msg="${idx}">
+            <span>引用来源（${items.length} 条）</span><span class="pin-cites-arrow">▾</span>
+          </div>
+          <div class="pin-cites-body">
+            ${items.map(({ c, n }) => {
+              const long = c.content && c.content.length > 100
+              return `
+              <div class="pin-cite-item" data-cite="${idx}-${n}">
+                <div class="doc"><span>[${n}] 《${escapeHtml(c.document_name)}》</span>${c.score ? `<span class="score">相似度 ${c.score.toFixed(2)}</span>` : ''}</div>
+                <div class="txt">${escapeHtml(c.content)}</div>
+                ${long ? `<div class="cite-toggle" data-action="toggle-cite-content" data-msg="${idx}" data-idx="${n}">展开 ▼</div>` : ''}
+              </div>`
+            }).join('')}
+          </div>
+        </div>`
+    })()
     const errCls = m.error ? ' err' : ''
     return `<div class="pin-msg ${m.role}"><div class="pin-bubble-msg${errCls}">${parts}</div>${cites}</div>`
   }
@@ -532,16 +585,80 @@ export class ChatWidget {
       this.drawerBodyEl.innerHTML = '<div class="pin-empty">暂无会话</div>'
       return
     }
-    this.drawerBodyEl.innerHTML = this.convs.map(c => `
-      <div class="pin-conv-item" data-action="open-conv" data-conv-id="${c.id}">
-        <div class="t">${escapeHtml(c.title || '新会话')}</div>
-        <div class="meta">${c.message_count} 条消息</div>
-      </div>`).join('')
+    this.drawerBodyEl.innerHTML = this.convs.map(c => {
+      const confirming = this.pendingDelConvId === c.id
+      return `
+      <div class="pin-conv-item ${confirming ? 'confirming' : ''}" data-action="open-conv" data-conv-id="${c.id}">
+        <div class="info">
+          <div class="t">${escapeHtml(c.title || '新会话')}</div>
+          <div class="meta">${c.message_count} 条消息</div>
+        </div>
+        <button class="pin-conv-del" data-action="del-conv" data-conv-id="${c.id}">${confirming ? '确认删除' : '删除'}</button>
+      </div>`
+    }).join('')
   }
 
-  private toggleCite(msgIdx: string, citeIdx: string) {
-    const el = this.shadow.querySelector(`[data-cite="${msgIdx}-${citeIdx}"]`)
+  /**
+   * 两段式删除：第一次点击进入「确认删除」态（红色），再次点击执行；
+   * 点击其他会话/新建/关闭抽屉自动取消确认态。
+   */
+  private async handleDeleteConversation(convId: string) {
+    if (this.pendingDelConvId !== convId) {
+      // 第一次点击：进入确认态
+      this.pendingDelConvId = convId
+      this.renderDrawerBody()
+      return
+    }
+    // 第二次点击：执行删除
+    this.pendingDelConvId = null
+    try {
+      await this.api.deleteConversation(convId)
+      this.convs = this.convs.filter(c => c.id !== convId)
+      // 删除的是当前会话 → 切到列表第一个，无则新建；否则仅刷新抽屉列表
+      if (this.activeConv && this.activeConv.id === convId) {
+        this.msgs = []
+        if (this.convs.length > 0) {
+          await this.openConversation(this.convs[0].id)
+        } else {
+          await this.newConversation()
+        }
+      } else {
+        this.renderDrawerBody()
+      }
+    } catch (e) {
+      this.showToast((e as Error).message)
+      this.renderDrawerBody()
+    }
+  }
+
+  /** 引用折叠列表：展开/收起整条消息的引用来源面板 */
+  private toggleCites(msgIdx: string) {
+    const el = this.shadow.querySelector(`.pin-cites[data-msg="${msgIdx}"]`)
     el?.classList.toggle('open')
+  }
+
+  /** 引用条目内容展开/收起（“展开 ▼ / 收起 ▲”按钮） */
+  private toggleCiteContent(msgIdx: string, citeIdx: string) {
+    const item = this.shadow.querySelector(`.pin-cite-item[data-cite="${msgIdx}-${citeIdx}"]`)
+    if (!item) return
+    item.classList.toggle('expanded')
+    const btn = item.querySelector('.cite-toggle')
+    if (btn) btn.textContent = item.classList.contains('expanded') ? '收起 ▲' : '展开 ▼'
+  }
+
+  /**
+   * [N] 引用标注：自动展开引用列表（若收起）+ 定位并展开/收起对应条目内容
+   * 再次点击 [N] 可收回（保留原收回逻辑）
+   */
+  private toggleCite(msgIdx: string, citeIdx: string) {
+    const panel = this.shadow.querySelector(`.pin-cites[data-msg="${msgIdx}"]`)
+    if (panel && !panel.classList.contains('open')) panel.classList.add('open')
+    const item = this.shadow.querySelector(`.pin-cite-item[data-cite="${msgIdx}-${citeIdx}"]`)
+    if (!item) return
+    item.classList.toggle('expanded')
+    const btn = item.querySelector('.cite-toggle')
+    if (btn) btn.textContent = item.classList.contains('expanded') ? '收起 ▲' : '展开 ▼'
+    item.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }
 
   /**

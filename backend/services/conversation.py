@@ -99,10 +99,20 @@ class ConversationService:
         return msgs, total
 
     @staticmethod
-    async def delete(db: AsyncSession, user: Users, conv_id: UUID) -> None:
-        """删除会话:软删 + 消息软删 + checkpoint 数据清理"""
+    async def delete(db: AsyncSession, user: Users, conv_id: UUID,
+                     client_id: str | None = None) -> None:
+        """删除会话:软删 + 消息软删 + checkpoint 数据清理
+
+        归属校验：匿名场景（client_id 非空）按 client_id；登录场景按 user_id
+        （与 get_messages 一致，删不掉别人的会话）。
+        """
         conv = await ConversationRepo.get_by_id(db, conv_id)
-        if conv is None or conv.status == 9 or conv.user_id != user.id:
+        if conv is None or conv.status == 9:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if client_id:
+            if conv.client_id != client_id:
+                raise HTTPException(status_code=404, detail="会话不存在")
+        elif conv.user_id != user.id:
             raise HTTPException(status_code=404, detail="会话不存在")
         await ConversationRepo.soft_delete(db, conv)
         await ConversationRepo.soft_delete_messages(db, conv_id)
