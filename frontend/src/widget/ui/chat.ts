@@ -117,6 +117,12 @@ export class ChatWidget {
   private drawerOpen = false
   private loginOpen = false
   private abortCtrl: AbortController | null = null
+  /** shadow host 元素（destroy 时移除） */
+  private hostEl!: HTMLElement
+  /** document 级点击监听（需保存引用以便 destroy 时解绑） */
+  private outsideClickHandler: ((e: MouseEvent) => void) | null = null
+  /** 销毁标记：销毁后所有渲染/交互短路（防异步回调操作已移除 DOM） */
+  private destroyed = false
 
   // DOM 引用
   private el: Record<string, HTMLElement> = {}
@@ -148,6 +154,9 @@ export class ChatWidget {
     }
     const host = document.createElement('div')
     host.className = 'pin-widget-host'
+    // DOM 级标记：供重复 init 时兜底扫描（即使注册表闭包被新 script 覆盖也能找到旧 DOM）
+    host.setAttribute('data-pin-agent', agentId)
+    this.hostEl = host
     this.rootEl.appendChild(host)
     this.shadow = host.attachShadow({ mode: 'open' })
     this.shadow.innerHTML = `<style>${STYLE}\n${themeVars(theme)}</style>`
@@ -231,8 +240,8 @@ export class ChatWidget {
         this.send()
       }
     })
-    // 点击面板外部区域 → 关闭（浮窗/移动端模式）
-    document.addEventListener('click', (e) => {
+    // 点击面板外部区域 → 关闭（浮窗/移动端模式）；保存引用供 destroy 解绑
+    this.outsideClickHandler = (e: MouseEvent) => {
       if (this.rootEl === document.body && this.panel.classList.contains('open')) {
         const host = this.shadow.host
         if (host !== (e.target as Node) && !host.contains(e.target as Node)) {
@@ -240,7 +249,8 @@ export class ChatWidget {
           this.drawerEl.classList.remove('open')
         }
       }
-    })
+    }
+    document.addEventListener('click', this.outsideClickHandler)
   }
 
   // ── 面板开关 ────────────────────────────
@@ -430,6 +440,7 @@ export class ChatWidget {
 
   // ── 渲染 ────────────────────────────────
   private renderBody() {
+    if (this.destroyed) return
     if (this.loginOpen) {
       this.renderLoginForm()
       return
@@ -464,6 +475,7 @@ export class ChatWidget {
 
   /** 流式打字机：只更新最后一条助手消息 */
   private updateLastAssistant() {
+    if (this.destroyed) return
     const last = this.msgs[this.msgs.length - 1]
     if (!last || last.role !== 'assistant') return
     const items = this.bodyEl.querySelectorAll('.pin-msg')
@@ -480,6 +492,7 @@ export class ChatWidget {
   }
 
   private renderInputRow() {
+    if (this.destroyed) return
     const row = this.shadow.querySelector('.pin-input-row')!
     if (this.streaming) {
       row.innerHTML = '<button class="pin-stop" data-action="stop">停止生成</button>'
@@ -522,7 +535,23 @@ export class ChatWidget {
   }
 
   private scrollBottom() {
+    if (this.destroyed) return
     this.bodyEl.scrollTop = this.bodyEl.scrollHeight
+  }
+
+  /**
+   * 销毁实例：中断流式 + 解绑 document 监听 + 移除 shadow host
+   *
+   * 用于：同 agentId 重复 init 时替换旧实例；宿主主动清理（PinWidget.destroy）。
+   */
+  destroy() {
+    this.destroyed = true
+    this.abortCtrl?.abort()
+    if (this.outsideClickHandler) {
+      document.removeEventListener('click', this.outsideClickHandler)
+      this.outsideClickHandler = null
+    }
+    this.hostEl.remove()
   }
 }
 
