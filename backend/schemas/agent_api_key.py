@@ -21,6 +21,7 @@ class AgentApiKeyResponse(BaseModel):
     id: UUID
     agent_id: UUID
     name: str | None
+    key_preview: str | None = Field(None, description="明文前缀预览（如 pin_AbC...）")
     enabled: int
     last_used_at: datetime | None
     created_at: datetime

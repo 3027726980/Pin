@@ -68,9 +68,9 @@
 <script setup lang="ts">
 import { h, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NPopconfirm, NSpace, NIcon, NSwitch, NTag } from 'naive-ui'
-import { AddOutline, CreateOutline, TrashOutline, ChatbubbleEllipsesOutline } from '@vicons/ionicons5'
-import type { DataTableColumns } from 'naive-ui'
+import { NButton, NDropdown, NSpace, NIcon, NSwitch, NTag, useDialog } from 'naive-ui'
+import { AddOutline, ChatbubbleEllipsesOutline, CreateOutline, EllipsisHorizontalOutline, LinkOutline, TrashOutline } from '@vicons/ionicons5'
+import type { DataTableColumns, DropdownOption } from 'naive-ui'
 import {
   listAgents,
   batchAgents,
@@ -84,6 +84,7 @@ import EmbedSettingsModal from './EmbedSettingsModal.vue'
 
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 
 // ── 列表状态 ────────────────────────────
 const loading = ref(false)
@@ -157,9 +158,34 @@ const columns: DataTableColumns<AgentListItem> = [
   {
     title: '操作',
     key: 'actions',
-    width: 240,
+    width: 150,
     render(row) {
-      return h(NSpace, {}, {
+      const moreOptions: Array<DropdownOption & { key: string }> = [
+        {
+          label: '编辑',
+          key: 'edit',
+          icon: () => h(NIcon, null, { default: () => h(CreateOutline) }),
+        },
+        {
+          label: '嵌入设置',
+          key: 'embed',
+          icon: () => h(NIcon, null, { default: () => h(LinkOutline) }),
+        },
+        {
+          label: '删除',
+          key: 'delete',
+          icon: () => h(NIcon, null, { default: () => h(TrashOutline) }),
+          props: { style: { color: '#d03050' } },
+        },
+      ]
+      const handleMoreSelect = (key: string) => {
+        if (key === 'edit') openEdit(row.id)
+        else if (key === 'embed') {
+          embedAgentId.value = row.id
+          embedVisible.value = true
+        } else if (key === 'delete') confirmDelete(row)
+      }
+      return h(NSpace, { align: 'center' }, {
         default: () => [
           h(
             NButton,
@@ -167,31 +193,13 @@ const columns: DataTableColumns<AgentListItem> = [
             { icon: () => h(NIcon, null, { default: () => h(ChatbubbleEllipsesOutline) }), default: () => '对话' },
           ),
           h(
-            NButton,
-            { size: 'small', quaternary: true, onClick: () => openEdit(row.id) },
-            { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) },
-          ),
-          h(
-            NButton,
+            NDropdown,
+            { options: moreOptions, trigger: 'click', onSelect: handleMoreSelect },
             {
-              size: 'small',
-              quaternary: true,
-              onClick: () => {
-                embedAgentId.value = row.id
-                embedVisible.value = true
-              },
-            },
-            { default: () => '嵌入' },
-          ),
-          h(
-            NPopconfirm,
-            { onPositiveClick: () => handleDelete(row.id) },
-            {
-              trigger: () =>
-                h(NButton, { size: 'small', quaternary: true, type: 'error' }, {
-                  icon: () => h(NIcon, null, { default: () => h(TrashOutline) }),
+              default: () =>
+                h(NButton, { size: 'small', quaternary: true }, {
+                  icon: () => h(NIcon, null, { default: () => h(EllipsisHorizontalOutline) }),
                 }),
-              default: () => '确定删除该 Agent？',
             },
           ),
         ],
@@ -248,6 +256,17 @@ async function handleDelete(id: string) {
   } catch (e) {
     message.error((e as Error).message || '删除失败')
   }
+}
+
+/** 下拉菜单删除：dialog 二次确认 */
+function confirmDelete(row: AgentListItem) {
+  dialog.warning({
+    title: '删除确认',
+    content: `确定删除 Agent「${row.name}」？此操作不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: () => handleDelete(row.id),
+  })
 }
 
 async function handleToggleStatus(row: AgentListItem, enabled: boolean) {

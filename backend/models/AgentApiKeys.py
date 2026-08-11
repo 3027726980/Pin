@@ -21,6 +21,9 @@ class AgentApiKeys(Base):
     key_hash: Mapped[str] = mapped_column(
         String(64), nullable=False, comment="SHA-256 哈希"
     )
+    key_preview: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="明文前缀预览（如 pin_AbC...，非明文）"
+    )
     name: Mapped[str | None] = mapped_column(
         String(100), nullable=True, comment="备注（如：公司官网客服）"
     )

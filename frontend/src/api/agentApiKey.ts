@@ -5,6 +5,7 @@ export interface AgentApiKeyItem {
   id: string
   agent_id: string
   name: string | null
+  key_preview: string | null
   enabled: number
   last_used_at: string | null
   created_at: string

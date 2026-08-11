@@ -12,9 +12,11 @@ class AgentApiKeyRepo:
 
     @staticmethod
     async def create(db: AsyncSession, agent_id: UUID, key_hash: str,
+                     key_preview: str | None = None,
                      name: str | None = None) -> AgentApiKeys:
         """创建密钥记录(flush 不 commit)"""
-        key = AgentApiKeys(agent_id=agent_id, key_hash=key_hash, name=name)
+        key = AgentApiKeys(agent_id=agent_id, key_hash=key_hash,
+                           key_preview=key_preview, name=name)
         db.add(key)
         await db.flush()
         return key

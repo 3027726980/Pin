@@ -448,6 +448,7 @@ CREATE TABLE IF NOT EXISTS agent_api_keys (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id     UUID NOT NULL REFERENCES agent_index(id) ON DELETE CASCADE,
     key_hash     VARCHAR(64) NOT NULL,
+    key_preview  VARCHAR(20),
     name         VARCHAR(100),
     enabled      SMALLINT NOT NULL DEFAULT 1,
     last_used_at TIMESTAMPTZ,
@@ -455,7 +456,16 @@ CREATE TABLE IF NOT EXISTS agent_api_keys (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_agent_api_keys_agent_id ON agent_api_keys(agent_id);
-COMMENT ON TABLE agent_api_keys IS 'Agent 嵌入密钥表（只存哈希）';
+COMMENT ON TABLE agent_api_keys IS 'Agent 嵌入密钥表（只存哈希 + 前缀预览）';
+COMMENT ON COLUMN agent_api_keys.id IS '密钥主键';
+COMMENT ON COLUMN agent_api_keys.agent_id IS '归属 Agent ID（级联删除）';
+COMMENT ON COLUMN agent_api_keys.key_hash IS 'SHA-256 哈希（单向，不可反推明文）';
+COMMENT ON COLUMN agent_api_keys.key_preview IS '明文前缀预览（如 pin_AbC123...，非明文，仅列表辨识用）';
+COMMENT ON COLUMN agent_api_keys.name IS '备注（如：公司官网客服）';
+COMMENT ON COLUMN agent_api_keys.enabled IS '1=启用 0=禁用';
+COMMENT ON COLUMN agent_api_keys.last_used_at IS '最后使用时间（公开接口鉴权成功后更新）';
+COMMENT ON COLUMN agent_api_keys.created_at IS '创建时间';
+COMMENT ON COLUMN agent_api_keys.updated_at IS '最后更新时间';
 
 -- ============================================================
 -- 14. 会话表（Phase 4.5）
@@ -477,6 +487,14 @@ CREATE INDEX IF NOT EXISTS ix_conversations_agent_id ON conversations(agent_id);
 CREATE INDEX IF NOT EXISTS ix_conversations_client_id ON conversations(client_id);
 CREATE INDEX IF NOT EXISTS ix_conversations_agent_client ON conversations(agent_id, client_id);
 COMMENT ON TABLE conversations IS '会话表：id 即 checkpoint thread_id；匿名会话 user_id 空 + client_id 非空';
+COMMENT ON COLUMN conversations.id IS '会话 ID（= LangGraph checkpoint thread_id）';
+COMMENT ON COLUMN conversations.user_id IS '归属用户 ID（匿名会话为空）';
+COMMENT ON COLUMN conversations.agent_id IS '归属 Agent ID';
+COMMENT ON COLUMN conversations.client_id IS '匿名访客标识（登录会话为空）';
+COMMENT ON COLUMN conversations.title IS '会话标题（首轮对话自动用第一条用户消息前 10 字命名）';
+COMMENT ON COLUMN conversations.status IS '1=启用, 9=软删除';
+COMMENT ON COLUMN conversations.created_at IS '创建时间';
+COMMENT ON COLUMN conversations.updated_at IS '最后更新时间（含 checkpoint 写入）';
 
 -- ============================================================
 -- 15. 会话消息表（Phase 4.5）
@@ -493,6 +511,13 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages(conversation_id);
 COMMENT ON TABLE messages IS '会话消息表：历史留痕（与 checkpoint 解耦）';
+COMMENT ON COLUMN messages.id IS '消息主键';
+COMMENT ON COLUMN messages.conversation_id IS '归属会话 ID（= thread_id）';
+COMMENT ON COLUMN messages.role IS '消息角色：user / assistant';
+COMMENT ON COLUMN messages.content IS '消息内容';
+COMMENT ON COLUMN messages.citations IS '引用来源 JSONB：[{chunk_id, document_name, content, score}]';
+COMMENT ON COLUMN messages.status IS '1=启用, 9=软删除';
+COMMENT ON COLUMN messages.created_at IS '创建时间';
 
 -- Agent 总结模型配置（Phase 4.5,SummarizationMiddleware 用）
 ALTER TABLE simple_rag_agents

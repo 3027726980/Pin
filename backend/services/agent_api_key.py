@@ -38,11 +38,13 @@ class AgentApiKeyService:
     @staticmethod
     async def create(db: AsyncSession, user: Users, agent_id: UUID,
                      name: str | None = None) -> AgentApiKeyCreated:
-        """生成密钥：明文只返回一次，服务端存哈希"""
+        """生成密钥：明文只返回一次，服务端存哈希 + 前缀预览"""
         await AgentApiKeyService._check_agent(db, user, agent_id)
         plain = KEY_PREFIX + secrets.token_urlsafe(KEY_LENGTH)
+        # 前缀预览：pin_ + 前 10 位，如 pin_AbC123xYzW...
+        preview = plain[:14] + "..."
         key = await AgentApiKeyRepo.create(
-            db, agent_id, hash_api_key(plain), name)
+            db, agent_id, hash_api_key(plain), preview, name)
         await db.commit()
         await db.refresh(key)
         resp = AgentApiKeyResponse.model_validate(key)

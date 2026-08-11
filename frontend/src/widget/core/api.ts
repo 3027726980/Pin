@@ -1,4 +1,8 @@
-/** 公开接口客户端：X-API-Key 鉴权 + client_id/JWT 双身份 + SSE 流式 */
+/** 公开接口客户端：X-API-Key 鉴权 + client_id/JWT 双身份 + SSE 流式
+ *
+ * baseUrl：Pin 后端地址（默认空=相对路径，与宿主同源；跨域嵌入时必传，
+ * 如 'https://pin.example.com'）
+ */
 
 import { getClientId, getToken } from './state'
 import { filterUsedCitations, type Citation } from './refs'
@@ -19,9 +23,16 @@ export interface ChatResult {
 
 export class PublicApi {
   private apiKey: string
+  private baseUrl: string
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl = '') {
     this.apiKey = apiKey
+    this.baseUrl = baseUrl.replace(/\/$/, '')
+  }
+
+  /** 拼后端地址 */
+  private url(path: string): string {
+    return `${this.baseUrl}${path}`
   }
 
   /** 统一请求头：API Key 必带；登录态带 JWT */
@@ -43,7 +54,7 @@ export class PublicApi {
   }
 
   async login(username: string, password: string): Promise<{ access_token: string; user: { id: string; username: string } }> {
-    const resp = await fetch('/api/v1/public/auth/login', {
+    const resp = await fetch(this.url('/api/v1/public/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -56,10 +67,12 @@ export class PublicApi {
   }
 
   async createConversation(agentId: string): Promise<{ id: string; title: string | null }> {
-    const resp = await fetch('/api/v1/public/conversations', {
+    const body: Record<string, unknown> = { agent_id: agentId }
+    if (!getToken()) body.client_id = getClientId()
+    const resp = await fetch(this.url('/api/v1/public/conversations'), {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify({ agent_id: agentId }),
+      body: JSON.stringify(body),
     })
     const data = await resp.json()
     if (!resp.ok || data.code !== 200) throw new Error(data.message || '创建会话失败')
@@ -68,7 +81,7 @@ export class PublicApi {
 
   async listConversations(agentId: string): Promise<ConvItem[]> {
     const params = this.identityParams({ agent_id: agentId })
-    const resp = await fetch(`/api/v1/public/conversations?${new URLSearchParams(params)}`, {
+    const resp = await fetch(this.url(`/api/v1/public/conversations?${new URLSearchParams(params)}`), {
       headers: this.headers(),
     })
     const data = await resp.json()
@@ -78,7 +91,7 @@ export class PublicApi {
 
   async listMessages(convId: string): Promise<Msg[]> {
     const params = this.identityParams({ page: '1', page_size: '100' })
-    const resp = await fetch(`/api/v1/public/conversations/${convId}/messages?${new URLSearchParams(params)}`, {
+    const resp = await fetch(this.url(`/api/v1/public/conversations/${convId}/messages?${new URLSearchParams(params)}`), {
       headers: this.headers(),
     })
     const data = await resp.json()
@@ -106,7 +119,7 @@ export class PublicApi {
     }
     if (!getToken()) body.client_id = getClientId()
 
-    const resp = await fetch(`/api/v1/public/agents/${agentId}/chat`, {
+    const resp = await fetch(this.url(`/api/v1/public/agents/${agentId}/chat`), {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
@@ -167,7 +180,7 @@ export class PublicApi {
   async chat(agentId: string, conversationId: string, message: string): Promise<ChatResult> {
     const body: Record<string, unknown> = { message, conversation_id: conversationId, stream: false }
     if (!getToken()) body.client_id = getClientId()
-    const resp = await fetch(`/api/v1/public/agents/${agentId}/chat`, {
+    const resp = await fetch(this.url(`/api/v1/public/agents/${agentId}/chat`), {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),

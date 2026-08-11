@@ -132,10 +132,11 @@ export class ChatWidget {
   private drawerBodyEl!: HTMLElement
   private headerEl!: HTMLElement
 
-  constructor(agentId: string, apiKey: string, theme: WidgetTheme, mountRoot?: string) {
+  constructor(agentId: string, apiKey: string, theme: WidgetTheme,
+              mountRoot?: string, baseUrl = '') {
     this.agentId = agentId
     this.theme = theme
-    this.api = new PublicApi(apiKey)
+    this.api = new PublicApi(apiKey, baseUrl)
 
     // 挂载点：fullscreen 指定 root，float/mobile 挂 body
     if (mountRoot) {
@@ -228,6 +229,16 @@ export class ChatWidget {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         this.send()
+      }
+    })
+    // 点击面板外部区域 → 关闭（浮窗/移动端模式）
+    document.addEventListener('click', (e) => {
+      if (this.rootEl === document.body && this.panel.classList.contains('open')) {
+        const host = this.shadow.host
+        if (host !== (e.target as Node) && !host.contains(e.target as Node)) {
+          this.panel.classList.remove('open')
+          this.drawerEl.classList.remove('open')
+        }
       }
     })
   }
