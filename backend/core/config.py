@@ -40,6 +40,8 @@ def _apply_env_overrides(cfg) -> None:
             cfg.checkpoint.keep_rounds = int(env_keep_rounds)
         except ValueError:
             print(f"[WARNING] CHECKPOINT_KEEP_ROUNDS 非法值: {env_keep_rounds}，忽略")
+    if (env_log_dir := os.getenv("LOG_DIR")):
+        cfg.logging.dir = env_log_dir
 
 
 _apply_env_overrides(settings)
