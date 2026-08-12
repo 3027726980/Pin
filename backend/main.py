@@ -162,8 +162,10 @@ async def lifespan(app: FastAPI):
         await SystemSettingsService.init(session)
     global _redact_filter
     _redact_filter = RedactFilter(SystemSettingsService.get("logging.redact_rules"))
-    for h in logging.getLogger().handlers:
-        h.addFilter(_redact_filter)
+    # 挂载到全部 handler（root + 分文件 handler：llm/http/sql 同样脱敏）
+    for _lgr_name in ("", "backend.llm", "backend.http", "sqlalchemy.engine"):
+        for _h in logging.getLogger(_lgr_name).handlers:
+            _h.addFilter(_redact_filter)
     SystemSettingsService.register_on_change(_on_setting_change)
     _cleanup_task = await start_cleanup_task()
     try:
@@ -198,16 +200,20 @@ _http_logger = logging.getLogger("backend.http")
 
 @app.middleware("http")
 async def http_access_log(request: Request, call_next):
-    """记录每个请求：方法/路径/状态码/耗时/IP + Authorization 头 + body（脱敏 Filter 兜底）"""
+    """记录每个请求：方法/路径/状态码/耗时/IP + Authorization 头 + body（脱敏 Filter 兜底）
+
+    前置读 body：读入 _body 缓存（FastAPI 路由解析命中同一缓存），
+    避免 call_next 后读取时流已被消费（Stream consumed）。
+    """
     start = _time.perf_counter()
-    response = await call_next(request)
-    duration_ms = int((_time.perf_counter() - start) * 1000)
     body_preview = ""
     try:
         raw = await request.body()
         body_preview = raw.decode("utf-8", errors="replace")[:200]
     except Exception:
         pass
+    response = await call_next(request)
+    duration_ms = int((_time.perf_counter() - start) * 1000)
     _http_logger.info(
         "method=%s path=%s status=%d duration_ms=%d ip=%s authorization=%s body=%s",
         request.method, request.url.path, response.status_code, duration_ms,

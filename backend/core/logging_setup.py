@@ -74,11 +74,16 @@ class InfiniteRotatingFileHandler(logging.handlers.RotatingFileHandler):
 
 
 class RedactFilter(logging.Filter):
-    """脱敏 Filter：按规则对 record.getMessage() 统一掩码（emit 前，全部 handler 生效）"""
+    """脱敏 Filter：按规则对 record.getMessage() 统一掩码（emit 前，全部 handler 生效）
+
+    规则类型：
+      - field_name：匹配字段名（api_key/token/password 等），**连字段值一起掩码**（"password":"admin123" → "password":"******"）
+      - value_pattern：匹配值模式（sk-/pin_/Bearer 等），整体掩码
+    """
 
     def __init__(self, rules: dict | None = None):
         super().__init__()
-        self._compiled: list[tuple[re.Pattern, str]] = []
+        self._compiled: list[tuple[re.Pattern, str, bool]] = []
         self._enabled = True
         self.reload(rules)
 
@@ -86,16 +91,30 @@ class RedactFilter(logging.Filter):
         """根据 system_settings 规则重建（修改后调用，立即生效）"""
         rules = rules or {}
         self._enabled = bool(rules.get("enabled", True))
-        self._compiled = []
+        compiled: list[tuple[re.Pattern, str, bool]] = []
         for r in rules.get("rules", []):
             try:
-                self._compiled.append((re.compile(r["pattern"]), r.get("mask", "keep_4_4")))
+                if r.get("type") == "field_name":
+                    # 字段名 + 其值（支持 key=value 与 JSON "key":"value" 两种形态）
+                    # group(1)=字段名+分隔符（含引号），group(2)=字段值
+                    pat = re.compile(
+                        r'("?(?:' + r["pattern"] + r')"?\s*[:=]\s*"?)([^",}\s]+)')
+                    compiled.append((pat, r.get("mask", "keep_4_4"), True))
+                else:
+                    compiled.append(
+                        (re.compile(r["pattern"]), r.get("mask", "keep_4_4"), False))
             except re.error:
                 continue
+        # 执行顺序：value_pattern 先于 field_name——
+        # field_name 掩码后的残留（如 sk-3***5678 中的 sk-3）可能被 value_pattern 二次匹配
+        # （value_pattern 掩码对已掩码值幂等，field_name 掩码亦然，顺序正确则无残留问题）
+        compiled.sort(key=lambda x: x[2])
+        self._compiled = compiled
 
     @staticmethod
     def _mask(value: str, mask: str) -> str:
-        if mask == "full_mask" or len(value) < 12:
+        # 幂等：已掩码值（含 ***）不再触发短值全掩，保持前4后4
+        if mask == "full_mask" or (len(value) < 12 and "***" not in value):
             return "******"
         return f"{value[:4]}***{value[-4:]}"
 
@@ -104,11 +123,18 @@ class RedactFilter(logging.Filter):
             return True
         msg = record.getMessage()
         changed = False
-        for pattern, mask in self._compiled:
-            def repl(m: re.Match, _mask: str = mask) -> str:
-                nonlocal changed
-                changed = True
-                return self._mask(m.group(0), _mask)
+        for pattern, mask, is_field in self._compiled:
+            if is_field:
+                # 字段名保留原文，值掩码（"password":"admin123" → "password":"******"）
+                def repl(m: re.Match, _mask: str = mask) -> str:
+                    nonlocal changed
+                    changed = True
+                    return m.group(1) + self._mask(m.group(2), _mask)
+            else:
+                def repl(m: re.Match, _mask: str = mask) -> str:
+                    nonlocal changed
+                    changed = True
+                    return self._mask(m.group(0), _mask)
             msg = pattern.sub(repl, msg)
         if changed:
             record.msg = msg
