@@ -18,7 +18,11 @@
             <n-switch v-model:value="redactConfig.enabled" />
           </n-form-item>
           <n-form-item label="匹配规则">
-            <n-dynamic-input v-model:value="redactConfig.rules" #default="{ value }">
+            <n-dynamic-input
+              v-model:value="redactConfig.rules"
+              #default="{ value }"
+              #create-default="() => ({ type: 'field_name', pattern: '', mask: 'keep_4_4' })"
+            >
               <div class="rule-row">
                 <n-select
                   v-model:value="value.type"
@@ -42,9 +46,11 @@
             <span class="hint">示例：sk-3cb94abcd → sk-3***bcd；字段名 api_key/token/password 等自动匹配</span>
           </n-form-item>
         </n-form>
-        <n-button type="primary" size="small" :loading="saving" @click="saveRedactRules">
-          保存脱敏规则
-        </n-button>
+        <div class="save-row">
+          <n-button type="primary" :loading="saving" @click="saveRedactRules">
+            保存脱敏规则
+          </n-button>
+        </div>
       </n-card>
 
       <!-- 其他设置项：JSON 文本编辑 -->
@@ -79,6 +85,7 @@ import { useMessage } from 'naive-ui'
 import {
   listSettings,
   updateSetting,
+  type RedactRule,
   type RedactRulesConfig,
   type SystemSetting,
 } from '@/api/settings'
@@ -111,7 +118,10 @@ async function load() {
       const cfg = rs.value as unknown as RedactRulesConfig
       redactConfig.value = {
         enabled: Boolean(cfg.enabled),
-        rules: [...(cfg.rules || [])],
+        // 防御：过滤历史遗留的 null 项（DynamicInput 旧版添加默认值可能为 null）
+        rules: (cfg.rules || []).filter(
+          (r) => r && typeof r === 'object' && r.type,
+        ) as RedactRule[],
       }
     }
     for (const s of otherSettings.value) {
@@ -155,13 +165,13 @@ async function saveJsonItem(key: string) {
 
 <style scoped>
 .system-settings {
-  max-width: 900px;
+  max-width: 960px;
 }
 .empty {
   padding: 40px 0;
 }
 .item-card {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .rule-row {
   display: flex;
@@ -171,17 +181,18 @@ async function saveJsonItem(key: string) {
 }
 .hint {
   font-size: 12px;
-  color: #999;
+  color: var(--n-text-color-3);
+  line-height: 1.6;
 }
 .save-row {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 .json-error {
   font-size: 12px;
   color: #d03050;
+  margin-right: auto;
 }
 </style>
