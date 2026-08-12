@@ -13,9 +13,6 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
-from langchain.agents import create_agent
-from langchain_core.messages import AIMessageChunk, HumanMessage
-from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Users
@@ -238,7 +235,13 @@ class ChatService:
     @staticmethod
     async def _build_agent(db: AsyncSession, user: Users, agent: object,
                            llm_cfg: object, tools: list) -> object:
-        """构建 create_agent(带 checkpointer + middleware)"""
+        """构建 create_agent(带 checkpointer + middleware)
+
+        延迟 import langchain 系（启动提速：仅首次对话时才加载）。
+        """
+        from langchain.agents import create_agent
+        from langchain_openai import ChatOpenAI
+
         from backend.core.checkpointer import get_checkpointer
 
         summary_cfg = await ChatService._get_summary_cfg(db, user, agent)
@@ -328,6 +331,8 @@ class ChatService:
                             user_content: str,
                             citations_store: list | None = None) -> str:
         """非流式:create_agent.ainvoke(thread_id = conversation_id)"""
+        from langchain_core.messages import HumanMessage
+
         await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(db, user, agent, llm_cfg, tools)
         try:
@@ -346,6 +351,8 @@ class ChatService:
                                    citations_store: list | None = None
                                    ) -> AsyncIterator[dict]:
         """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)"""
+        from langchain_core.messages import AIMessageChunk, HumanMessage
+
         await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(db, user, agent, llm_cfg, tools)
         try:
@@ -444,7 +451,7 @@ class ChatService:
     async def _persist_turn_without_llm(conversation_id: UUID,
                                         user_message: str) -> None:
         """无命中短路:把 user + assistant 消息手动写入 checkpoint"""
-        from langchain_core.messages import AIMessage
+        from langchain_core.messages import AIMessage, HumanMessage
 
         from backend.core.checkpointer import get_checkpointer
 

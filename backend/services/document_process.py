@@ -9,7 +9,6 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.core.config import settings
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, UserModelConfig, Users
@@ -76,6 +75,8 @@ class DocumentProcessService:
         流程：读取 doc.content 完整文本 → 递归分块 → 替换旧 chunks → 插入新行
         返回成功分块的文档数
         """
+        from langchain_text_splitters import RecursiveCharacterTextSplitter  # 延迟 import（启动提速）
+
         separator_list = [s.strip() for s in kb.chunk_separators.split(",") if s.strip()]
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=kb.chunk_size,

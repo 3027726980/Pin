@@ -60,45 +60,82 @@ async def seed_admin() -> None:
 
 
 # ── 种子模型配置 ─────────────────────────────────
-# 每次启动时：清空 model_providers + default_model_config，再从 config.yaml 重新插入。
-# 避免 config.yaml 删除厂商/模型后数据库残留旧数据。
+# 按 config.yaml 与数据库差异比对后同步（无变化不动库）：
+# 缺的插入、多的删除、变化的更新。避免每次启动全量 DELETE+INSERT
+# （启动中途失败会清空配置表的风险），也减少启动写操作。
 # user_model_config 不受影响（仅存 provider 字符串，无 FK 依赖）。
 async def seed_model_config() -> None:
     async with async_session_local() as session:
-        from sqlalchemy import delete
+        from sqlalchemy import select
 
         providers = getattr(settings, "model_providers", None)
         if providers is None:
             return
 
-        # 1. 清空旧数据
-        await session.execute(delete(DefaultModelConfig))
-        await session.execute(delete(ModelProviders))
-        await session.execute(delete(ModelTypes))
+        # 期望状态（config.yaml）
+        expect_types = {mt["code"]: mt["name"]
+                        for mt in getattr(settings, "model_types", []) or []}
+        expect_providers = set(vars(providers).keys())
+        expect_models: dict = {}
+        for pname, pcfg in vars(providers).items():
+            for m in getattr(pcfg, "models", []) or []:
+                expect_models[(pname, m["model_name"])] = {
+                    "model_type": m["model_type"],
+                    "base_url": m["base_url"],
+                    "dimension": m.get("dimension"),
+                }
 
-        # 2. 插入模型类型对照
-        model_types = getattr(settings, "model_types", [])
-        if isinstance(model_types, list):
-            for mt in model_types:
-                session.add(ModelTypes(code=mt["code"], name=mt["name"]))
-                print(f"[INIT] 模型类型已创建: {mt['code']} → {mt['name']}")
+        # 数据库现状
+        db_types = {t.code: t for t in
+                    (await session.execute(select(ModelTypes))).scalars()}
+        db_providers = {p.name: p for p in
+                        (await session.execute(select(ModelProviders))).scalars()}
+        db_models = {(d.provider, d.model_name): d for d in
+                     (await session.execute(select(DefaultModelConfig))).scalars()}
 
-        # 3. 插入厂商和默认模型
-        for provider_name, provider_cfg in vars(providers).items():
-            session.add(ModelProviders(name=provider_name))
-            print(f"[INIT] 厂商已创建: {provider_name}")
+        changed = False
+        # 模型类型 diff
+        for code, name in expect_types.items():
+            t = db_types.get(code)
+            if t is None:
+                session.add(ModelTypes(code=code, name=name))
+                changed = True
+            elif t.name != name:
+                t.name = name
+                changed = True
+        for code in set(db_types) - set(expect_types):
+            await session.delete(db_types[code])
+            changed = True
+        # 厂商 diff
+        for p in expect_providers:
+            if p not in db_providers:
+                session.add(ModelProviders(name=p))
+                changed = True
+        for p in set(db_providers) - expect_providers:
+            await session.delete(db_providers[p])
+            changed = True
+        # 默认模型 diff
+        for key, exp in expect_models.items():
+            d = db_models.get(key)
+            if d is None:
+                session.add(DefaultModelConfig(provider=key[0], model_name=key[1], **exp))
+                changed = True
+            elif (d.model_type != exp["model_type"]
+                  or d.base_url != exp["base_url"]
+                  or d.dimension != exp["dimension"]):
+                d.model_type, d.base_url, d.dimension = \
+                    exp["model_type"], exp["base_url"], exp["dimension"]
+                changed = True
+        for key in set(db_models) - set(expect_models):
+            await session.delete(db_models[key])
+            changed = True
 
-            models = getattr(provider_cfg, "models", [])
-            if isinstance(models, list):
-                for m in models:
-                    session.add(DefaultModelConfig(
-                        provider=provider_name,
-                        model_name=m["model_name"],
-                        model_type=m["model_type"],
-                        base_url=m["base_url"],
-                        dimension=m.get("dimension"),
-                    ))
-                    print(f"[INIT] 默认模型已创建: {provider_name}/{m['model_name']} (dim={m.get('dimension')})")
+        if changed:
+            await session.commit()
+            print("[INIT] 模型配置已按 config.yaml 同步（差异更新）")
+        else:
+            await session.rollback()
+            print("[INIT] 模型配置与 config.yaml 一致，跳过")
 
         await session.commit()
 

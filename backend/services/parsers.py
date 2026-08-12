@@ -10,7 +10,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 import pymupdf
-from markitdown import MarkItDown
 
 
 class BaseParser(ABC):
@@ -32,6 +31,10 @@ class PyMuPDFParser(BaseParser):
 
 class MarkitdownParser(BaseParser):
     def parse(self, file_path: str) -> str:
+        # 延迟 import：markitdown[all] 会拉起 torch/transformers（启动耗时 ~5s），
+        # 仅首次解析文档时才加载（启动提速优化）
+        from markitdown import MarkItDown
+
         return MarkItDown().convert(file_path).text_content
 
 
