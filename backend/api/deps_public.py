@@ -4,7 +4,9 @@
 - API Key 是 Agent 所有者的授权凭证（权限锁死在该 Agent 内）
 - 通过鉴权后返回 (agent_index 记录, 所有者 Users)
 - 访客身份：JWT 优先（登录态）；无 JWT 时用 client_id（匿名，由路由层读取）
+- 严格绑定：请求中显式携带的 agent_id（路径/query/body）必须等于 Key 绑定的 agent_id，否则 404
 """
+import json
 from urllib.parse import urlparse
 
 from fastapi import Depends, HTTPException, Request
@@ -38,6 +40,34 @@ def _check_domain(agent: object, request: Request) -> None:
     host = urlparse(origin).hostname or ""
     if host not in domains:
         raise HTTPException(status_code=403, detail="域名不在白名单内")
+
+
+async def _resolve_request_agent_id(request: Request) -> str | None:
+    """从请求中提取 agent_id：路径参数 → query 参数 → JSON body（三级回退）
+
+    覆盖各公开接口的 agent_id 位置：
+      - POST /agents/{agent_id}/chat（路径）
+      - GET  /conversations?agent_id=...（query）
+      - POST /conversations（body.agent_id）
+    按 conv_id 定位的接口（删除会话/历史消息）无 agent_id，返回 None（跳过强绑定校验）。
+    body 读取安全：Starlette 会缓存已读 body，与 FastAPI 路由参数解析不冲突。
+    """
+    aid = request.path_params.get("agent_id")
+    if aid is not None:
+        return str(aid)
+    aid = request.query_params.get("agent_id")
+    if aid is not None:
+        return str(aid)
+    if (request.headers.get("content-type") or "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if isinstance(body, dict):
+            aid = body.get("agent_id")
+            if aid is not None:
+                return str(aid)
+    return None
 
 
 def get_public_agent(kind: str = "write"):
@@ -75,6 +105,11 @@ def get_public_agent(kind: str = "write"):
             raise HTTPException(status_code=404, detail="Agent 不存在")
         if agent.status == 0:
             raise HTTPException(status_code=400, detail="Agent 已禁用")
+
+        # 严格绑定：请求中显式携带的 agent_id 必须等于 Key 绑定的 agent（防跨 Agent 盗用）
+        req_agent_id = await _resolve_request_agent_id(request)
+        if req_agent_id is not None and req_agent_id != str(agent.id):
+            raise HTTPException(status_code=404, detail="Agent 不存在")
 
         _check_domain(agent, request)
 
