@@ -194,6 +194,17 @@ def setup_logging() -> None:
             ch = logging.StreamHandler()
             ch.setFormatter(logging.Formatter(
                 "%(levelname)-7s | %(name)s | %(message)s"))
+        # 分模块控制台开关（modules 中为 false 的模块不上控制台，文件照写）
+        modules_ns = getattr(console_cfg, "modules", None)
+        off_modules = [m for m, v in vars(modules_ns).items() if not v] \
+            if modules_ns is not None else []
+        if off_modules:
+            class _ConsoleFilter(logging.Filter):
+                def filter(self, record):
+                    return not any(
+                        record.name == m or record.name.startswith(m + ".")
+                        for m in off_modules)
+            ch.addFilter(_ConsoleFilter())
         root.addHandler(ch)
 
     # 模块初始级别（也是动态切换的还原基准）
