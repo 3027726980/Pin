@@ -30,6 +30,7 @@ from backend.services.middleware import build_middlewares
 from backend.tools import RAGTool, ToolRegistry
 
 logger = logging.getLogger(__name__)
+_llm_logger = logging.getLogger("backend.llm")  # 链路日志：LLM 调用（写 llm.log）
 
 # ── simple_rag 提示词模板（引用块组装用，见 _build_user_prompt）──────────
 _RAG_PROMPT_HEADER = "以下是知识库中可能与问题相关的资料片段："
@@ -330,17 +331,28 @@ class ChatService:
                             llm_cfg: object, conv: object, tools: list,
                             user_content: str,
                             citations_store: list | None = None) -> str:
-        """非流式:create_agent.ainvoke(thread_id = conversation_id)"""
+        """非流式:create_agent.ainvoke(thread_id = conversation_id)（埋点：耗时/错误）"""
+        import time as _time
+
         from langchain_core.messages import HumanMessage
 
         await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(db, user, agent, llm_cfg, tools)
+        t0 = _time.perf_counter()
         try:
             result = await lc_agent.ainvoke(
                 {"messages": [HumanMessage(content=user_content)]},
                 config=ChatService._thread_config(conv))
+            _llm_logger.info(
+                "agent=%s type=%s conversation=%s duration_ms=%d error=None",
+                getattr(agent, "name", "?"), getattr(agent, "type", "?"),
+                str(conv.id), int((_time.perf_counter() - t0) * 1000))
             return result["messages"][-1].content or ""
         except Exception as e:
+            _llm_logger.error(
+                "agent=%s type=%s conversation=%s duration_ms=%d error=%s",
+                getattr(agent, "name", "?"), getattr(agent, "type", "?"),
+                str(conv.id), int((_time.perf_counter() - t0) * 1000), e)
             logger.error(f"Agent 调用失败: {e}")
             raise HTTPException(status_code=502, detail=f"LLM 服务调用失败: {e}")
 
@@ -350,11 +362,14 @@ class ChatService:
                                    user_content: str,
                                    citations_store: list | None = None
                                    ) -> AsyncIterator[dict]:
-        """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)"""
+        """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)（埋点：耗时/错误）"""
+        import time as _time
+
         from langchain_core.messages import AIMessageChunk, HumanMessage
 
         await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(db, user, agent, llm_cfg, tools)
+        t0 = _time.perf_counter()
         try:
             async for chunk, _meta in lc_agent.astream(
                     {"messages": [HumanMessage(content=user_content)]},
@@ -362,7 +377,15 @@ class ChatService:
                     stream_mode="messages"):
                 if isinstance(chunk, AIMessageChunk) and chunk.content:
                     yield {"type": "delta", "content": chunk.content}
+            _llm_logger.info(
+                "agent=%s type=%s conversation=%s duration_ms=%d error=None",
+                getattr(agent, "name", "?"), getattr(agent, "type", "?"),
+                str(conv.id), int((_time.perf_counter() - t0) * 1000))
         except Exception as e:
+            _llm_logger.error(
+                "agent=%s type=%s conversation=%s duration_ms=%d error=%s",
+                getattr(agent, "name", "?"), getattr(agent, "type", "?"),
+                str(conv.id), int((_time.perf_counter() - t0) * 1000), e)
             logger.error(f"Agent 流式调用失败: {e}")
             yield {"type": "error", "code": 502,
                    "message": f"LLM 服务调用失败: {e}"}

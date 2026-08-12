@@ -7,6 +7,7 @@ Phase 1：FastAPI 启动 → 建表 → 种子管理员 → 注册认证路由
 # Windows:psycopg async 不支持 ProactorEventLoop,需切换 SelectorEventLoop
 # (必须在使用事件循环前设置,uvicorn 导入本模块时生效)
 import asyncio
+import logging
 import sys
 
 if sys.platform == "win32":
@@ -147,7 +148,26 @@ async def lifespan(app: FastAPI):
     await seed_admin()
     await seed_model_config()
     await get_checkpointer()   # 初始化 checkpoint 表(幂等)
-    yield
+
+    # 日志体系初始化 + 系统设置（seed + 缓存 + 脱敏 Filter 挂载）
+    from backend.core.logging_setup import (
+        RedactFilter, setup_logging, start_cleanup_task,
+    )
+    from backend.services.system_settings import SystemSettingsService
+
+    setup_logging()
+    async with async_session_local() as session:
+        await SystemSettingsService.init(session)
+    global _redact_filter
+    _redact_filter = RedactFilter(SystemSettingsService.get("logging.redact_rules"))
+    for h in logging.getLogger().handlers:
+        h.addFilter(_redact_filter)
+    SystemSettingsService.register_on_change(_on_setting_change)
+    _cleanup_task = await start_cleanup_task()
+    try:
+        yield
+    finally:
+        _cleanup_task.cancel()
 
 
 # ── 应用实例 ────────────────────────────────────────
@@ -156,6 +176,45 @@ app = FastAPI(
     version=settings.app.version,
     lifespan=lifespan,
 )
+
+# ── 日志体系：脱敏 Filter 全局引用 + 设置变更回调 ──────────
+_redact_filter = None
+
+
+async def _on_setting_change(key: str, value: dict) -> None:
+    """系统设置变更回调：脱敏规则更新 → 重建 Filter（立即生效）"""
+    if key == "logging.redact_rules" and _redact_filter is not None:
+        _redact_filter.reload(value)
+        logging.getLogger("backend").info("脱敏规则已更新并生效")
+
+
+# ── HTTP 访问日志中间件（backend.http → http.log）──────────
+import time as _time
+
+_http_logger = logging.getLogger("backend.http")
+
+
+@app.middleware("http")
+async def http_access_log(request: Request, call_next):
+    """记录每个请求：方法/路径/状态码/耗时/IP + Authorization 头 + body（脱敏 Filter 兜底）"""
+    start = _time.perf_counter()
+    response = await call_next(request)
+    duration_ms = int((_time.perf_counter() - start) * 1000)
+    body_preview = ""
+    try:
+        raw = await request.body()
+        body_preview = raw.decode("utf-8", errors="replace")[:200]
+    except Exception:
+        pass
+    _http_logger.info(
+        "method=%s path=%s status=%d duration_ms=%d ip=%s authorization=%s body=%s",
+        request.method, request.url.path, response.status_code, duration_ms,
+        request.client.host if request.client else "unknown",
+        request.headers.get("authorization", ""),
+        body_preview,
+    )
+    return response
+
 
 # ── 异常处理：统一响应格式 ──────────────────────────
 @app.exception_handler(HTTPException)

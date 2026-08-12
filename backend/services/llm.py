@@ -11,11 +11,13 @@ LLM 服务 — 协议注册表模式
 （OpenAI 兼容是事实标准，即使厂商从配置删除，已有数据也能继续工作）。
 """
 import logging
+import time
 from collections.abc import AsyncIterator
 
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+_llm_logger = logging.getLogger("backend.llm")
 
 
 class LLMService:
@@ -93,16 +95,29 @@ class OpenAICompatible:
         temperature: float,
         top_p: float,
     ) -> str:
-        """OpenAI 兼容非流式对话"""
+        """OpenAI 兼容非流式对话（埋点：耗时 + 输出长度 + 错误）"""
         client = OpenAICompatible._build_client(api_key, base_url)
-        resp = await client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            stream=False,
-        )
-        return resp.choices[0].message.content or ""
+        t0 = time.perf_counter()
+        try:
+            resp = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                top_p=top_p,
+                stream=False,
+            )
+            content = resp.choices[0].message.content or ""
+            _llm_logger.info(
+                "model=%s base_url=%s stream=false total_ms=%d chars=%d error=None",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), len(content))
+            return content
+        except Exception as e:
+            _llm_logger.error(
+                "model=%s base_url=%s stream=false total_ms=%d error=%s",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), e)
+            raise
 
     @staticmethod
     async def chat_stream(
@@ -113,18 +128,35 @@ class OpenAICompatible:
         temperature: float,
         top_p: float,
     ) -> AsyncIterator[str]:
-        """OpenAI 兼容流式对话，逐 chunk 提取 delta.content"""
+        """OpenAI 兼容流式对话（埋点：首 token / 总耗时 / 输出长度 / 错误）"""
         client = OpenAICompatible._build_client(api_key, base_url)
-        stream = await client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            stream=True,
-        )
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        t0 = time.perf_counter()
+        first_token_ms: int | None = None
+        chars = 0
+        try:
+            stream = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                top_p=top_p,
+                stream=True,
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    if first_token_ms is None:
+                        first_token_ms = int((time.perf_counter() - t0) * 1000)
+                    chars += len(chunk.choices[0].delta.content)
+                    yield chunk.choices[0].delta.content
+            _llm_logger.info(
+                "model=%s base_url=%s stream=true first_token_ms=%s total_ms=%d chars=%d error=None",
+                model_name, base_url or "", first_token_ms,
+                int((time.perf_counter() - t0) * 1000), chars)
+        except Exception as e:
+            _llm_logger.error(
+                "model=%s base_url=%s stream=true total_ms=%d error=%s",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), e)
+            raise
 
 
 # 协议 → 实现类 注册表
