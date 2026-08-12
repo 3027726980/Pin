@@ -198,30 +198,64 @@ import time as _time
 _http_logger = logging.getLogger("backend.http")
 
 
-@app.middleware("http")
-async def http_access_log(request: Request, call_next):
-    """记录每个请求：方法/路径/状态码/耗时/IP + Authorization 头 + body（脱敏 Filter 兜底）
+class HttpAccessLogMiddleware:
+    """纯 ASGI 中间件：记录每个请求的 方法/路径/状态/耗时/IP + 请求体 + 响应体（脱敏 Filter 兜底）
 
-    前置读 body：读入 _body 缓存（FastAPI 路由解析命中同一缓存），
-    避免 call_next 后读取时流已被消费（Stream consumed）。
+    用纯 ASGI 而非 BaseHTTPMiddleware 的原因：
+      - 需要收集**响应体**（含 SSE 流式响应）——BaseHTTPMiddleware 拿不到发送中的 body
+      - 包装 receive/send：请求体在读取时收集，响应体在发送时收集（SSE 也在流结束后完整记录）
     """
-    start = _time.perf_counter()
-    body_preview = ""
-    try:
-        raw = await request.body()
-        body_preview = raw.decode("utf-8", errors="replace")[:200]
-    except Exception:
-        pass
-    response = await call_next(request)
-    duration_ms = int((_time.perf_counter() - start) * 1000)
-    _http_logger.info(
-        "method=%s path=%s status=%d duration_ms=%d ip=%s authorization=%s body=%s",
-        request.method, request.url.path, response.status_code, duration_ms,
-        request.client.host if request.client else "unknown",
-        request.headers.get("authorization", ""),
-        body_preview,
-    )
-    return response
+
+    # 请求/响应体只保留前 512 字节用于收集（日志输出再截断 200）
+    _MAX_COLLECT = 512
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        start = _time.perf_counter()
+        req_chunks: list[bytes] = []
+        resp_chunks: list[bytes] = []
+        status = 0
+
+        async def receive_wrapper():
+            message = await receive()
+            if message["type"] == "http.request":
+                body = message.get("body", b"")
+                if len(b"".join(req_chunks)) < self._MAX_COLLECT:
+                    req_chunks.append(body)
+            return message
+
+        async def send_wrapper(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            elif message["type"] == "http.response.body":
+                body = message.get("body", b"")
+                if len(b"".join(resp_chunks)) < self._MAX_COLLECT:
+                    resp_chunks.append(body)
+            await send(message)
+
+        await self.app(scope, receive_wrapper, send_wrapper)
+
+        duration_ms = int((_time.perf_counter() - start) * 1000)
+        req_preview = b"".join(req_chunks).decode("utf-8", errors="replace")[:200]
+        resp_preview = b"".join(resp_chunks).decode("utf-8", errors="replace")[:200]
+        _http_logger.info(
+            "method=%s path=%s status=%d duration_ms=%d ip=%s authorization=%s body=%s response=%s",
+            scope.get("method", ""), scope.get("path", ""), status, duration_ms,
+            scope.get("client", ("unknown", 0))[0],
+            dict(scope.get("headers", []))
+            .get(b"authorization", b"").decode("utf-8", errors="replace"),
+            req_preview, resp_preview,
+        )
+
+
+# 注册 HTTP 访问日志中间件（在 public_cors 之后添加 = 更外层，先收集请求体）
+app.add_middleware(HttpAccessLogMiddleware)
 
 
 # ── 异常处理：统一响应格式 ──────────────────────────
