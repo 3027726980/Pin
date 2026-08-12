@@ -19,9 +19,9 @@
           </n-form-item>
           <n-form-item label="匹配规则">
             <n-dynamic-input
-              v-model:value="redactConfig.rules"
+              :value="redactConfig.rules"
               #default="{ value }"
-              #create-default="() => ({ type: 'field_name', pattern: '', mask: 'keep_4_4' })"
+              @update:value="onRulesUpdate"
             >
               <div class="rule-row">
                 <n-select
@@ -145,6 +145,18 @@ async function saveRedactRules() {
   } finally {
     saving.value = false
   }
+}
+
+/**
+ * DynamicInput 变更处理：添加行时 naive-ui 默认 push null，
+ * 这里把 null 统一替换为默认规则对象（模板编译器不支持 #create-default 箭头函数写法）
+ */
+function onRulesUpdate(v: unknown[]) {
+  if (!redactConfig.value) return
+  redactConfig.value.rules = (v || []).map((item) => {
+    const r = item as RedactRule | null
+    return r && r.type ? r : { type: 'field_name', pattern: '', mask: 'keep_4_4' }
+  })
 }
 
 async function saveJsonItem(key: string) {
