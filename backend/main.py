@@ -206,8 +206,8 @@ class HttpAccessLogMiddleware:
       - 包装 receive/send：请求体在读取时收集，响应体在发送时收集（SSE 也在流结束后完整记录）
     """
 
-    # 请求/响应体只保留前 512 字节用于收集（日志输出再截断 200）
-    _MAX_COLLECT = 512
+    # 请求/响应体收集上限：1MB 保护（完整记录，防极端异常响应撑爆内存）
+    _MAX_COLLECT = 1024 * 1024
 
     def __init__(self, app):
         self.app = app
@@ -242,8 +242,11 @@ class HttpAccessLogMiddleware:
         await self.app(scope, receive_wrapper, send_wrapper)
 
         duration_ms = int((_time.perf_counter() - start) * 1000)
-        req_preview = b"".join(req_chunks).decode("utf-8", errors="replace")[:200]
-        resp_preview = b"".join(resp_chunks).decode("utf-8", errors="replace")[:200]
+        # 完整记录请求/响应体；换行转义为 \n 保持单行（便于 grep/日志解析）
+        req_text = b"".join(req_chunks).decode("utf-8", errors="replace")
+        resp_text = b"".join(resp_chunks).decode("utf-8", errors="replace")
+        req_preview = req_text.replace("\r", "\\r").replace("\n", "\\n")
+        resp_preview = resp_text.replace("\r", "\\r").replace("\n", "\\n")
         _http_logger.info(
             "method=%s path=%s status=%d duration_ms=%d ip=%s authorization=%s body=%s response=%s",
             scope.get("method", ""), scope.get("path", ""), status, duration_ms,
