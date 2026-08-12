@@ -41,7 +41,6 @@
         <div class="msg-bubble" :class="msg.role">
           <!-- 当前等待/生成中的助手消息：气泡内直接显示加载状态 -->
           <template v-if="isPendingMsg(msg)">
-            <n-spin size="small" />
             <span class="stage-text">{{ loadingText }}</span>
           </template>
           <!-- 正常内容：分段渲染（文本 + [N] 可点击引用标注） -->
@@ -307,6 +306,7 @@ async function openConversation(conv: ConversationItem) {
     message.error((e as Error).message || '历史消息加载失败')
   } finally {
     msgLoading.value = false
+    scrollBottom()
   }
 }
 
@@ -354,6 +354,7 @@ async function send() {
 
   messages.value.push({ role: 'user', content: text, uid: ++msgUid })
   inputText.value = ''
+  scrollBottom()
 
   // 首轮对话自动命名：与后端 _persist_messages 逻辑一致（标题仍为默认值时，用第一条消息前 10 字，超过则加省略号）
   // activeConv 与会话列表同一对象引用，改这里列表同步生效，无需刷新
@@ -364,6 +365,7 @@ async function send() {
   // 占位助手消息（reactive：push 的是代理本身，流式增量修改实时触发视图更新）
   const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [], uid: ++msgUid })
   messages.value.push(assistantMsg)
+  scrollBottom()
 
   streaming.value = true
   sending.value = true
@@ -402,6 +404,7 @@ async function send() {
             currentStage.value = 'generating'
           }
           assistantMsg.content += event.content
+          scrollBottom()
         } else if (event.type === 'citations') {
           // 仅保留回答中实际引用（[N]）的条目，未引用的不展示
           assistantMsg.rawCitations = event.citations
@@ -473,6 +476,18 @@ function stopLoadingText() {
 function isPendingMsg(msg: DisplayMessage): boolean {
   const last = messages.value[messages.value.length - 1]
   return (streaming.value || sending.value) && last === msg
+}
+
+// ── 消息区滚动 ────────────────────────
+/**
+ * 消息区滚动到底部（发送新消息时自动滚动；流式输出时跟随生成内容）
+ * 注意：Vue 异步渲染，需 nextTick 后再操作 DOM
+ */
+function scrollBottom() {
+  nextTick(() => {
+    const el = document.querySelector('.chat-body')
+    if (el) el.scrollTop = el.scrollHeight
+  })
 }
 
 // ── 工具函数 ────────────────────────────
@@ -707,7 +722,8 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 .stage-text {
   margin-left: 8px;
   font-size: 13px;
-  color: var(--n-text-color-3);
+  /* 加载状态文字：灰色（与嵌入端 pin-loading 一致） */
+  color: #999;
 }
 
 .chat-input-row {

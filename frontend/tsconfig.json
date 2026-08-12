@@ -16,6 +16,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "auto-imports.d.ts", "components.d.ts"],
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "auto-imports.d.ts", "components.d.ts", "vite.config.ts", "vite.widget.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

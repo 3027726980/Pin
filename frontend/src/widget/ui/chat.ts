@@ -86,6 +86,8 @@ const STYLE = `
   padding: 0 16px; cursor: pointer; font-size: 14px;
 }
 .pin-send:disabled { opacity: .5; cursor: not-allowed; }
+/* AI 输出中输入框禁用态（灰色背景，保持可见） */
+.pin-input-row textarea:disabled { background: #f5f6f7; color: #999; cursor: not-allowed; }
 /* 轻提示：导航操作失败等场景的一次性提示（不污染消息列表） */
 .pin-toast {
   position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%);
@@ -231,7 +233,8 @@ export class ChatWidget {
         <div class="pin-body"></div>
         <div class="pin-input-row">
           <textarea placeholder="输入消息，Enter 发送" rows="1"></textarea>
-          <button class="pin-send">发送</button>
+          <button class="pin-send" data-action="send">发送</button>
+          <button class="pin-stop" data-action="stop" style="display:none">停止</button>
         </div>
         <div class="pin-drawer">
           <div class="pin-drawer-header">
@@ -248,10 +251,7 @@ export class ChatWidget {
     this.bodyEl = this.shadow.querySelector('.pin-body')!
     this.inputEl = this.shadow.querySelector('textarea')!
     this.sendBtn = this.shadow.querySelector('.pin-send')!
-    this.stopBtn = document.createElement('button')
-    this.stopBtn.className = 'pin-stop'
-    this.stopBtn.textContent = '停止'
-    this.stopBtn.setAttribute('data-action', 'stop')
+    this.stopBtn = this.shadow.querySelector('.pin-stop')!
     this.loginBtn = this.shadow.querySelector('[data-action="login"]')!
     this.convBtn = this.shadow.querySelector('[data-action="drawer"]')!
     this.drawerEl = this.shadow.querySelector('.pin-drawer')!
@@ -515,6 +515,17 @@ export class ChatWidget {
     this.renderInputRow()
   }
 
+  /**
+   * 输入区状态切换（DOM 常驻，不重建）：
+   * AI 输出中 → 输入框禁用（保持可见，与主站一致）、隐藏发送、显示停止；空闲 → 恢复。
+   */
+  private renderInputRow() {
+    if (this.destroyed) return
+    this.inputEl.disabled = this.streaming
+    this.sendBtn.style.display = this.streaming ? 'none' : ''
+    this.stopBtn.style.display = this.streaming ? '' : 'none'
+  }
+
   private renderMsg(m: Msg, idx: number): string {
     if (m.pending) {
       return `<div class="pin-msg assistant"><div class="pin-bubble-msg"><span class="pin-loading">${escapeHtml(ChatWidget.LOADING_TEXTS[this.loadingIdx])}</span></div></div>`
@@ -568,26 +579,7 @@ export class ChatWidget {
     this.scrollBottom()
   }
 
-  private renderInputRow() {
-    if (this.destroyed) return
-    const row = this.shadow.querySelector('.pin-input-row')!
-    if (this.streaming) {
-      row.innerHTML = '<button class="pin-stop" data-action="stop">停止生成</button>'
-      return
-    }
-    row.innerHTML = `
-      <textarea placeholder="输入消息，Enter 发送" rows="1"></textarea>
-      <button class="pin-send" data-action="send">发送</button>
-    `
-    this.inputEl = row.querySelector('textarea')!
-    this.sendBtn = row.querySelector('.pin-send')!
-    this.inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        this.send()
-      }
-    })
-  }
+
 
   private renderDrawerBody() {
     if (this.convs.length === 0) {

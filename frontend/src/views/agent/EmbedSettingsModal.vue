@@ -66,7 +66,7 @@
         <div class="embed-block">
           <div class="embed-label">Pin 后端地址</div>
           <n-input v-model:value="embedBaseUrl" placeholder="https://pin.example.com" style="margin-bottom: 12px" />
-          <span class="hint">widget 请求后端所用的地址（会显式写入嵌入代码）。默认取当前站点；</span>
+          <span class="hint">widget 请求后端所用的地址（会显式写入嵌入代码）。默认读取 Vite 配置（开发环境指向后端 8000）；</span>
           <span class="hint">同域部署无需修改；独立部署（前后端不同域名，如开发环境 8000/8001）时改为实际后端地址。</span>
           <n-alert v-if="isBaseUrlSameAsCurrentSite" type="warning" style="margin-top: 8px">
             ⚠️ 当前站点可能不是后端（/chat/embed 与 /widget 由后端提供）。若主站运行在开发服务器（如 8001），请将地址改为后端地址（如 http://localhost:8000），否则嵌入代码无法使用。
@@ -338,7 +338,12 @@ async function handleSavePolicy() {
 
 // ── 嵌入代码 ─────────────────────────
 const embedApiKey = ref('')
-const embedBaseUrl = ref(location.origin)
+/**
+ * 嵌入代码中的后端地址（默认值）：
+ * 优先读取 Vite 环境变量 VITE_EMBED_BASE_URL（.env.development 中配置，指向后端，如 http://localhost:8000），
+ * 未配置时（如生产同域部署）回退当前站点 location.origin。
+ */
+const embedBaseUrl = ref(import.meta.env.VITE_EMBED_BASE_URL || location.origin)
 
 function buildBaseUrl(): string {
   return embedBaseUrl.value.replace(/\/$/, '')
@@ -370,8 +375,7 @@ const floatCode = computed(() => `<script src="${buildBaseUrl()}/widget/widget.j
   })
 <\/script>`)
 
-const fullscreenCode = computed(() => `<iframe src="${buildBaseUrl()}/chat/embed/${props.agentId}?api_key=${embedKey()}"
-        style="width:100%; height:100vh; border:none;"></iframe>`)
+const fullscreenCode = computed(() => `<iframe src="${buildBaseUrl()}/chat/embed/${props.agentId}?api_key=${embedKey()}"style="width:100%; height:100vh; border:none;"></iframe>`)
 
 async function copy(text: string) {
   try {

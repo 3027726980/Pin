@@ -1,4 +1,4 @@
-import { resolve } from 'path'
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
@@ -28,7 +28,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
+      // type: module 下无 __dirname，使用 import.meta.url 定位（官方模板写法）
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
   server: {
