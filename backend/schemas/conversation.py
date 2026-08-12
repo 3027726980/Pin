@@ -23,8 +23,7 @@ class ConversationResponse(BaseModel):
 
 
 class MessageResponse(BaseModel):
-    """会话消息"""
-    id: UUID
+    """会话消息（无 id：消息存于会话 JSON 数组，前端以索引/本地 uid 定位）"""
     role: str
     content: str
     citations: list | None = None

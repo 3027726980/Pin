@@ -478,6 +478,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     agent_id    UUID NOT NULL REFERENCES agent_index(id),
     client_id   VARCHAR(64),
     title       VARCHAR(100),
+    messages    JSONB NOT NULL DEFAULT '[]'::jsonb,
     status      SMALLINT NOT NULL DEFAULT 1,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -493,31 +494,15 @@ COMMENT ON COLUMN conversations.agent_id IS '归属 Agent ID';
 COMMENT ON COLUMN conversations.client_id IS '匿名访客标识（登录会话为空）';
 COMMENT ON COLUMN conversations.title IS '会话标题（首轮对话自动用第一条用户消息前 10 字命名）';
 COMMENT ON COLUMN conversations.status IS '1=启用, 9=软删除';
+COMMENT ON COLUMN conversations.messages IS '会话消息 JSONB 数组：[{role, content, citations, created_at}]，写入用 || 原子追加';
 COMMENT ON COLUMN conversations.created_at IS '创建时间';
 COMMENT ON COLUMN conversations.updated_at IS '最后更新时间（含 checkpoint 写入）';
 
 -- ============================================================
--- 15. 会话消息表（Phase 4.5）
---      每轮问答落库（含引用），历史查看数据源；与 checkpoint 解耦
+-- 15. 会话消息（Phase 4.5 → 013 改版）
+--      消息不再单独建表：存于 conversations.messages JSONB（每会话一条记录）
+--      写入一律 SQL 原子追加（|| 拼接），禁止应用层读改写
 -- ============================================================
-CREATE TABLE IF NOT EXISTS messages (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID NOT NULL REFERENCES conversations(id),
-    role            VARCHAR(20) NOT NULL,
-    content         TEXT NOT NULL,
-    citations       JSONB,
-    status          SMALLINT NOT NULL DEFAULT 1,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages(conversation_id);
-COMMENT ON TABLE messages IS '会话消息表：历史留痕（与 checkpoint 解耦）';
-COMMENT ON COLUMN messages.id IS '消息主键';
-COMMENT ON COLUMN messages.conversation_id IS '归属会话 ID（= thread_id）';
-COMMENT ON COLUMN messages.role IS '消息角色：user / assistant';
-COMMENT ON COLUMN messages.content IS '消息内容';
-COMMENT ON COLUMN messages.citations IS '引用来源 JSONB：[{chunk_id, document_name, content, score}]';
-COMMENT ON COLUMN messages.status IS '1=启用, 9=软删除';
-COMMENT ON COLUMN messages.created_at IS '创建时间';
 
 -- Agent 总结模型配置（Phase 4.5,SummarizationMiddleware 用）
 ALTER TABLE simple_rag_agents

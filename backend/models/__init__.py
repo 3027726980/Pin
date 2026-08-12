@@ -15,7 +15,6 @@ from .GeneralAgents import GeneralAgents
 from .AgentIndex import AgentIndex
 from .AgentApiKeys import AgentApiKeys
 from .Conversations import Conversations
-from .Messages import Messages
 
 __all__ = [
     "AccessTokenWhitelist",
@@ -28,7 +27,6 @@ __all__ = [
     "Embeddings",
     "GeneralAgents",
     "KnowledgeBases",
-    "Messages",
     "ModelProviders",
     "ModelTypes",
     "RefreshTokenWhitelist",

@@ -4,7 +4,7 @@
 - 所有类型统一 create_agent + checkpointer(thread_id = conversation_id)
 - simple_rag:预检索(代码控制)→ 命中注入引用块;无命中短路 + 手动写 checkpoint
 - general:LLM 自主决策工具调用(LangGraph 多轮)
-- 每轮对话双写 messages(user 原始问题 + assistant 回答含 citations)
+- 每轮对话原子追加到会话 JSON(user 原始问题 + assistant 回答含 citations)
 - 短期记忆:SummarizationMiddleware(参数走 config.yaml,总结模型 Agent 级配置)
 """
 import logging
@@ -58,7 +58,7 @@ class ChatService:
         client_id: str | None = None,
         exec_user: Users | None = None,
     ) -> ChatResponse:
-        """非流式对话(记忆由 checkpoint 持久化,双写 messages)
+        """非流式对话(记忆由 checkpoint 持久化,原子追加会话 JSON)
 
         client_id 非空 = 匿名访客场景（会话归属 client_id，user 为 Agent 所有者）；
         为空 = 登录用户场景（会话归属 user.id）。
@@ -88,7 +88,7 @@ class ChatService:
         client_id: str | None = None,
         exec_user: Users | None = None,
     ) -> AsyncIterator[dict]:
-        """流式对话,产出 SSE 事件 dict;流结束(含异常)后双写 messages
+        """流式对话,产出 SSE 事件 dict;流结束(含异常)后原子追加会话 JSON
 
         client_id 非空 = 匿名访客场景（会话归属 client_id）；
         exec_user:公开接口登录场景的 Agent 所有者。
@@ -482,20 +482,26 @@ class ChatService:
     async def _persist_messages(db: AsyncSession, conv: object,
                                 user_msg: str, assistant_msg: str,
                                 citations: list[Citation]) -> None:
-        """双写 messages 表(user 原始问题 + assistant 回答含引用)
+        """原子追加本轮消息到会话 JSON（user + assistant 含引用）
 
-        首轮对话自动命名:会话标题仍为默认值时,用当次首条用户消息前 10 字更新
-        (仅用第一条消息,不取后续消息;超过 10 字末尾加省略号)
+        一轮两条一次 append_messages（单条 UPDATE || 拼接，数据库内部读-拼-写，
+        并发安全且成对写入）。首轮对话自动命名:会话标题仍为默认值时,
+        用当次首条用户消息前 10 字更新(仅用第一条消息,不取后续消息;超过 10 字末尾加省略号)
         """
         from backend.services.conversation import DEFAULT_CONV_TITLE
 
         if conv.title is None or conv.title == DEFAULT_CONV_TITLE:
             title = user_msg if len(user_msg) <= 10 else user_msg[:10] + "..."
             await ConversationRepo.update_title(db, conv, title)
-        await MessageRepo.create(db, conv.id, "user", user_msg, None)
-        await MessageRepo.create(
-            db, conv.id, "assistant", assistant_msg,
-            [c.model_dump(mode="json") for c in citations] if citations else None)
+        now = datetime.now(timezone.utc).isoformat()
+        await MessageRepo.append_messages(db, conv.id, [
+            {"role": "user", "content": user_msg, "citations": None,
+             "created_at": now},
+            {"role": "assistant", "content": assistant_msg,
+             "citations": [c.model_dump(mode="json") for c in citations]
+             if citations else None,
+             "created_at": now},
+        ])
         await db.commit()
         # 清理旧 checkpoint：仅保留最近 keep_rounds 轮（阈值 config.yaml checkpoint.keep_rounds）
         # 旧快照无人读取且含全量历史(O(N²) 死数据)；清理失败不阻断主流程

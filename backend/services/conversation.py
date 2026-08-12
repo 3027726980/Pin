@@ -53,8 +53,7 @@ class ConversationService:
             db, user.id, page, page_size, agent_id)
         result = []
         for conv in items:
-            _, mcount = await MessageRepo.list_by_conversation(
-                db, conv.id, page=1, page_size=1)
+            mcount = await MessageRepo.count(db, conv.id)
             result.append(ConversationResponse(
                 id=conv.id, agent_id=conv.agent_id, title=conv.title,
                 message_count=mcount, created_at=conv.created_at,
@@ -73,8 +72,7 @@ class ConversationService:
             db, client_id, page, page_size, agent.id)
         result = []
         for conv in items:
-            _, mcount = await MessageRepo.list_by_conversation(
-                db, conv.id, page=1, page_size=1)
+            mcount = await MessageRepo.count(db, conv.id)
             result.append(ConversationResponse(
                 id=conv.id, agent_id=conv.agent_id, title=conv.title,
                 message_count=mcount, created_at=conv.created_at,
@@ -115,7 +113,7 @@ class ConversationService:
         elif conv.user_id != user.id:
             raise HTTPException(status_code=404, detail="会话不存在")
         await ConversationRepo.soft_delete(db, conv)
-        await ConversationRepo.soft_delete_messages(db, conv_id)
+        await ConversationRepo.clear_messages(db, conv_id)
         await db.commit()
 
         # checkpoint 数据清理(独立连接)

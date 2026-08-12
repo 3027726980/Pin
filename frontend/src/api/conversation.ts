@@ -16,7 +16,6 @@ export interface ConversationItem {
 }
 
 export interface ConversationMessage {
-  id: string
   role: 'user' | 'assistant'
   content: string
   citations: ChatCitation[] | null

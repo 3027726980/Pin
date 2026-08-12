@@ -2,10 +2,10 @@
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update as _update
+from sqlalchemy import delete, func, select, text, update as _update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Conversations, Messages
+from backend.models import Conversations
 
 
 class ConversationRepo:
@@ -92,13 +92,10 @@ class ConversationRepo:
         await db.flush()
 
     @staticmethod
-    async def soft_delete_messages(db: AsyncSession, conv_id: UUID) -> int:
-        """软删除会话下全部消息,返回行数"""
-        from sqlalchemy import update as _update
-
-        result = await db.execute(
-            _update(Messages)
-            .where(Messages.conversation_id == conv_id, Messages.status != 9)
-            .values(status=9))
+    async def clear_messages(db: AsyncSession, conv_id: UUID) -> None:
+        """清空会话消息 JSON（删除会话时调用，替代原 messages 软删）"""
+        await db.execute(
+            text("UPDATE conversations SET messages = '[]'::jsonb WHERE id = :cid"),
+            {"cid": str(conv_id)},
+        )
         await db.flush()
-        return result.rowcount
