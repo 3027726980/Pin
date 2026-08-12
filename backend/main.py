@@ -206,11 +206,14 @@ class HttpAccessLogMiddleware:
       - 包装 receive/send：请求体在读取时收集，响应体在发送时收集（SSE 也在流结束后完整记录）
     """
 
-    # 请求/响应体收集上限：1MB 保护（完整记录，防极端异常响应撑爆内存）
-    _MAX_COLLECT = 1024 * 1024
-
+    # 请求/响应体收集上限（config.yaml logging.http_body_max_bytes，0 = 不收集）
     def __init__(self, app):
         self.app = app
+        try:
+            self.max_collect = int(
+                getattr(settings.logging, "http_body_max_bytes", 1024 * 1024))
+        except (AttributeError, ValueError, TypeError):
+            self.max_collect = 1024 * 1024
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -225,7 +228,7 @@ class HttpAccessLogMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 body = message.get("body", b"")
-                if len(b"".join(req_chunks)) < self._MAX_COLLECT:
+                if len(b"".join(req_chunks)) < self.max_collect:
                     req_chunks.append(body)
             return message
 
@@ -235,7 +238,7 @@ class HttpAccessLogMiddleware:
                 status = message["status"]
             elif message["type"] == "http.response.body":
                 body = message.get("body", b"")
-                if len(b"".join(resp_chunks)) < self._MAX_COLLECT:
+                if len(b"".join(resp_chunks)) < self.max_collect:
                     resp_chunks.append(body)
             await send(message)
 
