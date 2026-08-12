@@ -16,17 +16,19 @@ from backend.schemas.common import SuccessResponse
 
 router = APIRouter(prefix="/api/v1/debug", tags=["调试"])
 
-# logger 名校验：只允许这些前缀（防乱建 logger）
+# logger 名校验：root 或允许的前缀（防乱建 logger）
 _ALLOWED_PREFIXES = ("backend.", "sqlalchemy.", "uvicorn")
 _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 def _validate_logger(name: str) -> None:
+    if name == "root":
+        return  # root logger 允许（全局级别调整）
     if not name.startswith(_ALLOWED_PREFIXES):
         raise HTTPException(
             status_code=422,
-            detail=f"logger 名必须以 {'/'.join(_ALLOWED_PREFIXES)} 开头")
-
+            detail=f"logger 名必须以 {'/'.join(_ALLOWED_PREFIXES)} 开头",
+        )
 
 class LogLevelBody(BaseModel):
     """切换请求：logger 名 + 级别 + 可选自动还原分钟数"""
