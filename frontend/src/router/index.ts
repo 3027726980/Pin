@@ -9,7 +9,7 @@ const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue'
 const KnowledgeDetailView = () => import('@/views/knowledge/KnowledgeDetailView.vue')
 const AgentListView = () => import('@/views/agent/AgentListView.vue')
 const AgentChatView = () => import('@/views/agent/AgentChatView.vue')
-const ModelConfigView = () => import('@/views/settings/ModelConfigView.vue')
+const ModelConfigView = () => import('@/views/settings/SettingsView.vue')
 
 const routes: RouteRecordRaw[] = [
   {
