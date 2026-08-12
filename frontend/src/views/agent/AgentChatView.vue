@@ -295,13 +295,19 @@ async function openConversation(conv: ConversationItem) {
   msgLoading.value = true
   try {
     const res = await listConversationMessages(conv.id, 1, 100)
-    messages.value = res.items.map(m => ({
-      role: m.role,
-      content: m.content,
-      uid: ++msgUid,
-      citations: m.citations || [],
-      rawCitations: m.citations || [],
-    }))
+    messages.value = res.items.map(m => {
+      // 引用过滤：后端存的是完整检索列表，仅展示回答中实际引用（[N] 标注）的条目，
+      // 与流式逻辑/widget 的 filterUsedCitations 一致；rawCitations 保留完整列表供原始编号
+      const raw = m.citations || []
+      const used = extractRefIndexes(m.content || '')
+      return {
+        role: m.role,
+        content: m.content,
+        uid: ++msgUid,
+        citations: raw.filter((_, i) => used.has(i + 1)),
+        rawCitations: raw,
+      }
+    })
   } catch (e) {
     message.error((e as Error).message || '历史消息加载失败')
   } finally {
