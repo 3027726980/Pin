@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from backend.api.deps import get_current_user
 from backend.core.config import settings
 from backend.models import Users
+from backend.schemas.common import SuccessResponse
 
 router = APIRouter(prefix="/api/v1/debug", tags=["调试"])
 
@@ -41,7 +42,7 @@ def _initial_level(logger_name: str) -> str:
     return base.get(logger_name, getattr(settings.logging, "level", "INFO"))
 
 
-@router.get("/log-level", summary="查看日志级别")
+@router.get("/log-level", response_model=SuccessResponse[dict], summary="查看日志级别")
 async def list_log_levels(user: Users = Depends(get_current_user)):
     """返回已知 logger 的当前级别（管理员）"""
     if not user.is_superuser:
@@ -52,10 +53,10 @@ async def list_log_levels(user: Users = Depends(get_current_user)):
     for name in base:
         result[name] = logging.getLevelName(logging.getLogger(name).level)
     result["root"] = logging.getLevelName(logging.getLogger().level)
-    return {"result": result}
+    return SuccessResponse(result=result)
 
 
-@router.post("/log-level", summary="切换日志级别（可选自动还原）")
+@router.post("/log-level", response_model=SuccessResponse[dict], summary="切换日志级别（可选自动还原）")
 async def set_log_level(body: LogLevelBody, user: Users = Depends(get_current_user)):
     """立即切换级别；expire_minutes > 0 时到期自动还原为 config 初始值"""
     if not user.is_superuser:
@@ -78,5 +79,5 @@ async def set_log_level(body: LogLevelBody, user: Users = Depends(get_current_us
 
         asyncio.create_task(_restore())
 
-    return {"result": {"logger": body.logger, "level": body.level,
-                       "expire_minutes": body.expire_minutes}}
+    return SuccessResponse(result={"logger": body.logger, "level": body.level,
+                                   "expire_minutes": body.expire_minutes})

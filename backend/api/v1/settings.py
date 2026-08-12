@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.deps import get_current_user
 from backend.core.database import get_db
 from backend.models import Users
+from backend.schemas.common import SuccessResponse
 from backend.services.system_settings import SystemSettingsService
 
 router = APIRouter(prefix="/api/v1/settings", tags=["系统设置"])
@@ -16,7 +17,7 @@ class SettingBody(BaseModel):
     value: dict
 
 
-@router.get("", summary="设置列表")
+@router.get("", response_model=SuccessResponse[list[dict]], summary="设置列表")
 async def list_settings(
     db: AsyncSession = Depends(get_db),
     user: Users = Depends(get_current_user),
@@ -24,10 +25,10 @@ async def list_settings(
     """全部设置项（含描述与更新时间），管理员"""
     if not user.is_superuser:
         raise HTTPException(status_code=403, detail="需要管理员权限")
-    return {"result": await SystemSettingsService.get_all(db)}
+    return SuccessResponse(result=await SystemSettingsService.get_all(db))
 
 
-@router.get("/{key}", summary="设置详情")
+@router.get("/{key}", response_model=SuccessResponse[dict], summary="设置详情")
 async def get_setting(
     key: str,
     db: AsyncSession = Depends(get_db),
@@ -39,10 +40,10 @@ async def get_setting(
     value = SystemSettingsService.get(key)
     if value is None:
         raise HTTPException(status_code=404, detail="设置项不存在")
-    return {"result": {"key": key, "value": value}}
+    return SuccessResponse(result={"key": key, "value": value})
 
 
-@router.put("/{key}", summary="更新设置（立即生效）")
+@router.put("/{key}", response_model=SuccessResponse[dict], summary="更新设置（立即生效）")
 async def update_setting(
     key: str,
     body: SettingBody,
@@ -52,4 +53,4 @@ async def update_setting(
     """更新设置值：写库 → 刷新缓存 → 触发变更回调（如脱敏 Filter 重建），管理员"""
     if not user.is_superuser:
         raise HTTPException(status_code=403, detail="需要管理员权限")
-    return {"result": await SystemSettingsService.update(db, key, body.value)}
+    return SuccessResponse(result=await SystemSettingsService.update(db, key, body.value))
