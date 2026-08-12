@@ -497,6 +497,16 @@ class ChatService:
             db, conv.id, "assistant", assistant_msg,
             [c.model_dump(mode="json") for c in citations] if citations else None)
         await db.commit()
+        # 清理旧 checkpoint：仅保留最近 keep_rounds 轮（阈值 config.yaml checkpoint.keep_rounds）
+        # 旧快照无人读取且含全量历史(O(N²) 死数据)；清理失败不阻断主流程
+        try:
+            from backend.core.checkpointer import prune_checkpoints
+            from backend.core.config import settings
+            keep = getattr(settings.checkpoint, "keep_rounds", 5)
+            if keep > 0:
+                await prune_checkpoints(conv.id, keep)
+        except Exception:
+            logger.exception("checkpoint 清理失败")
 
     @staticmethod
     def _build_user_prompt(citations: list[Citation], message: str) -> str:

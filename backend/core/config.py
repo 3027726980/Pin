@@ -35,6 +35,11 @@ def _apply_env_overrides(cfg) -> None:
         cfg.admin.password = env_admin_pass
     if (env_checkpoint_url := os.getenv("CHECKPOINT_URL")):
         cfg.checkpoint.url = env_checkpoint_url
+    if (env_keep_rounds := os.getenv("CHECKPOINT_KEEP_ROUNDS")):
+        try:
+            cfg.checkpoint.keep_rounds = int(env_keep_rounds)
+        except ValueError:
+            print(f"[WARNING] CHECKPOINT_KEEP_ROUNDS 非法值: {env_keep_rounds}，忽略")
 
 
 _apply_env_overrides(settings)
