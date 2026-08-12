@@ -34,6 +34,13 @@ from backend.tools import RAGTool, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+# ── simple_rag 提示词模板（引用块组装用，见 _build_user_prompt）──────────
+_RAG_PROMPT_HEADER = "以下是知识库中可能与问题相关的资料片段："
+_RAG_PROMPT_FOOTER = (
+    "请基于以上资料回答用户问题。回答中引用资料时标注对应编号。\n"
+    '如果资料不足以回答，请直接说明"知识库中没有相关信息"。'
+)
+
 
 class ChatService:
     """对话编排:checkpoint 记忆 + 双写留痕"""
@@ -493,14 +500,11 @@ class ChatService:
 
     @staticmethod
     def _build_user_prompt(citations: list[Citation], message: str) -> str:
-        """组装带引用块的 user prompt(simple_rag 用)"""
-        parts = ["以下是知识库中可能与问题相关的资料片段：", ""]
-        for i, c in enumerate(citations, 1):
-            parts.append(f"[{i}] （来源：《{c.document_name}》）")
-            parts.append(c.content)
-            parts.append("")
-        parts.append("请基于以上资料回答用户问题。回答中引用资料时标注对应编号。")
-        parts.append('如果资料不足以回答，请直接说明"知识库中没有相关信息"。')
-        parts.append("")
-        parts.append(f"用户问题：{message}")
-        return "\n".join(parts)
+        """组装带引用块的 user prompt(simple_rag 用)：模板常量 + 引用块 join"""
+        blocks = "\n\n".join(
+            f"[{i}] （来源：《{c.document_name}》）\n{c.content}"
+            for i, c in enumerate(citations, 1)
+        )
+        # 空引用时 blocks 为空串，join 时过滤，避免多出空白行
+        parts = [_RAG_PROMPT_HEADER, blocks, _RAG_PROMPT_FOOTER, f"用户问题：{message}"]
+        return "\n\n".join(p for p in parts if p)
