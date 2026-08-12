@@ -7,6 +7,7 @@ from backend.repositories.agent_repo import AgentIndexRepo, GeneralAgentRepo, Si
 from backend.repositories.agent_api_key_repo import AgentApiKeyRepo
 from backend.repositories.conversation_repo import ConversationRepo
 from backend.repositories.message_repo import MessageRepo
+from backend.repositories.system_settings_repo import SystemSettingsRepo
 
 __all__ = [
     "AgentIndexRepo",
@@ -16,6 +17,7 @@ __all__ = [
     "KnowledgeBaseRepo",
     "MessageRepo",
     "SimpleRagAgentRepo",
+    "SystemSettingsRepo",
     "TokenWhitelistRepo",
     "UserModelConfigRepo",
     "UserRepo",
