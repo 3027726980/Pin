@@ -23,6 +23,7 @@ DEFAULT_SETTINGS: dict[str, dict] = {
              "mask": "keep_4_4"},
             {"type": "value_pattern", "pattern": r"sk-[A-Za-z0-9]+", "mask": "keep_4_4"},
             {"type": "value_pattern", "pattern": r"pin_[A-Za-z0-9]+", "mask": "keep_4_4"},
+            {"type": "value_pattern", "pattern": r"Bearer [A-Za-z0-9._-]+", "mask": "keep_4_4"},
         ],
     },
 }
