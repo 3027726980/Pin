@@ -44,15 +44,21 @@ def _initial_level(logger_name: str) -> str:
 
 @router.get("/log-level", response_model=SuccessResponse[dict], summary="查看日志级别")
 async def list_log_levels(user: Users = Depends(get_current_user)):
-    """返回已知 logger 的当前级别（管理员）"""
+    """返回已知 logger 的当前级别与初始级别（管理员；initial 供前端一键还原）"""
     if not user.is_superuser:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     levels_ns = getattr(settings.logging, "levels", None)
     base = vars(levels_ns) if levels_ns is not None else {}
-    result = {}
-    for name in base:
-        result[name] = logging.getLevelName(logging.getLogger(name).level)
-    result["root"] = logging.getLevelName(logging.getLogger().level)
+    result: dict = {}
+    for name, initial in base.items():
+        result[name] = {
+            "current": logging.getLevelName(logging.getLogger(name).level),
+            "initial": initial,
+        }
+    result["root"] = {
+        "current": logging.getLevelName(logging.getLogger().level),
+        "initial": getattr(settings.logging, "level", "INFO"),
+    }
     return SuccessResponse(result=result)
 
 

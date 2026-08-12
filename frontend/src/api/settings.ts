@@ -31,3 +31,28 @@ export function updateSetting(
 ): Promise<{ key: string; value: Record<string, unknown> }> {
   return request.put(`/v1/settings/${key}`, { value })
 }
+
+// ── 动态日志级别 ─────────────────────────────
+
+export interface LogLevelInfo {
+  current: string
+  initial: string
+}
+
+/** 查看各 logger 当前/初始级别 */
+export function getLogLevels(): Promise<Record<string, LogLevelInfo>> {
+  return request.get('/v1/debug/log-level')
+}
+
+/** 切换日志级别（expireMinutes 可选：到期自动还原为初始值） */
+export function setLogLevel(
+  logger: string,
+  level: string,
+  expireMinutes?: number,
+): Promise<{ logger: string; level: string; expire_minutes?: number }> {
+  return request.post('/v1/debug/log-level', {
+    logger,
+    level,
+    expire_minutes: expireMinutes,
+  })
+}

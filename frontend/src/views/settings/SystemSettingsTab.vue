@@ -1,5 +1,6 @@
 <!--
 系统设置 Tab：通用设置项管理
+- 日志级别：运行时动态切换（目标级别 + 自动还原分钟）
 - logging.redact_rules：脱敏规则结构化表单（enabled + 规则列表逐条增删改）
 - 其他设置项：JSON 文本编辑（textarea + 校验）
 保存后后端立即生效（刷新缓存 + 重建 Filter）
@@ -7,6 +8,23 @@
 <template>
   <div class="system-settings">
     <n-spin :show="loading">
+      <!-- 日志级别：运行时动态切换 -->
+      <n-card title="日志级别（运行时动态切换）" size="small" class="item-card">
+        <n-data-table
+          :columns="levelColumns"
+          :data="levelRows"
+          size="small"
+          :bordered="false"
+          :pagination="false"
+        />
+        <div class="save-row">
+          <span class="hint" style="margin-right: auto">
+            切换立即生效；填写还原分钟数则到期自动还原为 config 初始值（部署后排障用，不重启）
+          </span>
+          <n-button size="small" @click="restoreAllLevels">全部还原</n-button>
+        </div>
+      </n-card>
+
       <div v-if="settings.length === 0" class="empty">
         <n-empty description="暂无设置项" />
       </div>
@@ -80,11 +98,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, h, onMounted, reactive, ref } from 'vue'
+import { NTag, useMessage } from 'naive-ui'
 import {
+  getLogLevels,
   listSettings,
+  setLogLevel,
   updateSetting,
+  type LogLevelInfo,
   type RedactRule,
   type RedactRulesConfig,
   type SystemSetting,
@@ -97,6 +118,130 @@ const settings = ref<SystemSetting[]>([])
 const jsonDrafts = reactive<Record<string, string>>({})
 const jsonErrors = reactive<Record<string, string>>({})
 
+// ── 日志级别 ──────────────────────────────
+const LEVEL_OPTIONS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'].map((lv) => ({
+  label: lv,
+  value: lv,
+}))
+
+interface LevelRow {
+  name: string
+  current: string
+  initial: string
+  target: string
+  expireMinutes: number | null
+  applying: boolean
+}
+
+const levelRows = ref<LevelRow[]>([])
+const levelColumns = [
+  {
+    title: 'Logger',
+    key: 'name',
+    width: 260,
+    render: (row: LevelRow) => h('span', { style: 'font-family: monospace' }, row.name),
+  },
+  {
+    title: '当前级别',
+    key: 'current',
+    width: 110,
+    render: (row: LevelRow) =>
+      h(
+        NTag,
+        { size: 'small', type: row.current === 'DEBUG' ? 'warning' : 'default', bordered: false },
+        { default: () => row.current },
+      ),
+  },
+  {
+    title: '目标级别',
+    key: 'target',
+    width: 140,
+    render: (row: LevelRow) =>
+      h('div', { style: 'max-width: 130px' }, [
+        // 用 select 渲染（模板里用列渲染不便，这里简单展示 + 下方操作）
+        h('span', { style: 'font-size: 12px; color: #999' }, `初始: ${row.initial}`),
+      ]),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    render: (row: LevelRow) =>
+      h('div', { style: 'display: flex; gap: 8px; align-items: center' }, [
+        h(
+          'select',
+          {
+            value: row.target,
+            style: 'padding: 4px 8px; border-radius: 6px; border: 1px solid #e0e0e6; background: #fff;',
+            onInput: (e: Event) => {
+              row.target = (e.target as HTMLSelectElement).value
+            },
+          },
+          LEVEL_OPTIONS.map((o) => h('option', { value: o.value }, o.label)),
+        ),
+        h('input', {
+          type: 'number',
+          min: 0,
+          max: 1440,
+          placeholder: '还原分钟',
+          value: row.expireMinutes ?? '',
+          style: 'width: 90px; padding: 4px 8px; border-radius: 6px; border: 1px solid #e0e0e6;',
+          onInput: (e: Event) => {
+            const v = (e.target as HTMLInputElement).value
+            row.expireMinutes = v === '' ? null : Number(v)
+          },
+        }),
+        h(
+          'button',
+          {
+            disabled: row.applying || row.target === row.current,
+            style: 'padding: 4px 14px; border: none; border-radius: 6px; background: #2080f0; color: #fff; cursor: pointer; font-size: 13px;',
+            onClick: () => applyLevel(row),
+          },
+          row.applying ? '应用…' : '应用',
+        ),
+      ]),
+  },
+]
+
+async function loadLevels() {
+  try {
+    const info = await getLogLevels()
+    levelRows.value = Object.entries(info).map(([name, v]) => ({
+      name,
+      current: v.current,
+      initial: v.initial,
+      target: v.current,
+      expireMinutes: null,
+      applying: false,
+    }))
+  } catch (e) {
+    message.error((e as Error).message || '日志级别加载失败')
+  }
+}
+
+async function applyLevel(row: LevelRow) {
+  row.applying = true
+  try {
+    const r = await setLogLevel(row.name, row.target, row.expireMinutes ?? undefined)
+    row.current = r.level
+    message.success(`${row.name} → ${r.level}`)
+  } catch (e) {
+    message.error((e as Error).message || '切换失败')
+  } finally {
+    row.applying = false
+  }
+}
+
+async function restoreAllLevels() {
+  for (const row of levelRows.value) {
+    if (row.current !== row.initial) {
+      row.target = row.initial
+      await applyLevel(row)
+    }
+  }
+  message.success('已全部还原为 config 初始级别')
+}
+
 /** 脱敏规则（结构化编辑） */
 const redactConfig = ref<RedactRulesConfig | null>(null)
 const redactKey = 'logging.redact_rules'
@@ -106,7 +251,7 @@ const otherSettings = computed(() =>
 )
 
 onMounted(async () => {
-  await load()
+  await Promise.all([load(), loadLevels()])
 })
 
 async function load() {
@@ -177,7 +322,7 @@ async function saveJsonItem(key: string) {
 
 <style scoped>
 .system-settings {
-  max-width: 960px;
+  width: 100%;
 }
 .empty {
   padding: 40px 0;
