@@ -41,6 +41,7 @@ from backend.api.v1 import (
     conversation_router,
     knowledge_router,
     public_router,
+    settings_router,
     user_model_config_router,
 )
 
@@ -240,6 +241,7 @@ app.include_router(user_model_config_router)
 app.include_router(agent_api_key_router)
 app.include_router(debug_router)
 app.include_router(public_router)
+app.include_router(settings_router)
 
 # ── 公开接口 CORS（仅 /api/v1/public/ 放开，主站保持同源）──────
 @app.middleware("http")

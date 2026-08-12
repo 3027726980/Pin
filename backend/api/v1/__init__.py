@@ -6,6 +6,7 @@ from backend.api.v1.conversation import router as conversation_router
 from backend.api.v1.agent_api_key import router as agent_api_key_router
 from backend.api.v1.public import router as public_router
 from backend.api.v1.debug import router as debug_router
+from backend.api.v1.settings import router as settings_router
 
 __all__ = [
     "agent_api_key_router",
@@ -15,5 +16,6 @@ __all__ = [
     "debug_router",
     "knowledge_router",
     "public_router",
+    "settings_router",
     "user_model_config_router",
 ]
