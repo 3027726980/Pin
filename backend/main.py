@@ -36,6 +36,7 @@ from backend.repositories import UserRepo
 from backend.api.v1 import (
     agent_api_key_router,
     agent_router,
+    debug_router,
     auth_router,
     conversation_router,
     knowledge_router,
@@ -237,6 +238,7 @@ app.include_router(conversation_router)
 app.include_router(knowledge_router)
 app.include_router(user_model_config_router)
 app.include_router(agent_api_key_router)
+app.include_router(debug_router)
 app.include_router(public_router)
 
 # ── 公开接口 CORS（仅 /api/v1/public/ 放开，主站保持同源）──────
