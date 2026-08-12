@@ -472,10 +472,15 @@ function stopLoadingText() {
   }
 }
 
-/** 是否为当前正在等待/生成中的消息（最后一条 + 请求中） */
+/**
+ * 是否为当前正在等待/生成中的消息（最后一条 + 请求中 + 尚无内容）
+ *
+ * 注意：必须同时满足「无内容」——首个 delta 到达后立即切换为渲染 content（打字机），
+ * 否则流式期间永远命中此分支，内容要等结束才一次性显示（与 widget 的 pending 字段语义一致）。
+ */
 function isPendingMsg(msg: DisplayMessage): boolean {
   const last = messages.value[messages.value.length - 1]
-  return (streaming.value || sending.value) && last === msg
+  return (streaming.value || sending.value) && last === msg && !msg.content
 }
 
 // ── 消息区滚动 ────────────────────────
