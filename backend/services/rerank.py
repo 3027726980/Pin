@@ -35,7 +35,7 @@ class RerankService:
         if cfg is None:
             cfg = SimpleNamespace(
                 provider="local",
-                model_name=settings.tools.rerank.model_name,
+                model_name=settings.local_models.rerank.model_name,
                 api_key=None,
                 base_url=None,
             )
@@ -62,20 +62,20 @@ class LocalRerank:
         import asyncio
         from pathlib import Path
 
-        cache_dir = Path(settings.tools.rerank.cache_dir)
+        cache_dir = Path(settings.local_models.cache_dir)
         model_dir = cache_dir / cfg.model_name
         if not model_dir.exists():
             raise FileNotFoundError(
                 f"本地 rerank 模型不存在: {model_dir}，请先下载模型到该目录"
             )
 
-        key = f"{cfg.model_name}|{settings.tools.rerank.device}"
+        key = f"{cfg.model_name}|{settings.local_models.rerank.device}"
         if LocalRerank._model is None or LocalRerank._model_key != key:
             from sentence_transformers import CrossEncoder
 
             LocalRerank._model = CrossEncoder(
                 str(model_dir),
-                device=settings.tools.rerank.device,
+                device=settings.local_models.rerank.device,
                 local_files_only=True,
             )
             LocalRerank._model_key = key

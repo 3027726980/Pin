@@ -84,8 +84,8 @@ class LocalEmbedding:
 
         from backend.core.config import settings
 
-        # 模型缓存目录 / 模型名 → 本地路径
-        model_dir = Path(settings.embedding.model_cache_dir) / model_name
+        # 本地模型目录（local_models 顶层配置） / 模型名 → 本地路径
+        model_dir = Path(settings.local_models.cache_dir) / model_name
         if not model_dir.exists():
             raise FileNotFoundError(
                 f"本地模型不存在: {model_dir}，请先下载模型到该目录"
