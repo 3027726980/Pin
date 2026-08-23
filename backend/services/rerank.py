@@ -107,12 +107,22 @@ class DashScopeRerank:
 
     @staticmethod
     async def rerank(cfg, query: str, candidates: list[dict], top_k: int) -> list[dict]:
-        """DashScope text-rerank：POST {base_url}{endpoint}，解析 output.results[].relevance_score"""
+        """DashScope text-rerank：POST {base_url}{endpoint}，解析 output.results[].relevance_score
+
+        注意：OpenAI 兼容模式地址（含 /compatible-mode/）不提供 Rerank 服务，
+        检测到直接报清晰错误（引导用户改用原生 DashScope 地址）。
+        """
         import httpx
 
         if not cfg.api_key:
             raise ValueError("DashScope rerank 缺少 api_key")
-        url = (cfg.base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/") + DashScopeRerank._ENDPOINT
+        base = (cfg.base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
+        if "/compatible-mode" in base:
+            raise ValueError(
+                "检测到 OpenAI 兼容模式地址（compatible-mode），该模式不支持 Rerank API；"
+                "请改用原生 DashScope 地址：https://dashscope.aliyuncs.com/api/v1 "
+                "（专属网关则为 https://llm-xxx.maas.aliyuncs.com/api/v1）")
+        url = base + DashScopeRerank._ENDPOINT
         body = {
             "model": cfg.model_name,
             "input": {"query": query, "documents": [c["content"] for c in candidates]},
