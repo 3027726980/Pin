@@ -1,6 +1,8 @@
 """
 用户模型配置 业务逻辑
 """
+import time
+from types import SimpleNamespace
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -18,10 +20,102 @@ from backend.schemas.user_model_config import (
     UserModelConfigResponse,
     UserModelConfigUpdate,
     DefaultModelConfigResponse,
+    ModelConfigTestResponse,
 )
+from backend.services.embedding import EmbeddingService
+from backend.services.llm import LLMService
 
 
 class UserModelConfigService:
+
+    @staticmethod
+    async def test_config(user: Users, data: UserModelConfigCreate) -> ModelConfigTestResponse:
+        """
+        测试模型配置连通性（不落库，支持测试未保存的表单参数）
+
+        按 model_type 分发：
+          - 2 LLM：非流式发一条 ping 消息
+          - 1 Embedding：向量化一个短文本，校验返回向量
+          - 3 Rerank：对 query + 2 个假候选做精排（直接调实现，不走降级包装）
+
+        任何异常 → ok=False + 截断的错误详情（不抛 HTTPException，测试失败是正常结果）
+        """
+        import time
+
+        t0 = time.perf_counter()
+        try:
+            if data.model_type == 2:
+                reply = await LLMService.chat(
+                    provider=data.provider,
+                    model_name=data.model_name,
+                    api_key=data.api_key or "",
+                    base_url=data.base_url,
+                    messages=[{"role": "user", "content": "ping"}],
+                    temperature=0.0,
+                    top_p=0.9,
+                    protocol=data.protocol,
+                    timeout=10.0,
+                )
+                return ModelConfigTestResponse(
+                    ok=True,
+                    detail=f"连接成功，回复：{(reply or '').strip()[:50] or '(空回复)'}",
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                )
+            if data.model_type == 1:
+                vectors = EmbeddingService.embed(
+                    provider=data.provider,
+                    model_name=data.model_name,
+                    api_key=data.api_key or "",
+                    base_url=data.base_url,
+                    texts=["测试"],
+                    protocol=data.protocol,
+                )
+                dim = len(vectors[0]) if vectors else 0
+                if dim <= 0:
+                    raise ValueError("返回向量为空")
+                return ModelConfigTestResponse(
+                    ok=True,
+                    detail=f"连接成功，向量维度 {dim}",
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                    extra={"dimension": dim},
+                )
+            if data.model_type == 3:
+                from backend.services.rerank import RERANK_IMPLEMENTATIONS
+
+                impl = RERANK_IMPLEMENTATIONS.get(data.provider)
+                if impl is None:
+                    raise ValueError(
+                        f"厂商 {data.provider} 暂不支持 Rerank（可选 local / aliyun）")
+                candidates = [
+                    {"chunk_id": "00000000-0000-0000-0000-000000000001",
+                     "content": "测试文档一：Pin 是一个 AI 助手平台",
+                     "filename": "测试.txt", "score": 0.1},
+                    {"chunk_id": "00000000-0000-0000-0000-000000000002",
+                     "content": "测试文档二：报销流程与制度说明",
+                     "filename": "测试.txt", "score": 0.2},
+                ]
+                result = await impl.rerank(
+                    SimpleNamespace(
+                        provider=data.provider,
+                        model_name=data.model_name,
+                        api_key=data.api_key or "",
+                        base_url=data.base_url,
+                    ),
+                    "测试查询", candidates, 2)
+                if not result:
+                    raise ValueError("Rerank 无返回结果")
+                return ModelConfigTestResponse(
+                    ok=True,
+                    detail="连接成功，Rerank 正常返回",
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                )
+            raise ValueError(f"暂不支持测试该模型类型（model_type={data.model_type}）")
+        except Exception as e:
+            return ModelConfigTestResponse(
+                ok=False,
+                detail=str(e)[:200],
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+            )
 
     @staticmethod
     async def list_defaults(db: AsyncSession) -> list[DefaultModelConfigResponse]:

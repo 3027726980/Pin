@@ -62,3 +62,11 @@ class DefaultModelConfigResponse(BaseModel):
     dimension: int | None
 
     model_config = {"from_attributes": True}
+
+
+class ModelConfigTestResponse(BaseModel):
+    """配置连通性测试结果"""
+    ok: bool
+    detail: str
+    latency_ms: int
+    extra: dict | None = None

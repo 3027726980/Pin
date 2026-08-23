@@ -20,6 +20,7 @@ from backend.schemas.user_model_config import (
     UserModelConfigResponse,
     UserModelConfigUpdate,
     DefaultModelConfigResponse,
+    ModelConfigTestResponse,
 )
 from backend.services import UserModelConfigService
 
@@ -81,6 +82,20 @@ async def create_user_config(
     user: Users = Depends(get_current_user),
 ):
     result = await UserModelConfigService.create(db, user, body)
+    return SuccessResponse(result=result)
+
+
+@router.post(
+    "/test",
+    response_model=SuccessResponse[ModelConfigTestResponse],
+    summary="测试模型配置连通性",
+    description="按传入参数（不落库）测试模型能否正常调用：LLM 发 ping / Embedding 向量化 / Rerank 精排；支持测试未保存的表单参数",
+)
+async def test_user_config(
+    body: UserModelConfigCreate,
+    user: Users = Depends(get_current_user),
+):
+    result = await UserModelConfigService.test_config(user, body)
     return SuccessResponse(result=result)
 
 

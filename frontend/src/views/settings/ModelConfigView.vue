@@ -116,6 +116,7 @@
       </n-form>
       <template #footer>
         <n-space justify="end">
+          <n-button :loading="formTesting" @click="handleTestForm">测试连接</n-button>
           <n-button @click="modalShow = false">取消</n-button>
           <n-button type="primary" :loading="submitting" @click="handleSubmit">确定</n-button>
         </n-space>
@@ -136,6 +137,7 @@ import {
   createModelConfig,
   updateModelConfig,
   deleteModelConfig,
+  testModelConfig,
   type DefaultModelConfigItem,
   type UserModelConfigItem,
   type ModelTypeItem,
@@ -181,10 +183,15 @@ const configColumns: DataTableColumns<UserModelConfigItem> = [
     },
   },
   {
-    title: '操作', key: 'actions', width: 120,
+    title: '操作', key: 'actions', width: 200,
     render(row) {
       return h(NSpace, null, {
         default: () => [
+          h(NButton, {
+            size: 'small', quaternary: true, type: 'info',
+            loading: testingId.value === row.id,
+            onClick: () => handleTest(row),
+          }, { default: () => '测试' }),
           h(NButton, { size: 'small', quaternary: true, onClick: () => openEdit(row) },
             { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) }),
           h(NPopconfirm, { onPositiveClick: () => handleDelete(row.id) }, {
@@ -204,6 +211,9 @@ const modalShow = ref(false)
 const submitting = ref(false)
 const editingId = ref<string | null>(null)
 const modalTitle = ref('添加配置')
+// 测试连接状态
+const testingId = ref<string | null>(null)
+const formTesting = ref(false)
 
 const form = ref({
   provider: '',
@@ -424,6 +434,61 @@ async function handleSubmit() {
     message.error((e as Error).message || '操作失败')
   } finally {
     submitting.value = false
+  }
+}
+
+async function handleTest(row: UserModelConfigItem) {
+  // 列表：用该行完整参数测试连通性
+  testingId.value = row.id
+  try {
+    const r = await testModelConfig({
+      provider: row.provider,
+      model_name: row.model_name,
+      model_type: row.model_type,
+      base_url: row.base_url,
+      api_key: row.api_key || undefined,
+      dimension: row.dimension,
+      protocol: row.protocol || undefined,
+    })
+    if (r.ok) {
+      message.success(`✅ ${r.detail}（${r.latency_ms}ms）`)
+    } else {
+      message.error(`❌ ${r.detail}`, { duration: 8000 })
+    }
+  } catch (e) {
+    message.error((e as Error).message || '测试失败')
+  } finally {
+    testingId.value = null
+  }
+}
+
+async function handleTestForm() {
+  // 弹窗：用表单当前值测试（未保存也能测）
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
+  formTesting.value = true
+  try {
+    const r = await testModelConfig({
+      provider: form.value.provider,
+      model_name: form.value.model_name,
+      model_type: form.value.model_type,
+      base_url: form.value.base_url,
+      api_key: form.value.api_key,
+      dimension: form.value.dimension,
+      protocol: providerMode.value === 'custom' ? form.value.protocol : null,
+    })
+    if (r.ok) {
+      message.success(`✅ ${r.detail}（${r.latency_ms}ms）`)
+    } else {
+      message.error(`❌ ${r.detail}`, { duration: 8000 })
+    }
+  } catch (e) {
+    message.error((e as Error).message || '测试失败')
+  } finally {
+    formTesting.value = false
   }
 }
 

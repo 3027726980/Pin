@@ -33,6 +33,7 @@ class LLMService:
         temperature: float = 0.7,
         top_p: float = 0.9,
         protocol: str | None = None,
+        timeout: float = 60.0,
     ) -> str:
         """
         非流式对话，返回完整回答文本
@@ -45,9 +46,10 @@ class LLMService:
             messages:   [{role, content}, ...]
             temperature / top_p: 采样参数
             protocol:   显式调用模式（协议），优先于厂商推断；空 = 查 config.yaml 默认 openai
+            timeout:    请求超时秒数（默认 60；配置测试场景传短超时快速失败）
         """
         impl = _resolve_implementation(provider, protocol)
-        return await impl.chat(model_name, api_key, base_url, messages, temperature, top_p)
+        return await impl.chat(model_name, api_key, base_url, messages, temperature, top_p, timeout)
 
     @staticmethod
     async def chat_stream(
@@ -79,14 +81,14 @@ class OpenAICompatible:
     protocol = "openai"
 
     @staticmethod
-    def _build_client(api_key: str, base_url: str | None):
+    def _build_client(api_key: str, base_url: str | None, timeout: float = 60.0):
         """构建 AsyncOpenAI 客户端（base_url 为空则用官方地址）"""
         from openai import AsyncOpenAI
 
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url or "https://api.openai.com/v1",
-            timeout=60.0,
+            timeout=timeout,
         )
 
     @staticmethod
@@ -97,9 +99,10 @@ class OpenAICompatible:
         messages: list[dict],
         temperature: float,
         top_p: float,
+        timeout: float = 60.0,
     ) -> str:
         """OpenAI 兼容非流式对话（埋点：耗时 + 输出长度 + 错误）"""
-        client = OpenAICompatible._build_client(api_key, base_url)
+        client = OpenAICompatible._build_client(api_key, base_url, timeout)
         t0 = time.perf_counter()
         try:
             resp = await client.chat.completions.create(
@@ -130,9 +133,10 @@ class OpenAICompatible:
         messages: list[dict],
         temperature: float,
         top_p: float,
+        timeout: float = 60.0,
     ) -> AsyncIterator[str]:
         """OpenAI 兼容流式对话（埋点：首 token / 总耗时 / 输出长度 / 错误）"""
-        client = OpenAICompatible._build_client(api_key, base_url)
+        client = OpenAICompatible._build_client(api_key, base_url, timeout)
         t0 = time.perf_counter()
         first_token_ms: int | None = None
         chars = 0

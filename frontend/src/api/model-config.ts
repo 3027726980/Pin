@@ -54,6 +54,13 @@ export interface ModelTypeItem {
   name: string
 }
 
+export interface ModelConfigTestResult {
+  ok: boolean
+  detail: string
+  latency_ms: number
+  extra?: Record<string, unknown> | null
+}
+
 /** 获取模型类型对照表 */
 export function listModelTypes(): Promise<ModelTypeItem[]> {
   return request.get('/v1/settings/user-model-config/model-types')
@@ -77,6 +84,11 @@ export function createModelConfig(data: ModelConfigCreate): Promise<UserModelCon
 /** 编辑配置 */
 export function updateModelConfig(id: string, data: ModelConfigUpdate): Promise<UserModelConfigItem> {
   return request.put(`/v1/settings/user-model-config/${id}`, data)
+}
+
+/** 测试配置连通性（按参数测试，不落库；支持测试未保存的表单参数） */
+export function testModelConfig(data: ModelConfigCreate): Promise<ModelConfigTestResult> {
+  return request.post('/v1/settings/user-model-config/test', data)
 }
 
 /** 删除配置 */
