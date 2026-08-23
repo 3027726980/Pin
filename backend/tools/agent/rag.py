@@ -248,15 +248,13 @@ class RAGTool(BaseTool):
     # ═══════════════════════════════════════════════
 
     @staticmethod
-    async def _expand_queries(enhance_cfg: object, message: str, n: int) -> list[str]:
-        """
-        MQE：用增强 LLM 把用户问题改写为 n 个多角度检索子问题
+    async def _call_enhance_llm(enhance_cfg: object, prompt: str) -> str | None:
+        """增强 LLM 统一调用：低温改写；推理模型 temperature 限制时自动用 1 重试一次
 
-        调用失败 / 输出解析失败 → 返回 []（调用方降级为仅原始 query，不阻断检索）
+        返回回答文本；失败返回 None（调用方降级）
         """
         try:
-            prompt = _MQE_PROMPT_TEMPLATE.format(n=n, message=message)
-            text = await LLMService.chat(
+            return await LLMService.chat(
                 provider=enhance_cfg.provider,
                 model_name=enhance_cfg.model_name,
                 api_key=enhance_cfg.api_key,
@@ -266,7 +264,40 @@ class RAGTool(BaseTool):
                 top_p=0.9,
                 protocol=getattr(enhance_cfg, "protocol", None),
             )
-            return RAGTool._parse_query_list(text)
+        except Exception as e:
+            # 推理模型（kimi 等）只允许 temperature=1：降级重试一次
+            from backend.services.chat import ChatService
+
+            if ChatService._is_temperature_error(e):
+                logger.warning("增强模型仅支持 temperature=1，自动用 1 重试: %s", e)
+                try:
+                    return await LLMService.chat(
+                        provider=enhance_cfg.provider,
+                        model_name=enhance_cfg.model_name,
+                        api_key=enhance_cfg.api_key,
+                        base_url=enhance_cfg.base_url,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=1.0,
+                        top_p=0.9,
+                        protocol=getattr(enhance_cfg, "protocol", None),
+                    )
+                except Exception as e2:
+                    logger.warning(f"增强 LLM 重试仍失败: {e2}")
+                    return None
+            logger.warning(f"增强 LLM 调用失败: {e}")
+            return None
+
+    @staticmethod
+    async def _expand_queries(enhance_cfg: object, message: str, n: int) -> list[str]:
+        """
+        MQE：用增强 LLM 把用户问题改写为 n 个多角度检索子问题
+
+        调用失败 / 输出解析失败 → 返回 []（调用方降级为仅原始 query，不阻断检索）
+        """
+        try:
+            prompt = _MQE_PROMPT_TEMPLATE.format(n=n, message=message)
+            text = await RAGTool._call_enhance_llm(enhance_cfg, prompt)
+            return RAGTool._parse_query_list(text or "")
         except Exception as e:
             logger.warning(f"MQE 改写调用失败: {e}")
             return []
@@ -312,16 +343,7 @@ class RAGTool(BaseTool):
         """
         try:
             prompt = _HYDE_PROMPT_TEMPLATE.format(message=message)
-            text = await LLMService.chat(
-                provider=enhance_cfg.provider,
-                model_name=enhance_cfg.model_name,
-                api_key=enhance_cfg.api_key,
-                base_url=enhance_cfg.base_url,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                top_p=0.9,
-                protocol=getattr(enhance_cfg, "protocol", None),
-            )
+            text = await RAGTool._call_enhance_llm(enhance_cfg, prompt)
             text = (text or "").strip()
             return text or None
         except Exception as e:
