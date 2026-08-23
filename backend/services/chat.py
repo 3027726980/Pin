@@ -281,9 +281,11 @@ class ChatService:
 
     @staticmethod
     async def _build_agent(db: AsyncSession, user: Users, agent: object,
-                           llm_cfg: object, tools: list) -> object:
+                           llm_cfg: object, tools: list,
+                           temperature_override: float | None = None) -> object:
         """构建 create_agent(带 checkpointer + middleware)
 
+        temperature_override: 临时覆盖采样温度（推理模型降级重试用，不落库）
         延迟 import langchain 系（启动提速：仅首次对话时才加载）。
         """
         from langchain.agents import create_agent
@@ -295,11 +297,14 @@ class ChatService:
         middlewares = build_middlewares(summary_cfg, llm_cfg)
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
         cp = await get_checkpointer()
+        temperature = (temperature_override
+                       if temperature_override is not None
+                       else agent.temperature)
         return create_agent(
             model=ChatOpenAI(
                 model=llm_cfg.model_name, api_key=llm_cfg.api_key,
                 base_url=llm_cfg.base_url or "https://api.openai.com/v1",
-                temperature=agent.temperature, top_p=agent.top_p, timeout=60.0),
+                temperature=temperature, top_p=agent.top_p, timeout=60.0),
             tools=tools, system_prompt=system_prompt,
             checkpointer=cp, middleware=middlewares)
 
@@ -373,11 +378,21 @@ class ChatService:
         return result
 
     @staticmethod
+    def _is_temperature_error(e: Exception) -> bool:
+        """判断是否为推理模型的 temperature 限制错误（仅允许 temperature=1）"""
+        msg = str(e).lower()
+        return "temperature" in msg and ("only 1" in msg or "not allowed" in msg)
+
+    @staticmethod
     async def _invoke_agent(db: AsyncSession, user: Users, agent: object,
                             llm_cfg: object, conv: object, tools: list,
                             user_content: str,
                             citations_store: list | None = None) -> str:
-        """非流式:create_agent.ainvoke(thread_id = conversation_id)（埋点：耗时/错误）"""
+        """非流式:create_agent.ainvoke(thread_id = conversation_id)（埋点：耗时/错误）
+
+        推理模型（Kimi K3 / o1 等）仅支持 temperature=1：检测到 temperature 限制错误时
+        自动以 temperature=1 降级重试一次（不落库）。
+        """
         import time as _time
 
         from langchain_core.messages import HumanMessage
@@ -395,6 +410,24 @@ class ChatService:
                 str(conv.id), int((_time.perf_counter() - t0) * 1000))
             return result["messages"][-1].content or ""
         except Exception as e:
+            # 推理模型 temperature 限制：降级重试一次
+            if (ChatService._is_temperature_error(e)
+                    and getattr(agent, "temperature", 1.0) != 1.0):
+                logger.warning(
+                    "模型仅支持 temperature=1（推理模型），自动降级重试: %s", e)
+                try:
+                    lc_agent = await ChatService._build_agent(
+                        db, user, agent, llm_cfg, tools, temperature_override=1.0)
+                    result = await lc_agent.ainvoke(
+                        {"messages": [HumanMessage(content=user_content)]},
+                        config=ChatService._thread_config(conv))
+                    _llm_logger.info(
+                        "agent=%s type=%s conversation=%s duration_ms=%d error=None(retry temp=1)",
+                        getattr(agent, "name", "?"), getattr(agent, "type", "?"),
+                        str(conv.id), int((_time.perf_counter() - t0) * 1000))
+                    return result["messages"][-1].content or ""
+                except Exception as e2:
+                    e = e2  # 重试也失败：走下方统一 502 分支
             _llm_logger.error(
                 "agent=%s type=%s conversation=%s duration_ms=%d error=%s",
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
@@ -408,7 +441,11 @@ class ChatService:
                                    user_content: str,
                                    citations_store: list | None = None
                                    ) -> AsyncIterator[dict]:
-        """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)（埋点：耗时/错误）"""
+        """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)（埋点：耗时/错误）
+
+        推理模型仅支持 temperature=1：检测到 temperature 限制错误时
+        自动以 temperature=1 降级重试一次（不落库）。
+        """
         import time as _time
 
         from langchain_core.messages import AIMessageChunk, HumanMessage
@@ -428,6 +465,27 @@ class ChatService:
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
                 str(conv.id), int((_time.perf_counter() - t0) * 1000))
         except Exception as e:
+            # 推理模型 temperature 限制：降级重试一次
+            if (ChatService._is_temperature_error(e)
+                    and getattr(agent, "temperature", 1.0) != 1.0):
+                logger.warning(
+                    "模型仅支持 temperature=1（推理模型），流式降级重试: %s", e)
+                try:
+                    lc_agent = await ChatService._build_agent(
+                        db, user, agent, llm_cfg, tools, temperature_override=1.0)
+                    async for chunk, _meta in lc_agent.astream(
+                            {"messages": [HumanMessage(content=user_content)]},
+                            config=ChatService._thread_config(conv),
+                            stream_mode="messages"):
+                        if isinstance(chunk, AIMessageChunk) and chunk.content:
+                            yield {"type": "delta", "content": chunk.content}
+                    _llm_logger.info(
+                        "agent=%s type=%s conversation=%s duration_ms=%d error=None(retry temp=1)",
+                        getattr(agent, "name", "?"), getattr(agent, "type", "?"),
+                        str(conv.id), int((_time.perf_counter() - t0) * 1000))
+                    return
+                except Exception as e2:
+                    e = e2  # 重试也失败：走下方统一 error 事件
             _llm_logger.error(
                 "agent=%s type=%s conversation=%s duration_ms=%d error=%s",
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
