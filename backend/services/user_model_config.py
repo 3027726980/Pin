@@ -45,17 +45,14 @@ class UserModelConfigService:
         t0 = time.perf_counter()
         try:
             if data.model_type == 2:
-                # 推理模型（Kimi K3 / o1 等）只允许 temperature=1，测试统一用 1.0 兼容所有模型
+                # 采样/超时参数全部用默认（不写死特殊值）；默认参数下不通则如实反馈给用户
                 reply = await LLMService.chat(
                     provider=data.provider,
                     model_name=data.model_name,
                     api_key=data.api_key or "",
                     base_url=data.base_url,
                     messages=[{"role": "user", "content": "ping"}],
-                    temperature=1.0,
-                    top_p=0.9,
                     protocol=data.protocol,
-                    timeout=10.0,
                 )
                 return ModelConfigTestResponse(
                     ok=True,
