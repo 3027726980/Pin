@@ -115,9 +115,9 @@
           />
           <template #feedback>可直接选择厂商预置模型，也可输入自定义模型名</template>
         </n-form-item>
-        <n-form-item v-if="form.provider" label="调用模式">
-          <n-input :value="selectedProtocol || 'openai'" disabled />
-          <template #feedback>继承自厂商（{{ form.provider }}）</template>
+        <n-form-item v-if="form.provider" label="调用模式" path="protocol">
+          <n-select v-model:value="form.protocol" :options="protocolTypeOptions" placeholder="选择调用方式" />
+          <template #feedback>OpenAI 兼容（/chat/completions、/embeddings）或 DashScope 原生（/services/...）；按模型实际接入方式选择</template>
         </n-form-item>
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址" path="base_url">
           <n-input v-model:value="form.base_url" placeholder="预置厂商可留空用默认；自定义厂商必填" />
@@ -228,13 +228,29 @@ const providerOptions = computed<SelectOption[]>(() =>
   })),
 )
 
-const selectedProtocol = computed(() =>
-  providers.value.find(p => p.name === form.value.provider)?.protocol || 'openai',
-)
 // 自定义厂商（非预置）→ base_url 必填
 const isCustomProvider = computed(() =>
   providers.value.find(p => p.name === form.value.provider)?.source === 'custom',
 )
+
+// 调用模式选项（按模型类型过滤：LLM 无 local，Rerank 无 openai）
+const protocolTypeOptions = computed<SelectOption[]>(() => {
+  const all = [
+    { label: 'OpenAI 兼容', value: 'openai' },
+    { label: 'DashScope 原生', value: 'dashscope' },
+    { label: '本地', value: 'local' },
+  ]
+  if (form.value.model_type === 1) return all  // Embedding：全部
+  if (form.value.model_type === 2) return all.filter(o => o.value !== 'local')  // LLM：无本地
+  return all.filter(o => o.value !== 'openai')  // Rerank：无 OpenAI
+})
+
+// 选中厂商时带出默认调用模式（aliyun→dashscope / local→local / 其他→openai）
+function defaultProtocolFor(providerName: string): string {
+  if (providerName === 'aliyun') return 'dashscope'
+  if (providerName === 'local') return 'local'
+  return 'openai'
+}
 
 // ── 模型弹窗 ────────────────────────
 const formRef = ref<FormInst>()
@@ -249,6 +265,7 @@ const form = ref({
   provider: '',
   model_name: '',
   model_type: 1,
+  protocol: 'openai' as string | null,
   base_url: '' as string | null,
   api_key: '' as string | null,
   dimension: null as number | null,
@@ -304,8 +321,11 @@ function onModelNameChange(name: string) {
 function onProviderChange(_provider: string) {
   form.value.model_name = ''
   form.value.dimension = null
+  // 自定义厂商自动继承厂商 base_url（可修改）；预置厂商留空（选预置模型时带出）
   const p = providers.value.find(x => x.name === form.value.provider)
   form.value.base_url = p?.base_url || null
+  // 带出默认调用模式（可修改）
+  form.value.protocol = defaultProtocolFor(form.value.provider)
   // 统一默认 LLM 类型（所有厂商行为一致）
   form.value.model_type = 2
   // 自动带出该厂商第一个预置 LLM 模型（无预置则留空手输）
@@ -319,9 +339,14 @@ function onProviderChange(_provider: string) {
 }
 
 function onTypeChange(_typeCode: number) {
-  // 仅清空模型名与维度（预置 chips 随类型变化）；已填的 base_url / api_key 保留
+  // 仅清空模型名与维度（预置选项随类型变化）；已填的 base_url / api_key 保留
   form.value.model_name = ''
   form.value.dimension = null
+  // 调用模式若不在当前类型选项内 → 重置为默认
+  const options = protocolTypeOptions.value.map(o => o.value)
+  if (form.value.protocol && !options.includes(form.value.protocol)) {
+    form.value.protocol = defaultProtocolFor(form.value.provider)
+  }
 }
 
 // ── 厂商弹窗 ────────────────────────
@@ -415,7 +440,8 @@ function openModelCreate() {
   editingId.value = null
   modalTitle.value = '添加模型'
   form.value = {
-    provider: '', model_name: '', model_type: 2, base_url: null, api_key: null,
+    provider: '', model_name: '', model_type: 2, protocol: 'openai',
+    base_url: null, api_key: null,
     dimension: null, temperature: null, top_p: null, max_tokens: null,
   }
   modalShow.value = true
@@ -428,6 +454,7 @@ function openModelEdit(row: UserModelConfigItem) {
     provider: row.provider,
     model_name: row.model_name,
     model_type: row.model_type,
+    protocol: row.protocol || 'openai',
     base_url: row.base_url,
     api_key: row.api_key,
     dimension: row.dimension,
@@ -450,6 +477,7 @@ async function handleSubmit() {
       provider: form.value.provider,
       model_name: form.value.model_name,
       model_type: form.value.model_type,
+      protocol: form.value.protocol,
       base_url: form.value.base_url,
       api_key: form.value.api_key,
       dimension: form.value.dimension,

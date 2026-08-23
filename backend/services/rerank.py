@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class RerankService:
-    """Rerank 精排统一入口：按 provider 分发，cfg 为空时用 config.yaml tools.rerank 全局默认"""
+    """Rerank 精排统一入口：按调用模式（协议）分发，cfg 为空时用 config.yaml local_models 默认
+
+    解析链：cfg.protocol（模型配置显式选择）→ 厂商名推断（aliyun→dashscope / local→local）→ local 默认
+    """
 
     @staticmethod
     async def rerank(cfg, query: str, candidates: list[dict], top_k: int) -> list[dict]:
@@ -24,8 +27,8 @@ class RerankService:
         精排候选列表，返回 top_k 条（score 字段替换为 reranker 分数）
 
         参数:
-            cfg: user_model_config ORM（provider / model_name / api_key / base_url）；
-                 None 时用 tools.rerank 全局默认（local 模型）
+            cfg: user_model_config ORM（provider / model_name / api_key / base_url / protocol）；
+                 None 时用 local_models.rerank 全局默认（local 模型）
             query: 检索原始用户问题（精排相关性基准）
             candidates: 粗召回候选 [{chunk_id, content, filename, score}, ...]
             top_k: 返回条数
@@ -38,10 +41,14 @@ class RerankService:
                 model_name=settings.local_models.rerank.model_name,
                 api_key=None,
                 base_url=None,
+                protocol="local",
             )
-        impl = RERANK_IMPLEMENTATIONS.get(cfg.provider)
+        proto = getattr(cfg, "protocol", None) or _PROTOCOL_BY_PROVIDER.get(cfg.provider)
+        impl = RERANK_IMPLEMENTATIONS.get(proto)
         if impl is None:
-            logger.warning("未知 rerank provider: %s，降级纯向量排序", cfg.provider)
+            logger.warning(
+                "未知 rerank 调用模式: %s（provider=%s），降级纯向量排序",
+                proto, cfg.provider)
             return candidates[:top_k]
         try:
             return await impl.rerank(cfg, query, candidates, top_k)
@@ -148,10 +155,16 @@ class DashScopeRerank:
         return [{**c, "score": round(by_index[i], 4)} for i, c in ranked]
 
 
-# provider → 实现类 注册表（新增厂商 = 实现类 + 注册一行）
+# 厂商名 → 默认调用模式（Rerank 用；模型配置显式选择时优先）
+_PROTOCOL_BY_PROVIDER: dict[str, str] = {
+    "aliyun": "dashscope",
+    "local": "local",
+}
+
+# 调用模式 → 实现类 注册表（未知模式降级纯向量）
 RERANK_IMPLEMENTATIONS: dict[str, type] = {
     "local": LocalRerank,
-    "aliyun": DashScopeRerank,
+    "dashscope": DashScopeRerank,
 }
 
 __all__ = ["RerankService", "LocalRerank", "DashScopeRerank"]

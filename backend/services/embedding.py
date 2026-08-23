@@ -31,23 +31,17 @@ class EmbeddingService:
             api_key:    API Key（从 model_config 读取）
             base_url:   API 地址（从 model_config 读取）
             texts:      文本列表（单条传 ["text"]）
-            protocol:   显式调用模式（协议）；provider 有专用实现时忽略（如 aliyun 走 DashScope SDK），
-                        自定义厂商用它选择实现（默认 openai）
+            protocol:   调用模式（协议）：模型配置显式选择时优先；空 = 按厂商名推断
+                        （aliyun→dashscope / local→local / 其他→openai）
 
         返回: 向量列表，与 texts 一一对应
         """
-        if provider in EMBEDDING_IMPLEMENTATIONS:
-            # 专用实现优先（aliyun / openai / local），显式协议不覆盖，避免破坏现有链路
-            impl = EMBEDDING_IMPLEMENTATIONS[provider]
-        elif protocol:
-            # 自定义厂商：按显式协议选实现（目前仅 openai），未注册回退默认
-            impl = EMBEDDING_IMPLEMENTATIONS.get(protocol, OpenAICompatibleEmbedding)
-        else:
-            impl = OpenAICompatibleEmbedding
+        proto = protocol or _PROTOCOL_BY_PROVIDER.get(provider, "openai")
+        impl = EMBEDDING_IMPLEMENTATIONS.get(proto, OpenAICompatibleEmbedding)
         return impl.embed(model_name, api_key, base_url, texts)
 
 
-class AliyunEmbedding:
+class DashScopeEmbedding:
     """阿里云 DashScope Embedding（原生 SDK 链路）"""
 
     @staticmethod
@@ -100,9 +94,16 @@ class LocalEmbedding:
         return results.tolist()
 
 
-# provider → 实现类 注册表（未知 provider 默认 OpenAI 兼容）
+# 厂商名 → 默认调用模式（Embedding 用；模型配置显式选择时优先于此处）
+_PROTOCOL_BY_PROVIDER: dict[str, str] = {
+    "aliyun": "dashscope",
+    "local": "local",
+    "openai": "openai",
+}
+
+# 调用模式 → 实现类 注册表（未知回退 OpenAI 兼容）
 EMBEDDING_IMPLEMENTATIONS: dict[str, type] = {
-    "aliyun": AliyunEmbedding,
     "openai": OpenAICompatibleEmbedding,
+    "dashscope": DashScopeEmbedding,
     "local": LocalEmbedding,
 }

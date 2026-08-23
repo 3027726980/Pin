@@ -173,9 +173,108 @@ class OpenAICompatible:
             raise
 
 
+class DashScopeLLM:
+    """阿里云百炼 DashScope 原生 LLM（非 OpenAI 兼容；/api/v1/services/aigc/text-generation/generation）"""
+
+    protocol = "dashscope"
+
+    @staticmethod
+    async def chat(
+        model_name: str,
+        api_key: str,
+        base_url: str | None,
+        messages: list[dict],
+        temperature: float,
+        top_p: float,
+        timeout: float = 60.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        """DashScope 原生非流式对话（埋点：耗时 + 输出长度 + 错误）"""
+        import httpx
+
+        url = (base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/") \
+            + "/services/aigc/text-generation/generation"
+        params = {"temperature": temperature, "top_p": top_p}
+        if max_tokens:
+            params["max_tokens"] = max_tokens
+        body = {"model": model_name, "input": {"messages": messages}, "parameters": params}
+        t0 = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    url, json=body,
+                    headers={"Authorization": f"Bearer {api_key}"})
+                resp.raise_for_status()
+                data = resp.json()
+            content = (data.get("output") or {}).get("text") or ""
+            _llm_logger.info(
+                "model=%s base_url=%s stream=false total_ms=%d chars=%d error=None",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), len(content))
+            return content
+        except Exception as e:
+            _llm_logger.error(
+                "model=%s base_url=%s stream=false total_ms=%d error=%s",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), e)
+            raise
+
+    @staticmethod
+    async def chat_stream(
+        model_name: str,
+        api_key: str,
+        base_url: str | None,
+        messages: list[dict],
+        temperature: float,
+        top_p: float,
+        timeout: float = 60.0,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]:
+        """DashScope 原生流式对话（incremental_output SSE）"""
+        import httpx
+
+        url = (base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/") \
+            + "/services/aigc/text-generation/generation"
+        params = {"temperature": temperature, "top_p": top_p, "incremental_output": True}
+        if max_tokens:
+            params["max_tokens"] = max_tokens
+        body = {"model": model_name, "input": {"messages": messages}, "parameters": params}
+        t0 = time.perf_counter()
+        chars = 0
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                        "POST", url, json=body,
+                        headers={"Authorization": f"Bearer {api_key}"}) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        import json
+                        try:
+                            data = json.loads(line[5:].strip())
+                        except Exception:
+                            continue
+                        text = (data.get("output") or {}).get("text") or ""
+                        if text:
+                            chars += len(text)
+                            yield text
+            _llm_logger.info(
+                "model=%s base_url=%s stream=true total_ms=%d chars=%d error=None",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), chars)
+        except Exception as e:
+            _llm_logger.error(
+                "model=%s base_url=%s stream=true total_ms=%d error=%s",
+                model_name, base_url or "",
+                int((time.perf_counter() - t0) * 1000), e)
+            raise
+
+
 # 协议 → 实现类 注册表
 LLM_IMPLEMENTATIONS: dict[str, type] = {
     "openai": OpenAICompatible,
+    "dashscope": DashScopeLLM,
 }
 
 
