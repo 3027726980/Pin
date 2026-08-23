@@ -72,22 +72,22 @@ async def seed_model_config() -> None:
     async with async_session_local() as session:
         from sqlalchemy import select
 
-        providers = getattr(settings, "model_providers", None)
-        if providers is None:
-            return
+        preset_providers = getattr(settings, "preset_providers", None) or []
+        preset_models = getattr(settings, "preset_models", None) or []
 
-        # 期望状态（config.yaml）
+        # 期望状态（config.yaml：preset_providers / preset_models 分开声明）
         expect_types = {mt["code"]: mt["name"]
                         for mt in getattr(settings, "model_types", []) or []}
-        expect_providers = set(vars(providers).keys())
+        expect_providers = {p["name"]: p for p in preset_providers}
         expect_models: dict = {}
-        for pname, pcfg in vars(providers).items():
-            for m in getattr(pcfg, "models", []) or []:
-                expect_models[(pname, m["model_name"])] = {
-                    "model_type": m["model_type"],
-                    "base_url": m["base_url"],
-                    "dimension": m.get("dimension"),
-                }
+        for m in preset_models:
+            # 模型 base_url：模型自身声明优先，否则继承厂商默认
+            provider_base = (expect_providers.get(m["provider"]) or {}).get("base_url") or ""
+            expect_models[(m["provider"], m["model_name"])] = {
+                "model_type": m["model_type"],
+                "base_url": m.get("base_url") or provider_base,
+                "dimension": m.get("dimension"),
+            }
 
         # 数据库现状
         db_types = {t.code: t for t in
@@ -115,7 +115,7 @@ async def seed_model_config() -> None:
             if p not in db_providers:
                 session.add(ModelProviders(name=p))
                 changed = True
-        for p in set(db_providers) - expect_providers:
+        for p in set(db_providers) - set(expect_providers.keys()):
             await session.delete(db_providers[p])
             changed = True
         # 默认模型 diff

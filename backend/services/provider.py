@@ -41,12 +41,13 @@ class ProviderService:
             ProviderResponse(name=name, protocol="openai", source="preset", model_count=count)
             for name, count in preset_rows
         ]
-        # 预置厂商协议从 config.yaml 解析（model_providers 表无 protocol 列，config.yaml 是唯一事实来源）
-        providers_cfg = getattr(settings, "model_providers", None)
+        # 预置厂商协议与 base_url 从 config.yaml 解析（model_providers 表无这些列，config.yaml 是唯一事实来源）
+        preset_providers = getattr(settings, "preset_providers", None) or []
+        provider_cfg = {p["name"]: p for p in preset_providers}
         for item in result:
-            cfg = getattr(providers_cfg, item.name, None)
-            if cfg is not None and getattr(cfg, "protocol", None):
-                item.protocol = cfg.protocol
+            cfg = provider_cfg.get(item.name, {})
+            item.protocol = cfg.get("protocol") or "openai"
+            item.base_url = cfg.get("base_url") or None
 
         # 自定义厂商 + 该用户下配置数
         custom = await ProviderRepo.list_by_user(db, user.id)

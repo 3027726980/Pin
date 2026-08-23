@@ -201,13 +201,12 @@ def _resolve_implementation(provider: str, protocol: str | None = None) -> type:
 
 def _resolve_protocol(provider: str, protocol: str | None = None) -> str:
     """
-    解析调用模式（协议）：显式值优先，其次查 config.yaml 厂商声明，默认 openai
+    解析调用模式（协议）：显式值优先，其次查 config.yaml preset_providers 声明，默认 openai
     """
     if protocol:
         return protocol
-    providers = getattr(settings, "model_providers", None)
-    if providers is not None:
-        cfg = getattr(providers, provider, None)
-        if cfg is not None and getattr(cfg, "protocol", None):
-            return cfg.protocol
+    preset = getattr(settings, "preset_providers", None) or []
+    for p in preset:
+        if p["name"] == provider:
+            return p.get("protocol") or "openai"
     return "openai"
