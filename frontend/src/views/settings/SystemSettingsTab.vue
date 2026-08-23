@@ -36,23 +36,23 @@
             <n-switch v-model:value="redactConfig.enabled" />
           </n-form-item>
           <n-form-item label="匹配规则">
-            <n-dynamic-input
-              :value="redactConfig.rules"
-              #default="{ value }"
-              @update:value="onRulesUpdate"
-            >
-              <div class="rule-row">
+            <div class="rule-list">
+              <div class="rule-add">
+                <n-button size="tiny" quaternary type="primary" @click="addRule">＋ 添加规则</n-button>
+              </div>
+              <div v-for="(r, i) in redactConfig.rules" :key="i" class="rule-row">
+                <n-button size="tiny" quaternary type="error" @click="removeRule(i)">－</n-button>
                 <n-select
-                  v-model:value="value.type"
+                  v-model:value="r.type"
                   :options="[
                     { label: '字段名匹配', value: 'field_name' },
                     { label: '值模式匹配', value: 'value_pattern' },
                   ]"
                   style="width: 130px"
                 />
-                <n-input v-model:value="value.pattern" placeholder="正则表达式" style="width: 240px" />
+                <n-input v-model:value="r.pattern" placeholder="正则表达式" style="width: 300px" />
                 <n-select
-                  v-model:value="value.mask"
+                  v-model:value="r.mask"
                   :options="[
                     { label: '保留前3后3', value: 'keep_3_3' },
                     { label: '保留前4后4', value: 'keep_4_4' },
@@ -61,7 +61,7 @@
                   style="width: 130px"
                 />
               </div>
-            </n-dynamic-input>
+            </div>
           </n-form-item>
         </n-form>
         <div class="save-row">
