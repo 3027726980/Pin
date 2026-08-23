@@ -93,8 +93,8 @@
               </n-collapse-item>
             </n-collapse>
           </div>
-          <!-- 检索调试信息（Debug 模式） -->
-          <div v-if="msg.role === 'assistant' && msg.debug" class="msg-debug">
+          <!-- 检索调试信息（Debug 模式，关闭时隐藏） -->
+          <div v-if="msg.role === 'assistant' && msg.debug && debugMode" class="msg-debug">
             <n-collapse>
               <n-collapse-item title="🔍 检索调试信息" name="debug">
                 <div v-if="msg.debug.queries && msg.debug.queries.length" class="debug-section">
