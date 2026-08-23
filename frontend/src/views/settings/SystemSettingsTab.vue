@@ -50,7 +50,7 @@
                   ]"
                   style="width: 130px"
                 />
-                <n-input v-model:value="value.pattern" placeholder="正则表达式，如 sk-[A-Za-z0-9]+" />
+                <n-input v-model:value="value.pattern" placeholder="正则表达式" style="width: 240px" />
                 <n-select
                   v-model:value="value.mask"
                   :options="[
@@ -69,7 +69,6 @@
             保存脱敏规则
           </n-button>
         </div>
-        <span class="hint">示例：sk-3cb94abcd → sk-3***bcd；字段名 api_key/token/password 等自动匹配</span>
       </n-card>
 
       <!-- 其他设置项：JSON 文本编辑 -->
