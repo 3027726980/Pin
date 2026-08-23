@@ -105,20 +105,15 @@
           />
         </n-form-item>
         <n-form-item v-if="form.provider" label="模型" path="model_name">
-          <n-input v-model:value="form.model_name" placeholder="填写模型名，如 gpt-4o / deepseek-chat" style="width: 100%" />
-          <template #feedback>
-            <template v-if="presetModelChips.length > 0">
-              <span style="margin-right: 4px">预置模型：</span>
-              <n-tag
-                v-for="m in presetModelChips" :key="m.model_name"
-                size="small" style="margin-right: 4px; cursor: pointer"
-                @click="applyPresetModel(m)"
-              >
-                {{ m.model_name }}
-              </n-tag>
-            </template>
-            <template v-else>自由填写模型名</template>
-          </template>
+          <n-select
+            v-model:value="form.model_name"
+            :options="modelNameOptions"
+            placeholder="选择预置模型，或输入新模型名"
+            filterable
+            tag
+            @update:value="onModelNameChange"
+          />
+          <template #feedback>可直接选择厂商预置模型，也可输入自定义模型名</template>
         </n-form-item>
         <n-form-item v-if="form.provider" label="调用模式">
           <n-input :value="selectedProtocol || 'openai'" disabled />
@@ -289,17 +284,21 @@ const typeOptions = computed<SelectOption[]>(() =>
   modelTypes.value.map(t => ({ label: t.name, value: t.code })),
 )
 
-// 选中厂商 + 类型后的预置模型（可点击快捷填入）
-const presetModelChips = computed<DefaultModelConfigItem[]>(() =>
-  defaultModels.value.filter(
-    m => m.provider === form.value.provider && m.model_type === form.value.model_type,
-  ),
+// 模型名选项：该厂商 + 类型的预置模型（可搜可手输新值）
+const modelNameOptions = computed<SelectOption[]>(() =>
+  defaultModels.value
+    .filter(m => m.provider === form.value.provider && m.model_type === form.value.model_type)
+    .map(m => ({ label: m.model_name, value: m.model_name })),
 )
 
-function applyPresetModel(m: DefaultModelConfigItem) {
-  form.value.model_name = m.model_name
-  form.value.base_url = m.base_url
-  form.value.dimension = m.dimension
+// 选中预置模型时自动带出 base_url / dimension；手输新模型名不干预
+function onModelNameChange(name: string) {
+  const def = defaultModels.value.find(
+    m => m.provider === form.value.provider && m.model_name === name)
+  if (def) {
+    form.value.base_url = def.base_url
+    form.value.dimension = def.dimension
+  }
 }
 
 function onProviderChange(_provider: string) {
