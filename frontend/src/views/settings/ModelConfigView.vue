@@ -131,8 +131,8 @@
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key" require-mark="true">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
         </n-form-item>
-        <!-- 采样参数（仅 LLM；模型级默认，Agent 单独设置时以 Agent 为准） -->
-        <template v-if="form.model_type === 2">
+        <!-- 采样参数（仅已选厂商 + LLM；模型级默认，Agent 单独设置时以 Agent 为准） -->
+        <template v-if="form.provider && form.model_type === 2">
           <n-form-item label="采样 temperature">
             <n-input-number v-model:value="form.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7" />
           </n-form-item>
