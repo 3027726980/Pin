@@ -62,6 +62,7 @@ backend/scripts-dev/
 
 # 本地模型缓存
 backend/embedding_models/
+backend/local_models/
 
 # 本地开发规范（个人使用，不提交）
 AGENTS.md
