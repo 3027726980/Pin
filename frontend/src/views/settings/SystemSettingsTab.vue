@@ -54,6 +54,7 @@
                 <n-select
                   v-model:value="value.mask"
                   :options="[
+                    { label: '保留前3后3', value: 'keep_3_3' },
                     { label: '保留前4后4', value: 'keep_4_4' },
                     { label: '整体掩码', value: 'full_mask' },
                   ]"

@@ -20,10 +20,10 @@ DEFAULT_SETTINGS: dict[str, dict] = {
                                 "redact_sensitive", True)),
         "rules": [
             {"type": "field_name", "pattern": "api_key|token|password|secret|authorization",
-             "mask": "keep_4_4"},
-            {"type": "value_pattern", "pattern": r"sk-[A-Za-z0-9]+", "mask": "keep_4_4"},
-            {"type": "value_pattern", "pattern": r"pin_[A-Za-z0-9]+", "mask": "keep_4_4"},
-            {"type": "value_pattern", "pattern": r"Bearer [A-Za-z0-9._-]+", "mask": "keep_4_4"},
+             "mask": "keep_3_3"},
+            {"type": "value_pattern", "pattern": r"sk-[A-Za-z0-9]+", "mask": "keep_3_3"},
+            {"type": "value_pattern", "pattern": r"pin_[A-Za-z0-9]+", "mask": "keep_3_3"},
+            {"type": "value_pattern", "pattern": r"Bearer [A-Za-z0-9._-]+", "mask": "keep_3_3"},
         ],
     },
 }

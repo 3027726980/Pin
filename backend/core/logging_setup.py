@@ -113,10 +113,11 @@ class RedactFilter(logging.Filter):
 
     @staticmethod
     def _mask(value: str, mask: str) -> str:
-        # 幂等：已掩码值（含 ***）不再触发短值全掩，保持前4后4
+        # 幂等：已掩码值（含 ***）不再触发短值全掩，保持原格式
         if mask == "full_mask" or (len(value) < 12 and "***" not in value):
             return "******"
-        return f"{value[:4]}***{value[-4:]}"
+        keep = 3 if mask == "keep_3_3" else 4
+        return f"{value[:keep]}***{value[-keep:]}"
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not self._enabled:
