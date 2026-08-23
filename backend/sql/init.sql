@@ -554,6 +554,28 @@ COMMENT ON COLUMN conversations.updated_at IS '最后更新时间（含 checkpoi
 -- ============================================================
 
 -- ============================================================
+-- 17. 用户自定义厂商表（Phase 4.9）
+--      前端可增删改，效果等同 config.yaml 预置厂商（带调用模式）
+--      与预置 model_providers 分离（seed 清空逻辑不误删用户数据）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_providers (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        VARCHAR(50) NOT NULL,
+    protocol    VARCHAR(20) NOT NULL DEFAULT 'openai',
+    description VARCHAR(200),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_user_providers_name UNIQUE (user_id, name)
+);
+
+COMMENT ON TABLE user_providers IS '用户自定义厂商表：前端可增删改，效果等同 config.yaml 预置厂商（带调用模式 protocol）';
+COMMENT ON COLUMN user_providers.user_id IS '所属用户 ID';
+COMMENT ON COLUMN user_providers.name IS '厂商名（同用户下唯一）';
+COMMENT ON COLUMN user_providers.protocol IS '调用模式（协议）：openai 等';
+COMMENT ON COLUMN user_providers.description IS '备注说明';
+
+-- ============================================================
 -- 16. 通用系统设置表（014）
 --      JSON 配置存储；脱敏规则等系统级配置的唯一事实来源
 -- ============================================================

@@ -41,6 +41,7 @@ from backend.api.v1 import (
     conversation_router,
     knowledge_router,
     public_router,
+    provider_router,
     settings_router,
     user_model_config_router,
 )
@@ -298,6 +299,7 @@ app.include_router(auth_router)
 app.include_router(conversation_router)
 app.include_router(knowledge_router)
 app.include_router(user_model_config_router)
+app.include_router(provider_router)
 app.include_router(agent_api_key_router)
 app.include_router(debug_router)
 app.include_router(public_router)

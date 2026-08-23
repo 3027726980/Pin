@@ -9,7 +9,8 @@ const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue'
 const KnowledgeDetailView = () => import('@/views/knowledge/KnowledgeDetailView.vue')
 const AgentListView = () => import('@/views/agent/AgentListView.vue')
 const AgentChatView = () => import('@/views/agent/AgentChatView.vue')
-const ModelConfigView = () => import('@/views/settings/SettingsView.vue')
+const ModelConfigView = () => import('@/views/settings/ModelConfigView.vue')
+const SystemSettingsView = () => import('@/views/settings/SystemSettingsTab.vue')
 
 const routes: RouteRecordRaw[] = [
   {
@@ -58,6 +59,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ModelConfig',
         component: ModelConfigView,
         meta: { title: '模型配置', requiresAuth: true },
+      },
+      {
+        path: 'settings/system',
+        name: 'SystemSettings',
+        component: SystemSettingsView,
+        meta: { title: '系统设置', requiresAuth: true },
       },
     ],
   },

@@ -16,6 +16,7 @@ from .AgentIndex import AgentIndex
 from .AgentApiKeys import AgentApiKeys
 from .Conversations import Conversations
 from .SystemSettings import SystemSettings
+from .UserProviders import UserProviders
 
 __all__ = [
     "AccessTokenWhitelist",
@@ -34,5 +35,6 @@ __all__ = [
     "SimpleRagAgents",
     "SystemSettings",
     "UserModelConfig",
+    "UserProviders",
     "Users",
 ]

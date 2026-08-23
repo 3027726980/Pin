@@ -2,70 +2,99 @@
   <div class="page">
     <div class="page-header">
       <h2>模型配置</h2>
-      <n-button type="primary" @click="openCreate">
-        <template #icon><n-icon><AddOutline /></n-icon></template>
-        添加配置
-      </n-button>
+      <n-space>
+        <n-button @click="openProviderCreate">
+          <template #icon><n-icon><AddOutline /></n-icon></template>
+          添加厂商
+        </n-button>
+        <n-button type="primary" @click="openModelCreate">
+          <template #icon><n-icon><AddOutline /></n-icon></template>
+          添加模型
+        </n-button>
+      </n-space>
     </div>
 
-    <!-- 可选模型列表（按类型分组） -->
-    <n-card title="可选模型" size="small" class="info-card">
+    <!-- ── 厂商卡片 ─────────────────────── -->
+    <n-card title="厂商" size="small" class="section-card">
       <template #header-extra>
-        <span style="font-size: 12px; color: #999">由 config.yaml 定义，启动时同步；自定义模型请在下方手动创建</span>
+        <span style="font-size: 12px; color: #999">预置由 config.yaml 定义；自定义可直接添加，效果等同预置</span>
       </template>
-      <div v-for="group in groupedDefaults" :key="group.model_type" class="model-group">
-        <div class="model-group-title">{{ group.name }}（{{ group.items.length }}）</div>
-        <n-data-table
-          :columns="defaultColumns"
-          :data="group.items"
-          :pagination="false"
-          :row-key="(row: DefaultModelConfigItem) => row.id"
-          size="small"
-        />
-      </div>
-      <n-empty v-if="groupedDefaults.length === 0" description="暂无预置模型（config.yaml 未配置）" style="padding: 16px 0" />
+      <n-grid cols="1 s:2 m:3 l:4" :x-gap="12" :y-gap="12" responsive="screen">
+        <n-gi v-for="p in providers" :key="p.id || p.name">
+          <n-card size="small" class="provider-card" :bordered="true">
+            <div class="card-name">{{ p.name }}</div>
+            <n-space size="small" style="margin: 6px 0">
+              <n-tag size="small" :type="p.source === 'custom' ? 'info' : 'default'" :bordered="false">
+                {{ p.source === 'custom' ? '自定义' : '预置' }}
+              </n-tag>
+              <n-tag size="small" :bordered="false">{{ p.protocol }}</n-tag>
+            </n-space>
+            <div class="card-desc">{{ p.description || `${p.model_count} 个模型配置` }}</div>
+            <template v-if="p.source === 'custom'" #footer>
+              <n-space justify="end" style="margin-top: 4px">
+                <n-button size="tiny" quaternary @click="openProviderEdit(p)">编辑</n-button>
+                <n-popconfirm @positive-click="handleProviderDelete(p.id!)">
+                  <template #trigger>
+                    <n-button size="tiny" quaternary type="error">删除</n-button>
+                  </template>
+                  删除后已有配置保留，但不可新建该厂商配置。确定删除？
+                </n-popconfirm>
+              </n-space>
+            </template>
+          </n-card>
+        </n-gi>
+      </n-grid>
+      <n-empty v-if="providers.length === 0" description="暂无厂商" style="padding: 16px 0" />
     </n-card>
 
-    <!-- 我的配置 -->
-    <n-card title="我的配置" class="config-card">
-      <n-data-table
-        :columns="configColumns"
-        :data="myConfigs"
-        :pagination="false"
-        :row-key="(row: UserModelConfigItem) => row.id"
-      >
-        <template #empty>
-          <n-empty description="暂无配置，从上方可选模型中选择并添加" />
-        </template>
-      </n-data-table>
+    <!-- ── 我的模型卡片 ─────────────────── -->
+    <n-card title="我的模型" size="small" class="section-card">
+      <n-grid cols="1 s:2 m:3 l:4" :x-gap="12" :y-gap="12" responsive="screen">
+        <n-gi v-for="m in myConfigs" :key="m.id">
+          <n-card size="small" class="model-card">
+            <div class="card-name">{{ m.model_name }}</div>
+            <n-space size="small" align="center" style="margin: 6px 0">
+              <span class="model-provider">{{ m.provider }}</span>
+              <n-tag size="small" :bordered="false" :type="typeTagType(m.model_type)">
+                {{ typeLabel(m.model_type) }}
+              </n-tag>
+              <n-switch size="small" :value="m.is_active" @update:value="(v: boolean) => toggleActive(m.id, v)" />
+            </n-space>
+            <div class="card-desc">
+              采样 {{ m.temperature ?? '默认' }} / {{ m.top_p ?? '默认' }} / max {{ m.max_tokens ?? '厂商默认' }}
+            </div>
+            <template #footer>
+              <n-space justify="end" style="margin-top: 4px">
+                <n-button size="tiny" quaternary type="info" :loading="testingId === m.id" @click="handleTest(m)">
+                  测试
+                </n-button>
+                <n-button size="tiny" quaternary @click="openModelEdit(m)">编辑</n-button>
+                <n-popconfirm @positive-click="handleDelete(m.id)">
+                  <template #trigger>
+                    <n-button size="tiny" quaternary type="error">删除</n-button>
+                  </template>
+                  确定删除此配置？
+                </n-popconfirm>
+              </n-space>
+            </template>
+          </n-card>
+        </n-gi>
+      </n-grid>
+      <n-empty v-if="myConfigs.length === 0" description="暂无模型配置，点击右上角「添加模型」" style="padding: 16px 0" />
     </n-card>
 
-    <!-- 创建/编辑弹窗 -->
+    <!-- ── 模型弹窗 ─────────────────────── -->
     <n-modal v-model:show="modalShow" :title="modalTitle" preset="card" style="width: 520px" :mask-closable="false">
       <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="100">
         <n-form-item label="厂商" path="provider">
-          <n-space align="center" style="width: 100%">
-            <template v-if="providerMode === 'preset'">
-              <n-select
-                v-model:value="form.provider"
-                :options="providerOptions"
-                placeholder="选择预置厂商"
-                filterable
-                style="flex: 1"
-                @update:value="onProviderChange"
-              />
-              <n-button text type="primary" @click="switchToCustom">✏️ 自定义厂商</n-button>
-            </template>
-            <template v-else>
-              <n-input
-                v-model:value="form.provider"
-                placeholder="输入厂商名，如 openrouter"
-                style="flex: 1"
-              />
-              <n-button text @click="switchToPreset">使用预置</n-button>
-            </template>
-          </n-space>
-          <template #feedback>预置厂商由 config.yaml 定义；自定义厂商需填写接口地址</template>
+          <n-select
+            v-model:value="form.provider"
+            :options="providerOptions"
+            placeholder="选择支持的厂商"
+            filterable
+            @update:value="onProviderChange"
+          />
+          <template #feedback>支持预置（config.yaml）与自定义厂商；没有想要的厂商可先「添加厂商」</template>
         </n-form-item>
         <n-form-item v-if="form.provider" label="模型类型" path="model_type">
           <n-select
@@ -76,41 +105,33 @@
           />
         </n-form-item>
         <n-form-item v-if="form.provider" label="模型" path="model_name">
-          <template v-if="providerMode === 'preset'">
-            <n-select
-              v-model:value="form.model_name"
-              :options="filteredModelOptions"
-              placeholder="选择模型"
-              filterable
-              style="width: 100%"
-              @update:value="onModelChange"
-            />
-          </template>
-          <template v-else>
-            <n-input
-              v-model:value="form.model_name"
-              placeholder="输入模型名，如 gpt-4o"
-              style="width: 100%"
-            />
+          <n-input v-model:value="form.model_name" placeholder="填写模型名，如 gpt-4o / deepseek-chat" style="width: 100%" />
+          <template #feedback>
+            <template v-if="presetModelChips.length > 0">
+              <span style="margin-right: 4px">预置模型：</span>
+              <n-tag
+                v-for="m in presetModelChips" :key="m.model_name"
+                size="small" style="margin-right: 4px; cursor: pointer"
+                @click="applyPresetModel(m)"
+              >
+                {{ m.model_name }}
+              </n-tag>
+            </template>
+            <template v-else>自由填写模型名</template>
           </template>
         </n-form-item>
-        <!-- 调用模式：仅自定义厂商可选（目前仅 OpenAI 兼容） -->
-        <n-form-item v-if="providerMode === 'custom'" label="调用模式" path="protocol">
-          <n-select
-            v-model:value="form.protocol"
-            :options="protocolOptions"
-            placeholder="选择调用模式"
-          />
-          <template #feedback>目前仅支持 OpenAI 兼容模式；更多模式后续扩展</template>
+        <n-form-item v-if="form.provider" label="调用模式">
+          <n-input :value="selectedProtocol || 'openai'" disabled />
+          <template #feedback>继承自厂商（{{ form.provider }}）</template>
         </n-form-item>
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址" path="base_url">
-          <n-input v-model:value="form.base_url" placeholder="自定义厂商必填，如 https://api.example.com/v1" />
+          <n-input v-model:value="form.base_url" placeholder="预置厂商可留空用默认；自定义厂商必填" />
           <template v-if="isCustomProvider" #feedback>自定义厂商必须填写接口地址</template>
         </n-form-item>
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key" require-mark="true">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
         </n-form-item>
-        <!-- Phase 4.8 采样参数（仅 LLM 类型；模型级默认，Agent 单独设置时以 Agent 为准） -->
+        <!-- 采样参数（仅 LLM；模型级默认，Agent 单独设置时以 Agent 为准） -->
         <template v-if="form.model_type === 2">
           <n-form-item label="采样 temperature">
             <n-input-number v-model:value="form.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7" />
@@ -137,14 +158,36 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- ── 厂商弹窗 ─────────────────────── -->
+    <n-modal v-model:show="providerModalShow" :title="providerModalTitle" preset="card" style="width: 420px" :mask-closable="false">
+      <n-form ref="providerFormRef" :model="providerForm" :rules="providerRules" label-placement="left" label-width="80">
+        <n-form-item label="名称" path="name">
+          <n-input v-model:value="providerForm.name" placeholder="如 openrouter / siliconflow" />
+        </n-form-item>
+        <n-form-item label="调用模式" path="protocol">
+          <n-select v-model:value="providerForm.protocol" :options="protocolOptions" />
+          <template #feedback>目前仅支持 OpenAI 兼容模式；更多模式后续扩展</template>
+        </n-form-item>
+        <n-form-item label="描述">
+          <n-input v-model:value="providerForm.description" placeholder="可选" />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="providerModalShow = false">取消</n-button>
+          <n-button type="primary" :loading="providerSubmitting" @click="handleProviderSubmit">确定</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { h, ref, computed, onMounted } from 'vue'
 import { NButton, NTag, NPopconfirm, NSpace, NIcon, NSwitch } from 'naive-ui'
-import { AddOutline, CreateOutline, TrashOutline } from '@vicons/ionicons5'
-import type { FormInst, FormRules, DataTableColumns, SelectOption } from 'naive-ui'
+import { AddOutline, TrashOutline } from '@vicons/ionicons5'
+import type { FormInst, FormRules, SelectOption } from 'naive-ui'
 import {
   listDefaultModels,
   listMyConfigs,
@@ -157,76 +200,49 @@ import {
   type UserModelConfigItem,
   type ModelTypeItem,
 } from '@/api/model-config'
+import {
+  listProviders,
+  createProvider,
+  updateProvider,
+  deleteProvider,
+  type ProviderItem,
+} from '@/api/providers'
 
 const message = useMessage()
 
 // ── 数据 ────────────────────────────
 const defaultModels = ref<DefaultModelConfigItem[]>([])
 const myConfigs = ref<UserModelConfigItem[]>([])
+const providers = ref<ProviderItem[]>([])
 
-// ── 默认模型表格 ──────────────────────
-const defaultColumns: DataTableColumns<DefaultModelConfigItem> = [
-  { title: '厂商', key: 'provider', width: 120 },
-  {
-    title: '类别', key: 'model_type', width: 240,
-    render(row) {
-      const found = modelTypes.value.find(t => t.code === row.model_type)
-      return found?.name || `类型${row.model_type}`
-    },
-  },
-  { title: '模型', key: 'model_name', width: 260, ellipsis: { tooltip: true } },
-]
+// ── 模型类型 ────────────────────────
+const modelTypes = ref<ModelTypeItem[]>([])
+const typeLabel = (code: number) => modelTypes.value.find(t => t.code === code)?.name || `类型${code}`
+const typeTagType = (code: number): 'success' | 'info' | 'warning' =>
+  code === 1 ? 'success' : code === 2 ? 'info' : 'warning'
 
-// ── 我的配置表格 ──────────────────────
-const configColumns: DataTableColumns<UserModelConfigItem> = [
-  { title: '厂商', key: 'provider', width: 120 },
-  { title: '模型', key: 'model_name', width: 260, ellipsis: { tooltip: true } },
-  {
-    title: '类别', key: 'model_type', width: 240,
-    render(row) {
-      const found = modelTypes.value.find(t => t.code === row.model_type)
-      return found?.name || `类型${row.model_type}`
-    },
-  },
-  {
-    title: '启用', key: 'is_active', width: 70,
-    render(row) {
-      return h(NSwitch, {
-        value: row.is_active,
-        onUpdateValue: (val: boolean) => toggleActive(row.id, val),
-      })
-    },
-  },
-  {
-    title: '操作', key: 'actions', width: 200,
-    render(row) {
-      return h(NSpace, null, {
-        default: () => [
-          h(NButton, {
-            size: 'small', quaternary: true, type: 'info',
-            loading: testingId.value === row.id,
-            onClick: () => handleTest(row),
-          }, { default: () => '测试' }),
-          h(NButton, { size: 'small', quaternary: true, onClick: () => openEdit(row) },
-            { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) }),
-          h(NPopconfirm, { onPositiveClick: () => handleDelete(row.id) }, {
-            trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' },
-              { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
-            default: () => '确定删除此配置？',
-          }),
-        ],
-      })
-    },
-  },
-]
+// ── 厂商 ────────────────────────────
+const providerOptions = computed<SelectOption[]>(() =>
+  providers.value.map(p => ({
+    label: `${p.name}${p.source === 'custom' ? '（自定义）' : ''}`,
+    value: p.name,
+  })),
+)
 
-// ── 弹窗表单 ──────────────────────────
+const selectedProtocol = computed(() =>
+  providers.value.find(p => p.name === form.value.provider)?.protocol || 'openai',
+)
+// 自定义厂商（非预置）→ base_url 必填
+const isCustomProvider = computed(() =>
+  providers.value.find(p => p.name === form.value.provider)?.source === 'custom',
+)
+
+// ── 模型弹窗 ────────────────────────
 const formRef = ref<FormInst>()
 const modalShow = ref(false)
 const submitting = ref(false)
 const editingId = ref<string | null>(null)
-const modalTitle = ref('添加配置')
-// 测试连接状态
+const modalTitle = ref('添加模型')
 const testingId = ref<string | null>(null)
 const formTesting = ref(false)
 
@@ -237,41 +253,14 @@ const form = ref({
   base_url: '' as string | null,
   api_key: '' as string | null,
   dimension: null as number | null,
-  protocol: 'openai' as string | null,
   temperature: null as number | null,
   top_p: null as number | null,
   max_tokens: null as number | null,
 })
 
-// 调用模式选项（协议）：目前仅 OpenAI 兼容；新增模式 = 注册实现 + 这里加一项
-const protocolOptions: SelectOption[] = [
-  { label: 'OpenAI（兼容）', value: 'openai' },
-]
-
-// 厂商选择方式：preset=预置下拉 / custom=自定义输入（显式切换，避免看不出可输入）
-const providerMode = ref<'preset' | 'custom'>('preset')
-
-function switchToCustom() {
-  providerMode.value = 'custom'
-  form.value.provider = ''
-  form.value.model_name = ''
-  form.value.base_url = null
-  form.value.dimension = null
-  form.value.protocol = 'openai'
-}
-
-function switchToPreset() {
-  providerMode.value = 'preset'
-  form.value.provider = ''
-  form.value.model_name = ''
-  form.value.base_url = null
-  form.value.dimension = null
-  form.value.protocol = null  // 预置厂商协议由 config.yaml 推断，不落库
-}
-
 const rules: FormRules = {
-  provider: { required: true, message: '请选择或输入厂商', trigger: 'change' },
-  model_name: { required: true, message: '请选择或输入模型', trigger: 'change' },
+  provider: { required: true, message: '请选择厂商', trigger: 'change' },
+  model_name: { required: true, message: '请填写模型名', trigger: 'blur' },
   api_key: {
     message: '请输入 API Key',
     trigger: 'blur',
@@ -285,131 +274,140 @@ const rules: FormRules = {
     message: '自定义厂商必须填写接口地址',
     trigger: 'blur',
     validator: (_rule, value: string | null) => {
-      if (providerMode.value !== 'custom') return true
+      if (!isCustomProvider.value) return true
       if (!value) return new Error('自定义厂商必须填写接口地址')
       return true
     },
   },
 }
 
-// ── 厂商选项（仅预置厂商，去重；自定义走输入模式）──
-const providerOptions = computed<SelectOption[]>(() => {
-  const seen = new Set<string>()
-  return defaultModels.value
-    .filter(m => { const dup = seen.has(m.provider); seen.add(m.provider); return !dup })
-    .map(m => ({ label: m.provider, value: m.provider }))
-})
-
-// ── 自定义厂商判定（自定义输入模式）───
-const isCustomProvider = computed(() => providerMode.value === 'custom')
-
-// ── 可选模型按类型分组（Embedding / LLM / Rerank）──
-const groupedDefaults = computed(() => {
-  const groups: { model_type: number; name: string; items: DefaultModelConfigItem[] }[] = []
-  for (const t of modelTypes.value) {
-    const items = defaultModels.value.filter(m => m.model_type === t.code)
-    if (items.length) groups.push({ model_type: t.code, name: t.name, items })
-  }
-  return groups
-})
-
-// ── 模型类型标签 ────────────────────
-const modelTypes = ref<ModelTypeItem[]>([])
-const modelTypeLabel = computed(() => {
-  const found = modelTypes.value.find(t => t.code === form.value.model_type)
-  return found?.name || `未知 (${form.value.model_type})`
-})
-
-// ── 类型选项：始终展示全部类型（自定义厂商也能选类型）──
 const typeOptions = computed<SelectOption[]>(() =>
   modelTypes.value.map(t => ({ label: t.name, value: t.code })),
 )
 
-// ── 根据选中厂商+类型过滤模型 ──────────
-const filteredModelOptions = computed<SelectOption[]>(() => {
-  return defaultModels.value
-    .filter(m => m.provider === form.value.provider && m.model_type === form.value.model_type)
-    .map(m => ({ label: m.model_name, value: m.model_name }))
-})
+// 选中厂商 + 类型后的预置模型（可点击快捷填入）
+const presetModelChips = computed<DefaultModelConfigItem[]>(() =>
+  defaultModels.value.filter(
+    m => m.provider === form.value.provider && m.model_type === form.value.model_type,
+  ),
+)
 
-// ── 根据厂商+模型查找默认配置 ──────────
-function findDefault(provider: string, modelName: string): DefaultModelConfigItem | undefined {
-  return defaultModels.value.find(m => m.provider === provider && m.model_name === modelName)
+function applyPresetModel(m: DefaultModelConfigItem) {
+  form.value.model_name = m.model_name
+  form.value.base_url = m.base_url
+  form.value.dimension = m.dimension
 }
 
-// ── 厂商变更：预置厂商默认选第一个类型；自定义厂商保持类型供手输模型 ──
 function onProviderChange(_provider: string) {
   form.value.model_name = ''
   form.value.base_url = null
   form.value.dimension = null
-
   const types = defaultModels.value
     .filter(m => m.provider === form.value.provider)
     .map(m => m.model_type)
     .filter((v, i, a) => a.indexOf(v) === i)
-  if (types.length > 0) {
-    form.value.model_type = types[0]
-    onTypeChange(form.value.model_type)
-  } else {
-    // 自定义厂商：类型保持（默认 1 Embedding），模型名等待手输
-    if (!form.value.model_type) form.value.model_type = 1
-  }
+  form.value.model_type = types.length > 0 ? types[0] : 1
 }
 
-// ── 类型变更：预置模型自动带出；自定义则等待手输 ──
-function onTypeChange(typeCode: number) {
+function onTypeChange(_typeCode: number) {
   form.value.model_name = ''
   form.value.base_url = null
   form.value.dimension = null
+}
 
-  const models = defaultModels.value.filter(
-    m => m.provider === form.value.provider && m.model_type === typeCode
-  )
-  if (models.length > 0) {
-    form.value.model_name = models[0].model_name
-    form.value.base_url = models[0].base_url
-    form.value.dimension = models[0].dimension
+// ── 厂商弹窗 ────────────────────────
+const providerFormRef = ref<FormInst>()
+const providerModalShow = ref(false)
+const providerSubmitting = ref(false)
+const providerEditingId = ref<string | null>(null)
+const providerModalTitle = ref('添加厂商')
+
+const providerForm = ref({
+  name: '',
+  protocol: 'openai',
+  description: null as string | null,
+})
+const protocolOptions: SelectOption[] = [
+  { label: 'OpenAI（兼容）', value: 'openai' },
+]
+const providerRules: FormRules = {
+  name: { required: true, message: '请输入厂商名', trigger: 'blur' },
+  protocol: { required: true, message: '请选择调用模式', trigger: 'change' },
+}
+
+function openProviderCreate() {
+  providerEditingId.value = null
+  providerModalTitle.value = '添加厂商'
+  providerForm.value = { name: '', protocol: 'openai', description: null }
+  providerModalShow.value = true
+}
+
+function openProviderEdit(p: ProviderItem) {
+  providerEditingId.value = p.id
+  providerModalTitle.value = '编辑厂商'
+  providerForm.value = { name: p.name, protocol: p.protocol, description: p.description }
+  providerModalShow.value = true
+}
+
+async function handleProviderSubmit() {
+  try {
+    await providerFormRef.value?.validate()
+  } catch {
+    return
+  }
+  providerSubmitting.value = true
+  try {
+    if (providerEditingId.value) {
+      await updateProvider(providerEditingId.value, {
+        name: providerForm.value.name,
+        protocol: providerForm.value.protocol,
+        description: providerForm.value.description,
+      })
+      message.success('厂商已更新')
+    } else {
+      const p = await createProvider({
+        name: providerForm.value.name,
+        protocol: providerForm.value.protocol,
+        description: providerForm.value.description,
+      })
+      message.success('厂商已添加')
+      // 添加后自动选中，方便立即配置模型
+      form.value.provider = p.name
+      onProviderChange(p.name)
+    }
+    providerModalShow.value = false
+    fetchProviders()
+  } catch (e) {
+    message.error((e as Error).message || '操作失败')
+  } finally {
+    providerSubmitting.value = false
   }
 }
 
-// ── 模型变更：自动填入 base_url / dimension ──
-function onModelChange(modelName: string) {
-  const def = findDefault(form.value.provider, modelName)
-  if (def) {
-    form.value.base_url = def.base_url
-    form.value.model_type = def.model_type
-    form.value.dimension = def.dimension
+async function handleProviderDelete(id: string) {
+  try {
+    await deleteProvider(id)
+    message.success('厂商已删除')
+    fetchProviders()
+  } catch (e) {
+    message.error((e as Error).message || '删除失败')
   }
 }
 
-// ── 获取数据 ──────────────────────────
-async function fetchDefaults() {
-  try { defaultModels.value = await listDefaultModels() } catch { /* */ }
-}
-
-async function fetchMyConfigs() {
-  try { myConfigs.value = await listMyConfigs() } catch { /* */ }
-}
-
-// ── 创建 ────────────────────────────
-function openCreate() {
+// ── 模型弹窗操作 ────────────────────
+function openModelCreate() {
   editingId.value = null
-  modalTitle.value = '添加配置'
-  providerMode.value = 'preset'
+  modalTitle.value = '添加模型'
   form.value = {
     provider: '', model_name: '', model_type: 1, base_url: null, api_key: null,
-    dimension: null, protocol: null, temperature: null, top_p: null, max_tokens: null,
+    dimension: null, temperature: null, top_p: null, max_tokens: null,
   }
   modalShow.value = true
 }
 
-function openEdit(row: UserModelConfigItem) {
+function openModelEdit(row: UserModelConfigItem) {
   editingId.value = row.id
-  modalTitle.value = '编辑配置'
-  // 编辑回显：预置厂商用下拉，自定义厂商自动切输入模式
-  providerMode.value = defaultModels.value.some(m => m.provider === row.provider)
-    ? 'preset'
-    : 'custom'
+  modalTitle.value = '编辑模型'
   form.value = {
     provider: row.provider,
     model_name: row.model_name,
@@ -417,7 +415,6 @@ function openEdit(row: UserModelConfigItem) {
     base_url: row.base_url,
     api_key: row.api_key,
     dimension: row.dimension,
-    protocol: row.protocol || (providerMode.value === 'custom' ? 'openai' : null),
     temperature: row.temperature,
     top_p: row.top_p,
     max_tokens: row.max_tokens,
@@ -426,36 +423,29 @@ function openEdit(row: UserModelConfigItem) {
 }
 
 async function handleSubmit() {
-  try { await formRef.value?.validate() } catch { return }
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
   submitting.value = true
   try {
+    const payload = {
+      provider: form.value.provider,
+      model_name: form.value.model_name,
+      model_type: form.value.model_type,
+      base_url: form.value.base_url,
+      api_key: form.value.api_key,
+      dimension: form.value.dimension,
+      temperature: form.value.temperature,
+      top_p: form.value.top_p,
+      max_tokens: form.value.max_tokens,
+    }
     if (editingId.value) {
-      await updateModelConfig(editingId.value, {
-        provider: form.value.provider,
-        model_name: form.value.model_name,
-        model_type: form.value.model_type,
-        base_url: form.value.base_url,
-        api_key: form.value.api_key,
-        dimension: form.value.dimension,
-        protocol: providerMode.value === 'custom' ? form.value.protocol : null,
-        temperature: form.value.temperature,
-        top_p: form.value.top_p,
-        max_tokens: form.value.max_tokens,
-      })
+      await updateModelConfig(editingId.value, payload)
       message.success('已更新')
     } else {
-      await createModelConfig({
-        provider: form.value.provider,
-        model_name: form.value.model_name,
-        model_type: form.value.model_type,
-        base_url: form.value.base_url,
-        api_key: form.value.api_key,
-        dimension: form.value.dimension,
-        protocol: providerMode.value === 'custom' ? form.value.protocol : null,
-        temperature: form.value.temperature,
-        top_p: form.value.top_p,
-        max_tokens: form.value.max_tokens,
-      })
+      await createModelConfig(payload)
       message.success('已添加')
     }
     modalShow.value = false
@@ -467,8 +457,8 @@ async function handleSubmit() {
   }
 }
 
+// ── 测试 ────────────────────────────
 async function handleTest(row: UserModelConfigItem) {
-  // 列表：用该行完整参数测试连通性
   testingId.value = row.id
   try {
     const r = await testModelConfig({
@@ -478,7 +468,6 @@ async function handleTest(row: UserModelConfigItem) {
       base_url: row.base_url,
       api_key: row.api_key || undefined,
       dimension: row.dimension,
-      protocol: row.protocol || undefined,
       temperature: row.temperature,
       top_p: row.top_p,
       max_tokens: row.max_tokens,
@@ -496,7 +485,6 @@ async function handleTest(row: UserModelConfigItem) {
 }
 
 async function handleTestForm() {
-  // 弹窗：用表单当前值测试（未保存也能测）
   try {
     await formRef.value?.validate()
   } catch {
@@ -511,7 +499,6 @@ async function handleTestForm() {
       base_url: form.value.base_url,
       api_key: form.value.api_key,
       dimension: form.value.dimension,
-      protocol: providerMode.value === 'custom' ? form.value.protocol : null,
       temperature: form.value.temperature,
       top_p: form.value.top_p,
       max_tokens: form.value.max_tokens,
@@ -552,7 +539,33 @@ async function handleDelete(id: string) {
   }
 }
 
+// ── 数据加载 ────────────────────────
+async function fetchProviders() {
+  try {
+    providers.value = await listProviders()
+  } catch {
+    providers.value = []
+  }
+}
+
+async function fetchDefaults() {
+  try {
+    defaultModels.value = await listDefaultModels()
+  } catch {
+    defaultModels.value = []
+  }
+}
+
+async function fetchMyConfigs() {
+  try {
+    myConfigs.value = await listMyConfigs()
+  } catch {
+    myConfigs.value = []
+  }
+}
+
 onMounted(() => {
+  fetchProviders()
   fetchDefaults()
   fetchMyConfigs()
   listModelTypes().then(list => { modelTypes.value = list }).catch(() => {})
@@ -565,11 +578,12 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 .page-header h2 { margin: 0; font-size: 20px; }
-.info-card { margin-bottom: 16px; }
-.model-group { margin-bottom: 12px; }
-.model-group:last-child { margin-bottom: 0; }
-.model-group-title {
-  font-size: 13px; font-weight: 600;
-  margin-bottom: 4px; color: #666;
+.section-card { margin-bottom: 16px; }
+.card-name { font-size: 15px; font-weight: 600; word-break: break-all; }
+.card-desc {
+  font-size: 12px; color: #999;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
+.model-provider { font-size: 12px; color: #666; }
 </style>
