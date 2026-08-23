@@ -233,17 +233,12 @@ const isCustomProvider = computed(() =>
   providers.value.find(p => p.name === form.value.provider)?.source === 'custom',
 )
 
-// 调用模式选项（按模型类型过滤：LLM 无 local，Rerank 无 openai）
-const protocolTypeOptions = computed<SelectOption[]>(() => {
-  const all = [
-    { label: 'OpenAI 兼容', value: 'openai' },
-    { label: 'DashScope 原生', value: 'dashscope' },
-    { label: '本地', value: 'local' },
-  ]
-  if (form.value.model_type === 1) return all  // Embedding：全部
-  if (form.value.model_type === 2) return all.filter(o => o.value !== 'local')  // LLM：无本地
-  return all.filter(o => o.value !== 'openai')  // Rerank：无 OpenAI
-})
+// 调用模式选项：三种都展示（带适用类型说明），用户自由选择
+const protocolTypeOptions = computed<SelectOption[]>(() => [
+  { label: 'OpenAI 兼容（LLM / Embedding）', value: 'openai' },
+  { label: 'DashScope 原生（LLM / Embedding / Rerank）', value: 'dashscope' },
+  { label: '本地（Embedding / Rerank）', value: 'local' },
+])
 
 // 选中厂商时带出默认调用模式（aliyun→dashscope / local→local / 其他→openai）
 function defaultProtocolFor(providerName: string): string {
