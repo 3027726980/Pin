@@ -23,6 +23,9 @@ class UserModelConfigRepo:
         api_key: str | None,
         dimension: int | None,
         protocol: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
         is_active: bool = True,
     ) -> UserModelConfig:
         cfg = UserModelConfig(
@@ -34,6 +37,9 @@ class UserModelConfigRepo:
             api_key=api_key,
             dimension=dimension,
             protocol=protocol,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
             is_active=is_active,
         )
         db.add(cfg)

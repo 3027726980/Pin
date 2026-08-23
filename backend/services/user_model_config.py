@@ -138,6 +138,9 @@ class UserModelConfigService:
             api_key=data.api_key,
             dimension=data.dimension,
             protocol=data.protocol,
+            temperature=data.temperature,
+            top_p=data.top_p,
+            max_tokens=data.max_tokens,
             is_active=data.is_active,
         )
         await db.commit()
@@ -210,6 +213,9 @@ class UserModelConfigService:
             api_key=data.api_key,
             dimension=data.dimension,
             protocol=data.protocol,
+            temperature=data.temperature,
+            top_p=data.top_p,
+            max_tokens=data.max_tokens,
             is_active=data.is_active,
         )
         await db.commit()

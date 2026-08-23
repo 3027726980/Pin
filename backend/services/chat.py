@@ -281,11 +281,10 @@ class ChatService:
 
     @staticmethod
     async def _build_agent(db: AsyncSession, user: Users, agent: object,
-                           llm_cfg: object, tools: list,
-                           temperature_override: float | None = None) -> object:
+                           llm_cfg: object, tools: list) -> object:
         """构建 create_agent(带 checkpointer + middleware)
 
-        temperature_override: 临时覆盖采样温度（推理模型降级重试用，不落库）
+        采样参数优先级（Phase 4.8）：Agent 配置 > 模型配置 > 默认（0.7 / 0.9）
         延迟 import langchain 系（启动提速：仅首次对话时才加载）。
         """
         from langchain.agents import create_agent
@@ -297,14 +296,22 @@ class ChatService:
         middlewares = build_middlewares(summary_cfg, llm_cfg)
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
         cp = await get_checkpointer()
-        temperature = (temperature_override
-                       if temperature_override is not None
-                       else agent.temperature)
+        temperature = (agent.temperature if agent.temperature is not None
+                       else getattr(llm_cfg, "temperature", None))
+        if temperature is None:
+            temperature = 0.7
+        top_p = (agent.top_p if agent.top_p is not None
+                 else getattr(llm_cfg, "top_p", None))
+        if top_p is None:
+            top_p = 0.9
+        max_tokens = (agent.max_tokens if agent.max_tokens is not None
+                      else getattr(llm_cfg, "max_tokens", None))
         return create_agent(
             model=ChatOpenAI(
                 model=llm_cfg.model_name, api_key=llm_cfg.api_key,
                 base_url=llm_cfg.base_url or "https://api.openai.com/v1",
-                temperature=temperature, top_p=agent.top_p, timeout=60.0),
+                temperature=temperature, top_p=top_p,
+                max_tokens=max_tokens if max_tokens else None, timeout=60.0),
             tools=tools, system_prompt=system_prompt,
             checkpointer=cp, middleware=middlewares)
 

@@ -40,8 +40,9 @@ export interface AgentDetail extends AgentListItem {
   llm_provider: string | null
   summary_llm_config_id: string | null
   system_prompt: string
-  temperature: number
-  top_p: number
+  temperature: number | null
+  top_p: number | null
+  max_tokens: number | null
   top_k: number | null
   score_threshold: number | null
   welcome_message: string | null
@@ -70,8 +71,9 @@ export interface AgentCreatePayload {
   score_threshold?: number | null
   tools?: ToolConfig[]
   system_prompt?: string | null
-  temperature?: number
-  top_p?: number
+  temperature?: number | null
+  top_p?: number | null
+  max_tokens?: number | null
   welcome_message?: string | null
   // ── Phase 4.6 检索增强（Agent 级）──
   mqe_enabled?: boolean

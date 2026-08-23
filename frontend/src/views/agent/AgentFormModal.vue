@@ -150,11 +150,17 @@
 
         <!-- 生成参数：采样 / 欢迎语 / 提示词 -->
         <n-collapse-item title="生成参数" name="generation">
+          <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
+            采样参数<b>留空则使用模型配置</b>的值（模型也未配置时用默认 0.7 / 0.9）；Agent 单独设置时以 Agent 为准。
+          </n-alert>
           <n-form-item label="采样 temperature">
-            <n-input-number v-model:value="formData.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7" />
+            <n-input-number v-model:value="formData.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7（跟随模型配置）" />
           </n-form-item>
           <n-form-item label="采样 top_p">
-            <n-input-number v-model:value="formData.top_p" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.9" />
+            <n-input-number v-model:value="formData.top_p" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.9（跟随模型配置）" />
+          </n-form-item>
+          <n-form-item label="最大 tokens">
+            <n-input-number v-model:value="formData.max_tokens" :min="1" :max="1000000" style="width: 100%" placeholder="跟随模型配置/厂商默认" />
           </n-form-item>
 
           <n-form-item label="欢迎语">
@@ -260,8 +266,9 @@ const formData = ref<AgentCreatePayload & { description: string; welcome_message
   kb_id: null,
   top_k: null,
   score_threshold: null,
-  temperature: 0.7,
-  top_p: 0.9,
+  temperature: null,
+  top_p: null,
+  max_tokens: null,
   welcome_message: '',
   system_prompt: '',
   // Phase 4.6 检索增强
@@ -336,6 +343,7 @@ watch(
         score_threshold: e.score_threshold,
         temperature: e.temperature,
         top_p: e.top_p,
+        max_tokens: e.max_tokens,
         welcome_message: e.welcome_message || '',
         system_prompt: e.system_prompt || '',
         mqe_enabled: e.mqe_enabled,
@@ -359,7 +367,7 @@ watch(
         type: 'simple_rag', name: '', description: '', llm_config_id: '',
         summary_llm_config_id: '',
         kb_id: null, top_k: null, score_threshold: null,
-        temperature: 0.7, top_p: 0.9, welcome_message: '',
+        temperature: null, top_p: null, max_tokens: null, welcome_message: '',
         system_prompt: defaults.value.system_prompt || '',
         mqe_enabled: false, hyde_enabled: false, mqe_query_count: 3,
         rerank_enabled: false, enhance_llm_config_id: '', rerank_config_id: '',
@@ -391,6 +399,7 @@ async function handleSubmit() {
     summary_llm_config_id: formData.value.summary_llm_config_id || null,
     temperature: formData.value.temperature,
     top_p: formData.value.top_p,
+    max_tokens: formData.value.max_tokens,
     welcome_message: formData.value.welcome_message || null,
     system_prompt: formData.value.system_prompt || null,
     // Phase 4.6 检索增强（Agent 级模型引用）

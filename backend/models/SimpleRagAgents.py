@@ -57,11 +57,14 @@ class SimpleRagAgents(Base):
     system_prompt: Mapped[str] = mapped_column(
         Text, nullable=False, comment="系统提示词（RAG 模板，可编辑）"
     )
-    temperature: Mapped[float] = mapped_column(
-        Float, default=0.7, nullable=False, comment="LLM 温度"
+    temperature: Mapped[float | None] = mapped_column(
+        Float, nullable=True, comment="LLM 温度（空 = 跟随模型配置）"
     )
-    top_p: Mapped[float] = mapped_column(
-        Float, default=0.9, nullable=False, comment="LLM 核采样"
+    top_p: Mapped[float | None] = mapped_column(
+        Float, nullable=True, comment="LLM 核采样（空 = 跟随模型配置）"
+    )
+    max_tokens: Mapped[int | None] = mapped_column(
+        nullable=True, comment="最大生成 token 数（空 = 跟随模型配置/厂商默认）"
     )
     welcome_message: Mapped[str | None] = mapped_column(
         String(500), nullable=True, comment="欢迎语（Phase 5 浮窗使用）"

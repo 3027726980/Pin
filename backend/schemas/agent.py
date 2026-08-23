@@ -55,8 +55,9 @@ class SimpleRagAgentCreate(BaseModel):
     rerank_config_id: UUID | None = Field(
         None, description="Rerank 模型配置 ID（model_type=3）；空 = 用 config.yaml tools.rerank 全局默认")
     system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
-    temperature: float = Field(0.7, ge=0.0, le=2.0)
-    top_p: float = Field(0.9, ge=0.0, le=1.0)
+    temperature: float | None = Field(None, ge=0.0, le=2.0, description="采样温度；空 = 跟随模型配置（模型也未配置时默认 0.7）")
+    top_p: float | None = Field(None, ge=0.0, le=1.0, description="核采样；空 = 跟随模型配置（模型也未配置时默认 0.9）")
+    max_tokens: int | None = Field(None, ge=1, le=1000000, description="最大生成 token 数；空 = 跟随模型配置/厂商默认")
     welcome_message: str | None = Field(None, max_length=500)
 
 
@@ -74,8 +75,9 @@ class GeneralAgentCreate(BaseModel):
     rerank_config_id: UUID | None = Field(
         None, description="Rerank 模型配置 ID（model_type=3）；空 = 用 config.yaml tools.rerank 全局默认")
     system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
-    temperature: float = Field(0.7, ge=0.0, le=2.0)
-    top_p: float = Field(0.9, ge=0.0, le=1.0)
+    temperature: float | None = Field(None, ge=0.0, le=2.0, description="采样温度；空 = 跟随模型配置（模型也未配置时默认 0.7）")
+    top_p: float | None = Field(None, ge=0.0, le=1.0, description="核采样；空 = 跟随模型配置（模型也未配置时默认 0.9）")
+    max_tokens: int | None = Field(None, ge=1, le=1000000, description="最大生成 token 数；空 = 跟随模型配置/厂商默认")
     welcome_message: str | None = Field(None, max_length=500)
 
 
@@ -109,6 +111,7 @@ class AgentUpdate(BaseModel):
     system_prompt: str | None = None
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     top_p: float | None = Field(None, ge=0.0, le=1.0)
+    max_tokens: int | None = Field(None, ge=1, le=1000000)
     welcome_message: str | None = Field(None, max_length=500)
     status: int | None = Field(None, ge=0, le=9)
     # ── 嵌入治理参数（agent_index 表，数据库动态可改）──
@@ -145,8 +148,9 @@ class AgentResponse(BaseModel):
     rerank_config_id: UUID | None = None
     tools: list[ToolConfig] = []
     system_prompt: str
-    temperature: float
-    top_p: float
+    temperature: float | None
+    top_p: float | None
+    max_tokens: int | None
     welcome_message: str | None
     status: int
     # ── 嵌入治理参数（agent_index 表）──

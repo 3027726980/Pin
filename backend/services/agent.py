@@ -216,6 +216,7 @@ class AgentService:
                 rerank_enabled=data.rerank_enabled,
                 enhance_llm_config_id=data.enhance_llm_config_id,
                 rerank_config_id=data.rerank_config_id,
+                max_tokens=data.max_tokens,
             )
         else:
             if data.tools is not None:
@@ -235,6 +236,7 @@ class AgentService:
                 summary_llm_config_id=data.summary_llm_config_id,
                 enhance_llm_config_id=data.enhance_llm_config_id,
                 rerank_config_id=data.rerank_config_id,
+                max_tokens=data.max_tokens,
             )
 
         # 索引表基础字段同步
@@ -335,6 +337,7 @@ class AgentService:
             rerank_enabled=data.rerank_enabled if data.rerank_enabled is not None else settings.tools.default_rerank_enabled,
             enhance_llm_config_id=data.enhance_llm_config_id,
             rerank_config_id=data.rerank_config_id,
+            max_tokens=data.max_tokens,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -367,6 +370,7 @@ class AgentService:
             summary_llm_config_id=data.summary_llm_config_id,
             enhance_llm_config_id=data.enhance_llm_config_id,
             rerank_config_id=data.rerank_config_id,
+            max_tokens=data.max_tokens,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -454,6 +458,7 @@ class AgentService:
             system_prompt=agent.system_prompt,
             temperature=agent.temperature,
             top_p=agent.top_p,
+            max_tokens=agent.max_tokens,
             welcome_message=agent.welcome_message,
             status=agent.status,
             created_at=agent.created_at,

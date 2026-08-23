@@ -18,6 +18,10 @@ class UserModelConfigCreate(BaseModel):
     dimension: int | None = None
     protocol: Literal["openai"] | None = Field(
         None, description="调用模式（协议）：目前仅 openai；空 = 按厂商推断默认 openai")
+    # ── Phase 4.8 采样参数（可空 = 未配置，Agent 未单独设置时生效）──
+    temperature: float | None = Field(None, ge=0.0, le=2.0, description="采样温度，默认 0.7")
+    top_p: float | None = Field(None, ge=0.0, le=1.0, description="核采样，默认 0.9")
+    max_tokens: int | None = Field(None, ge=1, le=1000000, description="最大生成 token 数，空 = 厂商默认")
     is_active: bool = True
 
 
@@ -31,6 +35,9 @@ class UserModelConfigUpdate(BaseModel):
     dimension: int | None = None
     protocol: Literal["openai"] | None = Field(
         None, description="调用模式（协议）：目前仅 openai；空 = 按厂商推断")
+    temperature: float | None = Field(None, ge=0.0, le=2.0)
+    top_p: float | None = Field(None, ge=0.0, le=1.0)
+    max_tokens: int | None = Field(None, ge=1, le=1000000)
     is_active: bool | None = None
 
 
@@ -45,6 +52,9 @@ class UserModelConfigResponse(BaseModel):
     api_key: str | None
     dimension: int | None
     protocol: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

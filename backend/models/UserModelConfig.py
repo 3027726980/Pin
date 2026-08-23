@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, ForeignKey, SmallInteger, String
+from sqlalchemy import Boolean, Float, ForeignKey, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid import UUID
 
@@ -32,6 +32,16 @@ class UserModelConfig(Base):
     )
     protocol: Mapped[str | None] = mapped_column(
         String(20), nullable=True, comment="调用模式（协议）：openai 等；NULL = 按厂商推断默认 openai"
+    )
+    # ── Phase 4.8 采样参数（可空 = 未配置，Agent 未单独设置时生效）──
+    temperature: Mapped[float | None] = mapped_column(
+        Float, nullable=True, comment="采样温度（默认 0.7）"
+    )
+    top_p: Mapped[float | None] = mapped_column(
+        Float, nullable=True, comment="核采样（默认 0.9）"
+    )
+    max_tokens: Mapped[int | None] = mapped_column(
+        nullable=True, comment="最大生成 token 数（空 = 厂商默认）"
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, comment="是否启用"

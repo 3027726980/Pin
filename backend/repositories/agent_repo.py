@@ -134,8 +134,8 @@ class SimpleRagAgentRepo:
         top_k: int,
         score_threshold: float,
         system_prompt: str,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
+        temperature: float | None = None,
+        top_p: float | None = None,
         welcome_message: str | None = None,
         summary_llm_config_id: UUID | None = None,
         mqe_enabled: bool = False,
@@ -144,6 +144,7 @@ class SimpleRagAgentRepo:
         rerank_enabled: bool = False,
         enhance_llm_config_id: UUID | None = None,
         rerank_config_id: UUID | None = None,
+        max_tokens: int | None = None,
     ) -> SimpleRagAgents:
         """
         创建简单 RAG Agent 记录
@@ -170,6 +171,7 @@ class SimpleRagAgentRepo:
             rerank_enabled=rerank_enabled,
             enhance_llm_config_id=enhance_llm_config_id,
             rerank_config_id=rerank_config_id,
+            max_tokens=max_tokens,
         )
         db.add(agent)
         await db.flush()
@@ -279,12 +281,13 @@ class GeneralAgentRepo:
         llm_config_id: UUID,
         tools: list[dict],
         system_prompt: str,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
+        temperature: float | None = None,
+        top_p: float | None = None,
         welcome_message: str | None = None,
         summary_llm_config_id: UUID | None = None,
         enhance_llm_config_id: UUID | None = None,
         rerank_config_id: UUID | None = None,
+        max_tokens: int | None = None,
     ) -> GeneralAgents:
         """
         创建综合 Agent 记录
@@ -305,6 +308,7 @@ class GeneralAgentRepo:
             summary_llm_config_id=summary_llm_config_id,
             enhance_llm_config_id=enhance_llm_config_id,
             rerank_config_id=rerank_config_id,
+            max_tokens=max_tokens,
         )
         db.add(agent)
         await db.flush()

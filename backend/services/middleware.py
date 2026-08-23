@@ -11,14 +11,20 @@ from backend.core.config import settings
 
 
 def _build_summary_model(summary_llm_cfg, llm_cfg):
-    """构建总结模型:Agent 配置的总结模型 ?? 对话模型"""
+    """构建总结模型:Agent 配置的总结模型 ?? 对话模型（采样参数跟随所用配置）"""
     from langchain_openai import ChatOpenAI
 
     cfg = summary_llm_cfg or llm_cfg
+    temperature = getattr(cfg, "temperature", None) or 0.7
+    top_p = getattr(cfg, "top_p", None) or 0.9
+    max_tokens = getattr(cfg, "max_tokens", None)
     return ChatOpenAI(
         model=cfg.model_name,
         api_key=cfg.api_key,
         base_url=cfg.base_url or "https://api.openai.com/v1",
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens if max_tokens else None,
         timeout=60.0,
     )
 

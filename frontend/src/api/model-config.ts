@@ -22,6 +22,9 @@ export interface UserModelConfigItem {
   api_key: string | null
   dimension: number | null
   protocol: string | null
+  temperature: number | null
+  top_p: number | null
+  max_tokens: number | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -35,6 +38,9 @@ export interface ModelConfigCreate {
   api_key?: string | null
   dimension?: number | null
   protocol?: string | null
+  temperature?: number | null
+  top_p?: number | null
+  max_tokens?: number | null
   is_active?: boolean
 }
 
@@ -46,6 +52,9 @@ export interface ModelConfigUpdate {
   api_key?: string | null
   dimension?: number | null
   protocol?: string | null
+  temperature?: number | null
+  top_p?: number | null
+  max_tokens?: number | null
   is_active?: boolean | null
 }
 

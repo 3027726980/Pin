@@ -110,6 +110,21 @@
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key" require-mark="true">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
         </n-form-item>
+        <!-- Phase 4.8 采样参数（仅 LLM 类型；模型级默认，Agent 单独设置时以 Agent 为准） -->
+        <template v-if="form.model_type === 2">
+          <n-form-item label="采样 temperature">
+            <n-input-number v-model:value="form.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7" />
+          </n-form-item>
+          <n-form-item label="采样 top_p">
+            <n-input-number v-model:value="form.top_p" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.9" />
+          </n-form-item>
+          <n-form-item label="最大 tokens">
+            <n-input-number v-model:value="form.max_tokens" :min="1" :max="1000000" style="width: 100%" placeholder="厂商默认" />
+          </n-form-item>
+          <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
+            采样参数为<b>模型级默认值</b>：Agent 单独设置采样参数时以 Agent 为准；均未设置时用此处的值。
+          </n-alert>
+        </template>
         <n-form-item v-if="form.provider && form.model_type === 1" label="向量维度">
           <n-input-number v-model:value="form.dimension" :min="1" :max="4096" style="width: 100%" placeholder="预置自动带出；自定义模型建议填写" />
         </n-form-item>
@@ -223,6 +238,9 @@ const form = ref({
   api_key: '' as string | null,
   dimension: null as number | null,
   protocol: 'openai' as string | null,
+  temperature: null as number | null,
+  top_p: null as number | null,
+  max_tokens: null as number | null,
 })
 
 // 调用模式选项（协议）：目前仅 OpenAI 兼容；新增模式 = 注册实现 + 这里加一项
@@ -378,7 +396,10 @@ function openCreate() {
   editingId.value = null
   modalTitle.value = '添加配置'
   providerMode.value = 'preset'
-  form.value = { provider: '', model_name: '', model_type: 1, base_url: null, api_key: null, dimension: null, protocol: null }
+  form.value = {
+    provider: '', model_name: '', model_type: 1, base_url: null, api_key: null,
+    dimension: null, protocol: null, temperature: null, top_p: null, max_tokens: null,
+  }
   modalShow.value = true
 }
 
@@ -397,6 +418,9 @@ function openEdit(row: UserModelConfigItem) {
     api_key: row.api_key,
     dimension: row.dimension,
     protocol: row.protocol || (providerMode.value === 'custom' ? 'openai' : null),
+    temperature: row.temperature,
+    top_p: row.top_p,
+    max_tokens: row.max_tokens,
   }
   modalShow.value = true
 }
@@ -414,6 +438,9 @@ async function handleSubmit() {
         api_key: form.value.api_key,
         dimension: form.value.dimension,
         protocol: providerMode.value === 'custom' ? form.value.protocol : null,
+        temperature: form.value.temperature,
+        top_p: form.value.top_p,
+        max_tokens: form.value.max_tokens,
       })
       message.success('已更新')
     } else {
@@ -425,6 +452,9 @@ async function handleSubmit() {
         api_key: form.value.api_key,
         dimension: form.value.dimension,
         protocol: providerMode.value === 'custom' ? form.value.protocol : null,
+        temperature: form.value.temperature,
+        top_p: form.value.top_p,
+        max_tokens: form.value.max_tokens,
       })
       message.success('已添加')
     }
