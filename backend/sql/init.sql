@@ -1,7 +1,8 @@
 -- ============================================================
 -- Pin 数据库初始化脚本
 -- 数据库: PostgreSQL 17 + pgvector
--- 版本  : v0.6 (Phase 4)
+-- 版本  : v0.7 (Phase 4.8)
+-- 说明  : 本文件为最终结构（含全部增量迁移 001~017 的累积结果）
 -- ============================================================
 
 -- 1. 扩展
@@ -108,7 +109,7 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     chunk_separators      VARCHAR(300) NOT NULL DEFAULT E'\n##,\n###,\n,。,., ',
     embedding_model       VARCHAR(100) NOT NULL DEFAULT 'bge-small-zh-v1.5',
     embedding_dimension   INT         NOT NULL DEFAULT 4096,
-    user_model_config_id  UUID        REFERENCES user_model_config(id) ON DELETE SET NULL,
+    user_model_config_id  UUID,       -- 外键在 user_model_config 建表后补充（第 11 节末尾，避免前向引用）
     status                SMALLINT    NOT NULL DEFAULT 1,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -269,10 +270,10 @@ CREATE TABLE IF NOT EXISTS model_providers (
 );
 
 COMMENT ON TABLE model_providers      IS '模型厂商表：启动时从 config.yaml 自动创建，用户只读不可增删';
-COMMENT ON COLUMN model_providers.name IS '厂商名（unique）：aliyun / openai / ollama';
+COMMENT ON COLUMN model_providers.name IS '厂商名（unique）：local / aliyun / openai / deepseek';
 
 -- ============================================================
--- 10. 默认模型配置表
+-- 10.1 默认模型配置表
 --      Phase 3：启动时从 config.yaml model_providers.{provider}.models 自动创建
 --      每个厂商下可有多个模型，存储各模型的默认参数（base_url、dimension）
 --      用户创建 user_model_config 时以此为基础，可覆盖 base_url
@@ -291,7 +292,7 @@ CREATE TABLE IF NOT EXISTS default_model_config (
 COMMENT ON TABLE default_model_config                IS '默认模型配置表：启动时自动创建，用户只读。厂商→模型→默认参数';
 COMMENT ON COLUMN default_model_config.provider      IS '所属厂商名，对应 model_providers.name';
 COMMENT ON COLUMN default_model_config.model_name    IS '模型名：text-embedding-v1 / gpt-4o 等';
-COMMENT ON COLUMN default_model_config.model_type    IS '1=embedding, 2=LLM（3~9 预留）';
+COMMENT ON COLUMN default_model_config.model_type    IS '1=embedding, 2=LLM, 3=Rerank';
 COMMENT ON COLUMN default_model_config.base_url      IS 'API 地址（厂商默认，用户创建配置时可覆盖）';
 COMMENT ON COLUMN default_model_config.dimension     IS 'embedding 输出维度，LLM 时 NULL';
 
@@ -310,6 +311,10 @@ CREATE TABLE IF NOT EXISTS user_model_config (
     base_url        VARCHAR(500),
     api_key         VARCHAR(500),
     dimension       INT,
+    protocol        VARCHAR(20),              -- Phase 4.7：调用模式（协议），空 = 按厂商推断默认 openai
+    temperature     DOUBLE PRECISION,         -- Phase 4.8：采样温度（空 = 未配置，Agent 未单独设置时生效）
+    top_p           DOUBLE PRECISION,         -- Phase 4.8：核采样（空 = 未配置）
+    max_tokens      INT,                      -- Phase 4.8：最大生成 token 数（空 = 厂商默认）
     is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
@@ -322,13 +327,27 @@ COMMENT ON TABLE user_model_config               IS '用户模型配置表：bas
 COMMENT ON COLUMN user_model_config.user_id      IS '所属用户 ID（多租户预留）';
 COMMENT ON COLUMN user_model_config.provider     IS '厂商名，用于 EmbeddingService switch 分发';
 COMMENT ON COLUMN user_model_config.model_name   IS '模型名，传给 SDK/API';
-COMMENT ON COLUMN user_model_config.model_type   IS '1=embedding, 2=LLM';
+COMMENT ON COLUMN user_model_config.model_type   IS '1=embedding, 2=LLM, 3=Rerank';
 COMMENT ON COLUMN user_model_config.base_url     IS 'API 地址。用户可覆盖（自建代理），NULL 则用 default 的';
 COMMENT ON COLUMN user_model_config.api_key      IS 'API Key（阿里云 DashScope / OpenAI 等）';
 COMMENT ON COLUMN user_model_config.dimension    IS '向量维度（embedding 用，LLM 为 NULL）';
+COMMENT ON COLUMN user_model_config.protocol     IS '调用模式（协议）：openai；空 = 按厂商推断默认 openai（自定义厂商必填）';
+COMMENT ON COLUMN user_model_config.temperature  IS '采样温度（模型级默认值，Agent 未单独设置时生效）';
+COMMENT ON COLUMN user_model_config.top_p        IS '核采样（模型级默认值）';
+COMMENT ON COLUMN user_model_config.max_tokens   IS '最大生成 token 数（空 = 厂商默认）';
 COMMENT ON COLUMN user_model_config.is_active    IS '是否启用。向量化时只取 active 且 model_type=1 的';
 COMMENT ON INDEX idx_umc_user_id                IS '按用户查询索引';
 COMMENT ON INDEX idx_umc_type                   IS '按类型查询索引：快速找 embedding 或 LLM 配置';
+
+-- knowledge_bases.user_model_config_id 外键（补建：knowledge_bases 建表早于 user_model_config，避免前向引用）
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_kb_umc') THEN
+        ALTER TABLE knowledge_bases
+            ADD CONSTRAINT fk_kb_umc FOREIGN KEY (user_model_config_id)
+            REFERENCES user_model_config(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- ============================================================
 -- 12. Agent 表（分类分表）
@@ -348,9 +367,20 @@ CREATE TABLE IF NOT EXISTS simple_rag_agents (
     top_k            INT          NOT NULL DEFAULT 5,
     score_threshold  FLOAT        NOT NULL DEFAULT 0.3,
     system_prompt    TEXT         NOT NULL,
-    temperature      FLOAT        NOT NULL DEFAULT 0.7,
-    top_p            FLOAT        NOT NULL DEFAULT 0.9,
+    -- 采样参数可空（Phase 4.8）：空 = 跟随模型配置（模型未配置时默认 0.7/0.9）
+    temperature      FLOAT,
+    top_p            FLOAT,
+    max_tokens       INT,
     welcome_message  VARCHAR(500),
+    -- Phase 4.5：总结模型配置（空 = 跟随对话模型）
+    summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
+    -- Phase 4.6：检索增强（独立开关，默认关闭）
+    mqe_enabled          BOOLEAN NOT NULL DEFAULT FALSE,
+    hyde_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+    mqe_query_count      SMALLINT NOT NULL DEFAULT 3,
+    rerank_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+    enhance_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
+    rerank_config_id     UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
     status           SMALLINT     NOT NULL DEFAULT 1,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
@@ -369,8 +399,16 @@ COMMENT ON COLUMN simple_rag_agents.llm_config_id IS 'LLM 模型配置 ID（user
 COMMENT ON COLUMN simple_rag_agents.top_k IS '检索返回块数（默认取 config.yaml tools.default_top_k）';
 COMMENT ON COLUMN simple_rag_agents.score_threshold IS '相似度阈值（默认取 config.yaml tools.default_score_threshold）';
 COMMENT ON COLUMN simple_rag_agents.system_prompt IS '系统提示词（RAG 模板，可编辑）';
-COMMENT ON COLUMN simple_rag_agents.temperature IS 'LLM 温度';
-COMMENT ON COLUMN simple_rag_agents.top_p IS 'LLM 核采样';
+COMMENT ON COLUMN simple_rag_agents.temperature IS 'LLM 温度（空 = 跟随模型配置）';
+COMMENT ON COLUMN simple_rag_agents.top_p IS 'LLM 核采样（空 = 跟随模型配置）';
+COMMENT ON COLUMN simple_rag_agents.max_tokens IS '最大生成 token 数（空 = 跟随模型配置/厂商默认）';
+COMMENT ON COLUMN simple_rag_agents.summary_llm_config_id IS '总结模型配置 ID（SummarizationMiddleware 用，空=跟随对话模型）';
+COMMENT ON COLUMN simple_rag_agents.mqe_enabled IS '多查询扩展（MQE）：LLM 改写多个子问题多路召回（默认取 config.yaml tools.default_mqe_enabled）';
+COMMENT ON COLUMN simple_rag_agents.hyde_enabled IS '假设文档嵌入（HyDE）：LLM 生成假设回答文档作为检索线索';
+COMMENT ON COLUMN simple_rag_agents.mqe_query_count IS 'MQE 改写子问题数（2~5）';
+COMMENT ON COLUMN simple_rag_agents.rerank_enabled IS 'Rerank 精排开关（默认取 config.yaml tools.default_rerank_enabled）';
+COMMENT ON COLUMN simple_rag_agents.enhance_llm_config_id IS '增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2，空=跟随对话模型）';
+COMMENT ON COLUMN simple_rag_agents.rerank_config_id IS 'Rerank 模型配置 ID（model_type=3，空=用 config.yaml tools.rerank 全局默认）';
 COMMENT ON COLUMN simple_rag_agents.welcome_message IS '欢迎语（Phase 5 浮窗使用）';
 COMMENT ON COLUMN simple_rag_agents.status IS '0=禁用, 1=启用, 9=软删除';
 
@@ -382,9 +420,16 @@ CREATE TABLE IF NOT EXISTS general_agents (
     llm_config_id   UUID          REFERENCES user_model_config(id) ON DELETE SET NULL,
     tools           JSONB         NOT NULL DEFAULT '[]'::jsonb,
     system_prompt   TEXT          NOT NULL,
-    temperature     FLOAT         NOT NULL DEFAULT 0.7,
-    top_p           FLOAT         NOT NULL DEFAULT 0.9,
+    -- 采样参数可空（Phase 4.8）：空 = 跟随模型配置（模型未配置时默认 0.7/0.9）
+    temperature     FLOAT,
+    top_p           FLOAT,
+    max_tokens      INT,
     welcome_message VARCHAR(500),
+    -- Phase 4.5：总结模型配置（空 = 跟随对话模型）
+    summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
+    -- Phase 4.6：检索增强（Agent 级模型引用）
+    enhance_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
+    rerank_config_id     UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
     status          SMALLINT      NOT NULL DEFAULT 1,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
@@ -400,8 +445,12 @@ COMMENT ON COLUMN general_agents.description IS '描述';
 COMMENT ON COLUMN general_agents.llm_config_id IS 'LLM 模型配置 ID（user_model_config.model_type=2）';
 COMMENT ON COLUMN general_agents.tools IS '工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]';
 COMMENT ON COLUMN general_agents.system_prompt IS '系统提示词（RAG 模板，可编辑）';
-COMMENT ON COLUMN general_agents.temperature IS 'LLM 温度';
-COMMENT ON COLUMN general_agents.top_p IS 'LLM 核采样';
+COMMENT ON COLUMN general_agents.temperature IS 'LLM 温度（空 = 跟随模型配置）';
+COMMENT ON COLUMN general_agents.top_p IS 'LLM 核采样（空 = 跟随模型配置）';
+COMMENT ON COLUMN general_agents.max_tokens IS '最大生成 token 数（空 = 跟随模型配置/厂商默认）';
+COMMENT ON COLUMN general_agents.summary_llm_config_id IS '总结模型配置 ID（SummarizationMiddleware 用，空=跟随对话模型）';
+COMMENT ON COLUMN general_agents.enhance_llm_config_id IS '增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2，空=跟随对话模型）';
+COMMENT ON COLUMN general_agents.rerank_config_id IS 'Rerank 模型配置 ID（model_type=3，空=用 config.yaml tools.rerank 全局默认）';
 COMMENT ON COLUMN general_agents.welcome_message IS '欢迎语（Phase 5 浮窗使用）';
 COMMENT ON COLUMN general_agents.status IS '0=禁用, 1=启用, 9=软删除';
 
@@ -503,12 +552,6 @@ COMMENT ON COLUMN conversations.updated_at IS '最后更新时间（含 checkpoi
 --      消息不再单独建表：存于 conversations.messages JSONB（每会话一条记录）
 --      写入一律 SQL 原子追加（|| 拼接），禁止应用层读改写
 -- ============================================================
-
--- Agent 总结模型配置（Phase 4.5,SummarizationMiddleware 用）
-ALTER TABLE simple_rag_agents
-    ADD COLUMN IF NOT EXISTS summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL;
-ALTER TABLE general_agents
-    ADD COLUMN IF NOT EXISTS summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL;
 
 -- ============================================================
 -- 16. 通用系统设置表（014）
