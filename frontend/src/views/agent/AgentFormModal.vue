@@ -134,17 +134,17 @@
             <template #feedback>查询增强（MQE/HyDE）改写时使用的模型；不选则跟随对话模型</template>
           </n-form-item>
 
-          <n-form-item v-if="showRerankModel" label="Rerank 模型">
+          <n-form-item v-if="showRerankModel" label="Rerank 模型" path="rerank_config_id" require-mark="true">
             <n-select
               v-model:value="formData.rerank_config_id"
               :options="rerankOptions"
-              placeholder="跟随全局默认"
+              placeholder="请选择 Rerank 模型"
             >
               <template #empty>
                 <div style="padding: 8px">暂无 Rerank 配置，请先到「模型配置」页创建（模型类型选 Rerank）</div>
               </template>
             </n-select>
-            <template #feedback>重排序使用的模型；不选则用系统默认（本地 bge-reranker-v2-m3）</template>
+            <template #feedback>开启 Rerank 必须选择精排模型；暂无配置时请先到「模型配置」页添加</template>
           </n-form-item>
         </n-collapse-item>
 
@@ -239,7 +239,7 @@ const enhanceOptions = computed<SelectOption[]>(() => [
   ...llmOptions.value,
 ])
 
-// Rerank 模型选项（model_type=3 配置）：空 = 跟随全局默认
+// Rerank 模型选项（model_type=3 配置）：开启 Rerank 时必须选择
 const rerankOptions = computed<SelectOption[]>(() =>
   modelConfigs.value
     .filter(c => c.model_type === 3 && c.is_active)
@@ -306,6 +306,18 @@ const rules: FormRules = {
     validator: () => {
       if (formData.value.type === 'general' && !toolKbId.value) {
         return new Error('请选择工具绑定的知识库')
+      }
+      return true
+    },
+    trigger: 'change',
+  },
+  rerank_config_id: {
+    validator: () => {
+      const enabled = formData.value.type === 'simple_rag'
+        ? formData.value.rerank_enabled
+        : toolRerankEnabled.value
+      if (enabled && !formData.value.rerank_config_id) {
+        return new Error('开启 Rerank 必须选择 Rerank 模型')
       }
       return true
     },

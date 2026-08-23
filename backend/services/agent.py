@@ -69,6 +69,11 @@ class AgentService:
         if getattr(data, "rerank_config_id", None) is not None:
             await AgentService._ensure_rerank_config(
                 db, user, data.rerank_config_id)
+        # 开启 Rerank 必须显式选择模型
+        if getattr(data, "rerank_enabled", None) is True \
+                and getattr(data, "rerank_config_id", None) is None:
+            raise HTTPException(
+                status_code=400, detail="开启 Rerank 必须选择 Rerank 模型（可在模型配置页创建 Rerank 类型配置）")
 
         if data.type == "simple_rag":
             return await AgentService._create_simple_rag(db, user, data)
@@ -192,6 +197,14 @@ class AgentService:
                 and data.rerank_config_id != getattr(agent, "rerank_config_id", None)):
             await AgentService._ensure_rerank_config(
                 db, user, data.rerank_config_id)
+        # 开启 Rerank 必须显式选择模型（按最终值校验，兼容部分更新）
+        final_rerank = (data.rerank_enabled if data.rerank_enabled is not None
+                        else getattr(agent, "rerank_enabled", False))
+        final_cfg = (data.rerank_config_id if data.rerank_config_id is not None
+                     else getattr(agent, "rerank_config_id", None))
+        if final_rerank and final_cfg is None:
+            raise HTTPException(
+                status_code=400, detail="开启 Rerank 必须选择 Rerank 模型（可在模型配置页创建 Rerank 类型配置）")
 
         if atype == "simple_rag":
             if data.kb_id is not None and data.kb_id != agent.kb_id:
