@@ -410,24 +410,18 @@ class ChatService:
                 str(conv.id), int((_time.perf_counter() - t0) * 1000))
             return result["messages"][-1].content or ""
         except Exception as e:
-            # 推理模型 temperature 限制：降级重试一次
-            if (ChatService._is_temperature_error(e)
-                    and getattr(agent, "temperature", 1.0) != 1.0):
-                logger.warning(
-                    "模型仅支持 temperature=1（推理模型），自动降级重试: %s", e)
-                try:
-                    lc_agent = await ChatService._build_agent(
-                        db, user, agent, llm_cfg, tools, temperature_override=1.0)
-                    result = await lc_agent.ainvoke(
-                        {"messages": [HumanMessage(content=user_content)]},
-                        config=ChatService._thread_config(conv))
-                    _llm_logger.info(
-                        "agent=%s type=%s conversation=%s duration_ms=%d error=None(retry temp=1)",
-                        getattr(agent, "name", "?"), getattr(agent, "type", "?"),
-                        str(conv.id), int((_time.perf_counter() - t0) * 1000))
-                    return result["messages"][-1].content or ""
-                except Exception as e2:
-                    e = e2  # 重试也失败：走下方统一 502 分支
+            # 推理模型 temperature 限制 → 结构化错误（前端弹窗让用户确认：改温度重试 / 换模型）
+            if ChatService._is_temperature_error(e):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": (
+                            f"模型 {llm_cfg.model_name} 仅支持 temperature=1（推理模型），"
+                            f"当前 Agent 配置为 {getattr(agent, 'temperature', '?')}"
+                        ),
+                        "suggestion": {"action": "set_temperature", "value": 1.0},
+                    },
+                )
             _llm_logger.error(
                 "agent=%s type=%s conversation=%s duration_ms=%d error=%s",
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
@@ -465,27 +459,16 @@ class ChatService:
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
                 str(conv.id), int((_time.perf_counter() - t0) * 1000))
         except Exception as e:
-            # 推理模型 temperature 限制：降级重试一次
-            if (ChatService._is_temperature_error(e)
-                    and getattr(agent, "temperature", 1.0) != 1.0):
-                logger.warning(
-                    "模型仅支持 temperature=1（推理模型），流式降级重试: %s", e)
-                try:
-                    lc_agent = await ChatService._build_agent(
-                        db, user, agent, llm_cfg, tools, temperature_override=1.0)
-                    async for chunk, _meta in lc_agent.astream(
-                            {"messages": [HumanMessage(content=user_content)]},
-                            config=ChatService._thread_config(conv),
-                            stream_mode="messages"):
-                        if isinstance(chunk, AIMessageChunk) and chunk.content:
-                            yield {"type": "delta", "content": chunk.content}
-                    _llm_logger.info(
-                        "agent=%s type=%s conversation=%s duration_ms=%d error=None(retry temp=1)",
-                        getattr(agent, "name", "?"), getattr(agent, "type", "?"),
-                        str(conv.id), int((_time.perf_counter() - t0) * 1000))
-                    return
-                except Exception as e2:
-                    e = e2  # 重试也失败：走下方统一 error 事件
+            # 推理模型 temperature 限制 → 结构化 error 事件（前端弹窗让用户确认）
+            if ChatService._is_temperature_error(e):
+                yield {"type": "error", "code": 400,
+                       "message": (
+                           f"模型 {llm_cfg.model_name} 仅支持 temperature=1（推理模型），"
+                           f"当前 Agent 配置为 {getattr(agent, 'temperature', '?')}"
+                       ),
+                       "suggestion": {"action": "set_temperature", "value": 1.0}}
+                yield {"type": "done"}
+                return
             _llm_logger.error(
                 "agent=%s type=%s conversation=%s duration_ms=%d error=%s",
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),

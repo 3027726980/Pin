@@ -267,7 +267,21 @@ app.add_middleware(HttpAccessLogMiddleware)
 # ── 异常处理：统一响应格式 ──────────────────────────
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """把 FastAPI 默认的 {detail: ...} 转成 {code, message, result}"""
+    """把 FastAPI 默认的 {detail: ...} 转成 {code, message, result}
+
+    detail 支持两种形态：
+      - str：message=detail，result=None（常规错误）
+      - dict：message=detail["message"]，result=detail（结构化错误，如带 suggestion 的提示）
+    """
+    if isinstance(exc.detail, dict):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": exc.status_code,
+                "message": exc.detail.get("message", "请求失败"),
+                "result": exc.detail,
+            },
+        )
     return JSONResponse(
         status_code=exc.status_code,
         content={

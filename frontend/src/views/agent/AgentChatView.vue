@@ -185,9 +185,11 @@ import {
   getAgent,
   chatAgent,
   chatAgentStream,
+  updateAgent,
   type AgentDetail,
   type ChatMessage,
   type ChatCitation,
+  type ChatSuggestion,
 } from '@/api/agent'
 import {
   createConversation,
@@ -213,6 +215,7 @@ interface DisplayMessage extends ChatMessage {
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 
 const agentId = route.params.id as string
 const agent = ref<AgentDetail | null>(null)
@@ -373,12 +376,23 @@ async function send() {
   messages.value.push(assistantMsg)
   scrollBottom()
 
+  await doRequest(assistantMsg, text, activeConv.value.id)
+}
+
+/**
+ * 实际请求逻辑（非流式 / 流式 + 错误处理）
+ * 独立出来以便 temperature 限制弹窗确认后复用占位消息重试
+ */
+async function doRequest(
+  assistantMsg: DisplayMessage,
+  text: string,
+  conversationId: string,
+) {
   streaming.value = true
   sending.value = true
   currentStage.value = 'retrieving'
   abortCtrl = new AbortController()
   startLoadingText()
-  const conversationId = activeConv.value.id
 
   // 非流式：一次性返回 answer + citations
   if (!streamMode.value) {
@@ -387,8 +401,8 @@ async function send() {
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
     } catch (e) {
-      assistantMsg.error = true
-      assistantMsg.content = `[错误] ${(e as Error).message}`
+      const err = e as Error & { suggestion?: ChatSuggestion | null }
+      handleChatError(assistantMsg, err.message, err.suggestion, text, conversationId)
     } finally {
       streaming.value = false
       sending.value = false
@@ -417,10 +431,7 @@ async function send() {
           const used = extractRefIndexes(assistantMsg.content)
           assistantMsg.citations = event.citations.filter((_, i) => used.has(i + 1))
         } else if (event.type === 'error') {
-          assistantMsg.error = true
-          // 已有内容时换行分隔错误信息，空内容时不加换行
-          const sep = assistantMsg.content ? '\n' : ''
-          assistantMsg.content = assistantMsg.content + sep + `[错误] ${event.message}`
+          handleChatError(assistantMsg, event.message, event.suggestion, text, conversationId)
         }
       },
       abortCtrl.signal,
@@ -429,10 +440,8 @@ async function send() {
     if ((e as Error).name === 'AbortError') {
       // 用户主动停止：保留已输出内容
     } else {
-      assistantMsg.error = true
-      // 已有内容时换行分隔错误信息，空内容时不加换行
-      const sep = assistantMsg.content ? '\n' : ''
-      assistantMsg.content = assistantMsg.content + sep + `[错误] ${(e as Error).message}`
+      const err = e as Error & { suggestion?: ChatSuggestion | null }
+      handleChatError(assistantMsg, err.message, err.suggestion, text, conversationId)
     }
   } finally {
     streaming.value = false
@@ -441,6 +450,57 @@ async function send() {
     abortCtrl = null
     stopLoadingText()
   }
+}
+
+/**
+ * 统一错误处理：带 suggestion（如推理模型 temperature 限制）→ 弹窗让用户确认；否则常规错误展示
+ */
+function handleChatError(
+  assistantMsg: DisplayMessage,
+  errMsg: string,
+  suggestion: ChatSuggestion | null | undefined,
+  text: string,
+  conversationId: string,
+) {
+  if (suggestion?.action === 'set_temperature') {
+    // 清掉错误占位，弹窗确认后复用重试
+    assistantMsg.content = ''
+    assistantMsg.error = false
+    showTemperatureDialog(errMsg, suggestion.value, assistantMsg, text, conversationId)
+  } else {
+    assistantMsg.error = true
+    // 已有内容时换行分隔错误信息，空内容时不加换行
+    const sep = assistantMsg.content ? '\n' : ''
+    assistantMsg.content = assistantMsg.content + sep + `[错误] ${errMsg}`
+  }
+}
+
+/**
+ * 推理模型 temperature 限制弹窗：自动修改 temperature=1 并重试 / 取消（自行换模型）
+ */
+function showTemperatureDialog(
+  errMsg: string,
+  value: number | string | undefined,
+  assistantMsg: DisplayMessage,
+  text: string,
+  conversationId: string,
+) {
+  const temp = value ?? 1
+  dialog.warning({
+    title: '模型不支持当前采样温度',
+    content: `${errMsg}\n\n是否将本 Agent 的 temperature 自动修改为 ${temp} 并重试？\n也可以到「编辑 Agent」更换其他模型。`,
+    positiveText: '自动修改并重试',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await updateAgent(agentId, { temperature: Number(temp) })
+        message.success(`已修改 temperature=${temp}，正在重试...`)
+        await doRequest(assistantMsg, text, conversationId)
+      } catch (e) {
+        message.error((e as Error).message || '修改 temperature 失败')
+      }
+    },
+  })
 }
 
 function stopStream() {

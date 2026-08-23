@@ -113,11 +113,16 @@ export interface ChatResult {
   citations: ChatCitation[]
 }
 
+export interface ChatSuggestion {
+  action: string
+  value?: number | string
+}
+
 export type ChatEvent =
   | { type: 'delta'; content: string }
   | { type: 'citations'; citations: ChatCitation[] }
   | { type: 'done' }
-  | { type: 'error'; code: number; message: string }
+  | { type: 'error'; code: number; message: string; suggestion?: ChatSuggestion | null }
 
 // ── Agent CRUD ──────────────────────────
 

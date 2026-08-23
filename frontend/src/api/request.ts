@@ -73,16 +73,21 @@ request.interceptors.response.use(
       return handle401(response.config)
     }
 
-    return Promise.reject(new Error(message || '请求失败'))
+    // 结构化错误（detail dict）：suggestion 挂到 Error 对象，供前端弹窗决策
+    const err = new Error(message || '请求失败') as Error & { suggestion?: unknown }
+    err.suggestion = (result as { suggestion?: unknown } | null)?.suggestion
+    return Promise.reject(err)
   },
   async (error) => {
     // HTTP 状态码 401（如未走统一响应格式的接口）
     if (error.response?.status === 401) {
       return handle401(error.response.config)
     }
-    // 其他 HTTP 错误：提取后端返回的 message
+    // 其他 HTTP 错误：提取后端返回的 message（含结构化错误 suggestion）
     const backendMsg = error.response?.data?.message
-    return Promise.reject(new Error(backendMsg || error.message || '请求失败'))
+    const err = new Error(backendMsg || error.message || '请求失败') as Error & { suggestion?: unknown }
+    err.suggestion = error.response?.data?.result?.suggestion
+    return Promise.reject(err)
   },
 )
 
