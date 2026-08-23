@@ -130,6 +130,8 @@ class ChatService:
                   "mqe_query_count": agent.mqe_query_count,
                   "rerank_enabled": agent.rerank_enabled}
         enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        if enhance_cfg is None:
+            enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         citations = await RAGTool.execute(
             db, user, config, request.message,
@@ -162,6 +164,8 @@ class ChatService:
                   "mqe_query_count": agent.mqe_query_count,
                   "rerank_enabled": agent.rerank_enabled}
         enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        if enhance_cfg is None:
+            enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         refs = await RAGTool.execute(
             db, user, config, request.message,
@@ -201,6 +205,8 @@ class ChatService:
         """general:create_agent 自主决策(工具 + checkpoint 记忆)"""
         citations_store: list[Citation] = []
         enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        if enhance_cfg is None:
+            enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
             db, user, agent.tools, citations_store=citations_store,
@@ -224,6 +230,8 @@ class ChatService:
         """general 流式:create_agent.astream(工具调用轮不输出)"""
         citations_store: list[Citation] = []
         enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        if enhance_cfg is None:
+            enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
             db, user, agent.tools, citations_store=citations_store,
