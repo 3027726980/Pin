@@ -191,6 +191,7 @@ class RAGTool(BaseTool):
             api_key=emb_cfg.api_key,
             base_url=emb_cfg.base_url,
             texts=queries,
+            protocol=emb_cfg.protocol,
         )
         max_dim = settings.embedding.max_dimension
 
@@ -263,6 +264,7 @@ class RAGTool(BaseTool):
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 top_p=0.9,
+                protocol=getattr(enhance_cfg, "protocol", None),
             )
             return RAGTool._parse_query_list(text)
         except Exception as e:
@@ -318,6 +320,7 @@ class RAGTool(BaseTool):
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 top_p=0.9,
+                protocol=getattr(enhance_cfg, "protocol", None),
             )
             text = (text or "").strip()
             return text or None

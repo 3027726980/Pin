@@ -22,6 +22,7 @@ class UserModelConfigRepo:
         base_url: str | None,
         api_key: str | None,
         dimension: int | None,
+        protocol: str | None = None,
         is_active: bool = True,
     ) -> UserModelConfig:
         cfg = UserModelConfig(
@@ -32,6 +33,7 @@ class UserModelConfigRepo:
             base_url=base_url,
             api_key=api_key,
             dimension=dimension,
+            protocol=protocol,
             is_active=is_active,
         )
         db.add(cfg)

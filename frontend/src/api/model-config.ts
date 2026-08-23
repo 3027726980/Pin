@@ -21,6 +21,7 @@ export interface UserModelConfigItem {
   base_url: string | null
   api_key: string | null
   dimension: number | null
+  protocol: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -33,6 +34,7 @@ export interface ModelConfigCreate {
   base_url?: string | null
   api_key?: string | null
   dimension?: number | null
+  protocol?: string | null
   is_active?: boolean
 }
 
@@ -43,6 +45,7 @@ export interface ModelConfigUpdate {
   base_url?: string | null
   api_key?: string | null
   dimension?: number | null
+  protocol?: string | null
   is_active?: boolean | null
 }
 

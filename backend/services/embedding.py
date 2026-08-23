@@ -21,7 +21,7 @@ class EmbeddingService:
     """统一的 Embedding 入口，按 provider 分发（未知默认 OpenAI 兼容）"""
 
     @staticmethod
-    def embed(provider: str, model_name: str, api_key: str | None, base_url: str | None, texts: list[str]) -> list[list[float]]:
+    def embed(provider: str, model_name: str, api_key: str | None, base_url: str | None, texts: list[str], protocol: str | None = None) -> list[list[float]]:
         """
         批量向量化
 
@@ -31,10 +31,19 @@ class EmbeddingService:
             api_key:    API Key（从 model_config 读取）
             base_url:   API 地址（从 model_config 读取）
             texts:      文本列表（单条传 ["text"]）
+            protocol:   显式调用模式（协议）；provider 有专用实现时忽略（如 aliyun 走 DashScope SDK），
+                        自定义厂商用它选择实现（默认 openai）
 
         返回: 向量列表，与 texts 一一对应
         """
-        impl = EMBEDDING_IMPLEMENTATIONS.get(provider, OpenAICompatibleEmbedding)
+        if provider in EMBEDDING_IMPLEMENTATIONS:
+            # 专用实现优先（aliyun / openai / local），显式协议不覆盖，避免破坏现有链路
+            impl = EMBEDDING_IMPLEMENTATIONS[provider]
+        elif protocol:
+            # 自定义厂商：按显式协议选实现（目前仅 openai），未注册回退默认
+            impl = EMBEDDING_IMPLEMENTATIONS.get(protocol, OpenAICompatibleEmbedding)
+        else:
+            impl = OpenAICompatibleEmbedding
         return impl.embed(model_name, api_key, base_url, texts)
 
 

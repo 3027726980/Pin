@@ -32,6 +32,7 @@ class LLMService:
         messages: list[dict],
         temperature: float = 0.7,
         top_p: float = 0.9,
+        protocol: str | None = None,
     ) -> str:
         """
         非流式对话，返回完整回答文本
@@ -43,8 +44,9 @@ class LLMService:
             base_url:   API 地址（可覆盖为任意 OpenAI 兼容厂商）
             messages:   [{role, content}, ...]
             temperature / top_p: 采样参数
+            protocol:   显式调用模式（协议），优先于厂商推断；空 = 查 config.yaml 默认 openai
         """
-        impl = _resolve_implementation(provider)
+        impl = _resolve_implementation(provider, protocol)
         return await impl.chat(model_name, api_key, base_url, messages, temperature, top_p)
 
     @staticmethod
@@ -56,13 +58,14 @@ class LLMService:
         messages: list[dict],
         temperature: float = 0.7,
         top_p: float = 0.9,
+        protocol: str | None = None,
     ) -> AsyncIterator[str]:
         """
         流式对话，逐 token 产出回答片段
 
         与 chat() 参数一致，返回异步生成器
         """
-        impl = _resolve_implementation(provider)
+        impl = _resolve_implementation(provider, protocol)
         async for delta in impl.chat_stream(model_name, api_key, base_url, messages, temperature, top_p):
             yield delta
 
@@ -167,26 +170,30 @@ LLM_IMPLEMENTATIONS: dict[str, type] = {
 
 # ── 内部工具 ─────────────────────────────
 
-def _resolve_implementation(provider: str) -> type:
+def _resolve_implementation(provider: str, protocol: str | None = None) -> type:
     """
-    按厂商名解析协议实现
+    按调用模式解析实现
 
-    解析链：config.yaml providers[provider].protocol → LLM_IMPLEMENTATIONS
-    厂商未配置或协议未注册 → 默认 openai 兼容实现（事实标准，容错）
+    解析链：显式 protocol（配置声明的调用模式）→ config.yaml providers[provider].protocol
+    → 默认 openai 兼容实现（事实标准，容错）
     协议明确但实现未注册 → 抛错（需要注册新实现）
     """
-    protocol = _resolve_protocol(provider)
-    impl = LLM_IMPLEMENTATIONS.get(protocol)
+    resolved = _resolve_protocol(provider, protocol)
+    impl = LLM_IMPLEMENTATIONS.get(resolved)
     if impl is None:
         raise ValueError(
-            f"协议 {protocol!r}（provider={provider}）未注册实现，"
+            f"协议 {resolved!r}（provider={provider}）未注册实现，"
             f"请实现并注册到 LLM_IMPLEMENTATIONS"
         )
     return impl
 
 
-def _resolve_protocol(provider: str) -> str:
-    """查 config.yaml 厂商的协议，未配置默认 openai"""
+def _resolve_protocol(provider: str, protocol: str | None = None) -> str:
+    """
+    解析调用模式（协议）：显式值优先，其次查 config.yaml 厂商声明，默认 openai
+    """
+    if protocol:
+        return protocol
     providers = getattr(settings, "model_providers", None)
     if providers is not None:
         cfg = getattr(providers, provider, None)

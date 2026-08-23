@@ -2,6 +2,7 @@
 用户模型配置 Schema
 """
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,8 @@ class UserModelConfigCreate(BaseModel):
     base_url: str | None = Field(None, max_length=500)
     api_key: str | None = Field(None, max_length=500)
     dimension: int | None = None
+    protocol: Literal["openai"] | None = Field(
+        None, description="调用模式（协议）：目前仅 openai；空 = 按厂商推断默认 openai")
     is_active: bool = True
 
 
@@ -26,6 +29,8 @@ class UserModelConfigUpdate(BaseModel):
     base_url: str | None = Field(None, max_length=500)
     api_key: str | None = Field(None, max_length=500)
     dimension: int | None = None
+    protocol: Literal["openai"] | None = Field(
+        None, description="调用模式（协议）：目前仅 openai；空 = 按厂商推断")
     is_active: bool | None = None
 
 
@@ -39,6 +44,7 @@ class UserModelConfigResponse(BaseModel):
     base_url: str | None
     api_key: str | None
     dimension: int | None
+    protocol: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

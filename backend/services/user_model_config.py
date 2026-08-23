@@ -45,6 +45,7 @@ class UserModelConfigService:
             base_url=data.base_url,
             api_key=data.api_key,
             dimension=data.dimension,
+            protocol=data.protocol,
             is_active=data.is_active,
         )
         await db.commit()
@@ -116,6 +117,7 @@ class UserModelConfigService:
             base_url=data.base_url,
             api_key=data.api_key,
             dimension=data.dimension,
+            protocol=data.protocol,
             is_active=data.is_active,
         )
         await db.commit()

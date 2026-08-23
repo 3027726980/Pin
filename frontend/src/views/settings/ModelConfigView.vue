@@ -94,6 +94,15 @@
             />
           </template>
         </n-form-item>
+        <!-- 调用模式：仅自定义厂商可选（目前仅 OpenAI 兼容） -->
+        <n-form-item v-if="providerMode === 'custom'" label="调用模式" path="protocol">
+          <n-select
+            v-model:value="form.protocol"
+            :options="protocolOptions"
+            placeholder="选择调用模式"
+          />
+          <template #feedback>目前仅支持 OpenAI 兼容模式；更多模式后续扩展</template>
+        </n-form-item>
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址" path="base_url">
           <n-input v-model:value="form.base_url" placeholder="自定义厂商必填，如 https://api.example.com/v1" />
           <template v-if="isCustomProvider" #feedback>自定义厂商必须填写接口地址</template>
@@ -203,7 +212,13 @@ const form = ref({
   base_url: '' as string | null,
   api_key: '' as string | null,
   dimension: null as number | null,
+  protocol: 'openai' as string | null,
 })
+
+// 调用模式选项（协议）：目前仅 OpenAI 兼容；新增模式 = 注册实现 + 这里加一项
+const protocolOptions: SelectOption[] = [
+  { label: 'OpenAI（兼容）', value: 'openai' },
+]
 
 // 厂商选择方式：preset=预置下拉 / custom=自定义输入（显式切换，避免看不出可输入）
 const providerMode = ref<'preset' | 'custom'>('preset')
@@ -214,6 +229,7 @@ function switchToCustom() {
   form.value.model_name = ''
   form.value.base_url = null
   form.value.dimension = null
+  form.value.protocol = 'openai'
 }
 
 function switchToPreset() {
@@ -222,6 +238,7 @@ function switchToPreset() {
   form.value.model_name = ''
   form.value.base_url = null
   form.value.dimension = null
+  form.value.protocol = null  // 预置厂商协议由 config.yaml 推断，不落库
 }
 
 const rules: FormRules = {
@@ -351,7 +368,7 @@ function openCreate() {
   editingId.value = null
   modalTitle.value = '添加配置'
   providerMode.value = 'preset'
-  form.value = { provider: '', model_name: '', model_type: 1, base_url: null, api_key: null, dimension: null }
+  form.value = { provider: '', model_name: '', model_type: 1, base_url: null, api_key: null, dimension: null, protocol: null }
   modalShow.value = true
 }
 
@@ -369,6 +386,7 @@ function openEdit(row: UserModelConfigItem) {
     base_url: row.base_url,
     api_key: row.api_key,
     dimension: row.dimension,
+    protocol: row.protocol || (providerMode.value === 'custom' ? 'openai' : null),
   }
   modalShow.value = true
 }
@@ -385,6 +403,7 @@ async function handleSubmit() {
         base_url: form.value.base_url,
         api_key: form.value.api_key,
         dimension: form.value.dimension,
+        protocol: providerMode.value === 'custom' ? form.value.protocol : null,
       })
       message.success('已更新')
     } else {
@@ -395,6 +414,7 @@ async function handleSubmit() {
         base_url: form.value.base_url,
         api_key: form.value.api_key,
         dimension: form.value.dimension,
+        protocol: providerMode.value === 'custom' ? form.value.protocol : null,
       })
       message.success('已添加')
     }

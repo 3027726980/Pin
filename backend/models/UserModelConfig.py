@@ -30,6 +30,9 @@ class UserModelConfig(Base):
     dimension: Mapped[int | None] = mapped_column(
         nullable=True, comment="embedding 维度"
     )
+    protocol: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="调用模式（协议）：openai 等；NULL = 按厂商推断默认 openai"
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, comment="是否启用"
     )

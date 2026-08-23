@@ -211,6 +211,7 @@ class DocumentProcessService:
                     api_key=api_key,
                     base_url=url,
                     texts=texts,
+                    protocol=cfg.protocol,
                 )
             except Exception as e:
                 logger.error(f"第 {i // batch_size + 1} 批向量化失败: {e}")
