@@ -27,6 +27,13 @@ class GeneralAgents(Base):
     summary_llm_config_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="总结模型配置 ID（SummarizationMiddleware 用，空=跟随对话模型）"
     )
+    # ── Phase 4.6 检索增强（Agent 级模型引用）──
+    enhance_llm_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2，空=跟随对话模型）"
+    )
+    rerank_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="Rerank 模型配置 ID（model_type=3，空=用 config.yaml tools.rerank 全局默认）"
+    )
     tools: Mapped[list] = mapped_column(
         JSONB, default=list, nullable=False,
         comment='工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]',

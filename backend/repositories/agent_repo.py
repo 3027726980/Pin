@@ -138,6 +138,12 @@ class SimpleRagAgentRepo:
         top_p: float = 0.9,
         welcome_message: str | None = None,
         summary_llm_config_id: UUID | None = None,
+        mqe_enabled: bool = False,
+        hyde_enabled: bool = False,
+        mqe_query_count: int = 3,
+        rerank_enabled: bool = False,
+        enhance_llm_config_id: UUID | None = None,
+        rerank_config_id: UUID | None = None,
     ) -> SimpleRagAgents:
         """
         创建简单 RAG Agent 记录
@@ -158,6 +164,12 @@ class SimpleRagAgentRepo:
             top_p=top_p,
             welcome_message=welcome_message,
             summary_llm_config_id=summary_llm_config_id,
+            mqe_enabled=mqe_enabled,
+            hyde_enabled=hyde_enabled,
+            mqe_query_count=mqe_query_count,
+            rerank_enabled=rerank_enabled,
+            enhance_llm_config_id=enhance_llm_config_id,
+            rerank_config_id=rerank_config_id,
         )
         db.add(agent)
         await db.flush()
@@ -271,6 +283,8 @@ class GeneralAgentRepo:
         top_p: float = 0.9,
         welcome_message: str | None = None,
         summary_llm_config_id: UUID | None = None,
+        enhance_llm_config_id: UUID | None = None,
+        rerank_config_id: UUID | None = None,
     ) -> GeneralAgents:
         """
         创建综合 Agent 记录
@@ -289,6 +303,8 @@ class GeneralAgentRepo:
             top_p=top_p,
             welcome_message=welcome_message,
             summary_llm_config_id=summary_llm_config_id,
+            enhance_llm_config_id=enhance_llm_config_id,
+            rerank_config_id=rerank_config_id,
         )
         db.add(agent)
         await db.flush()

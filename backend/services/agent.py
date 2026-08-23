@@ -63,6 +63,12 @@ class AgentService:
         if data.summary_llm_config_id is not None:
             await AgentService._ensure_llm_config(
                 db, user, data.summary_llm_config_id)
+        if getattr(data, "enhance_llm_config_id", None) is not None:
+            await AgentService._ensure_llm_config(
+                db, user, data.enhance_llm_config_id)
+        if getattr(data, "rerank_config_id", None) is not None:
+            await AgentService._ensure_rerank_config(
+                db, user, data.rerank_config_id)
 
         if data.type == "simple_rag":
             return await AgentService._create_simple_rag(db, user, data)
@@ -178,6 +184,14 @@ class AgentService:
                 and data.summary_llm_config_id != agent.summary_llm_config_id):
             await AgentService._ensure_llm_config(
                 db, user, data.summary_llm_config_id)
+        if (data.enhance_llm_config_id is not None
+                and data.enhance_llm_config_id != getattr(agent, "enhance_llm_config_id", None)):
+            await AgentService._ensure_llm_config(
+                db, user, data.enhance_llm_config_id)
+        if (data.rerank_config_id is not None
+                and data.rerank_config_id != getattr(agent, "rerank_config_id", None)):
+            await AgentService._ensure_rerank_config(
+                db, user, data.rerank_config_id)
 
         if atype == "simple_rag":
             if data.kb_id is not None and data.kb_id != agent.kb_id:
@@ -196,6 +210,12 @@ class AgentService:
                 welcome_message=data.welcome_message,
                 status=data.status,
                 summary_llm_config_id=data.summary_llm_config_id,
+                mqe_enabled=data.mqe_enabled,
+                hyde_enabled=data.hyde_enabled,
+                mqe_query_count=data.mqe_query_count,
+                rerank_enabled=data.rerank_enabled,
+                enhance_llm_config_id=data.enhance_llm_config_id,
+                rerank_config_id=data.rerank_config_id,
             )
         else:
             if data.tools is not None:
@@ -213,6 +233,8 @@ class AgentService:
                 welcome_message=data.welcome_message,
                 status=data.status,
                 summary_llm_config_id=data.summary_llm_config_id,
+                enhance_llm_config_id=data.enhance_llm_config_id,
+                rerank_config_id=data.rerank_config_id,
             )
 
         # 索引表基础字段同步
@@ -307,6 +329,12 @@ class AgentService:
             top_p=data.top_p,
             welcome_message=data.welcome_message,
             summary_llm_config_id=data.summary_llm_config_id,
+            mqe_enabled=data.mqe_enabled if data.mqe_enabled is not None else settings.tools.default_mqe_enabled,
+            hyde_enabled=data.hyde_enabled if data.hyde_enabled is not None else settings.tools.default_hyde_enabled,
+            mqe_query_count=data.mqe_query_count or settings.tools.default_mqe_query_count,
+            rerank_enabled=data.rerank_enabled if data.rerank_enabled is not None else settings.tools.default_rerank_enabled,
+            enhance_llm_config_id=data.enhance_llm_config_id,
+            rerank_config_id=data.rerank_config_id,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -337,6 +365,8 @@ class AgentService:
             top_p=data.top_p,
             welcome_message=data.welcome_message,
             summary_llm_config_id=data.summary_llm_config_id,
+            enhance_llm_config_id=data.enhance_llm_config_id,
+            rerank_config_id=data.rerank_config_id,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -380,6 +410,13 @@ class AgentService:
         cfg = await UserModelConfigRepo.get_by_id(db, cfg_id)
         if cfg is None or cfg.user_id != user.id or cfg.model_type != 2:
             raise HTTPException(status_code=400, detail="LLM 模型配置无效")
+
+    @staticmethod
+    async def _ensure_rerank_config(db: AsyncSession, user: Users, cfg_id: UUID) -> None:
+        """校验 Rerank 配置：存在 + 归属 + model_type=3"""
+        cfg = await UserModelConfigRepo.get_by_id(db, cfg_id)
+        if cfg is None or cfg.user_id != user.id or cfg.model_type != 3:
+            raise HTTPException(status_code=400, detail="Rerank 模型配置无效")
 
     @staticmethod
     async def _ensure_tools(db: AsyncSession, user: Users, tools: list[ToolConfig]) -> None:
@@ -426,6 +463,9 @@ class AgentService:
         llm_cfg = await UserModelConfigRepo.get_by_id(db, agent.llm_config_id)
         resp.llm_provider = llm_cfg.provider if llm_cfg else None
         resp.llm_model = llm_cfg.model_name if llm_cfg else None
+        # Phase 4.6 检索增强模型引用（Agent 级，两类型都有）
+        resp.enhance_llm_config_id = agent.enhance_llm_config_id
+        resp.rerank_config_id = agent.rerank_config_id
 
         # 嵌入治理参数（agent_index 表）
         entry = await AgentIndexRepo.get_by_id(db, agent.id)
@@ -440,6 +480,10 @@ class AgentService:
             resp.kb_name = kb.name if kb else None
             resp.top_k = agent.top_k
             resp.score_threshold = agent.score_threshold
+            resp.mqe_enabled = agent.mqe_enabled
+            resp.hyde_enabled = agent.hyde_enabled
+            resp.mqe_query_count = agent.mqe_query_count
+            resp.rerank_enabled = agent.rerank_enabled
         else:
             from backend.tools import ToolRegistry
 

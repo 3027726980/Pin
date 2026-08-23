@@ -66,6 +66,11 @@ async def get_agent_defaults(
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "default_top_k": settings.tools.default_top_k,
         "default_score_threshold": settings.tools.default_score_threshold,
+        # Phase 4.6 检索增强默认值
+        "default_mqe_enabled": settings.tools.default_mqe_enabled,
+        "default_hyde_enabled": settings.tools.default_hyde_enabled,
+        "default_mqe_query_count": settings.tools.default_mqe_query_count,
+        "default_rerank_enabled": settings.tools.default_rerank_enabled,
     })
 
 

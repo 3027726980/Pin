@@ -1,4 +1,4 @@
-from sqlalchemy import Float, ForeignKey, Integer, SmallInteger, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid import UUID
 
@@ -34,6 +34,25 @@ class SimpleRagAgents(Base):
     )
     score_threshold: Mapped[float] = mapped_column(
         Float, default=0.3, nullable=False, comment="相似度阈值（默认取 config.yaml tools.default_score_threshold）"
+    )
+    # ── Phase 4.6 检索增强 ──
+    mqe_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, comment="多查询扩展（MQE）：LLM 改写多个子问题多路召回（默认取 config.yaml tools.default_mqe_enabled）"
+    )
+    hyde_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, comment="假设文档嵌入（HyDE）：LLM 生成假设回答文档作为检索线索（默认取 config.yaml tools.default_hyde_enabled）"
+    )
+    mqe_query_count: Mapped[int] = mapped_column(
+        SmallInteger, default=3, nullable=False, comment="MQE 改写子问题数（2~5，默认取 config.yaml tools.default_mqe_query_count）"
+    )
+    rerank_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, comment="Rerank 精排开关（默认取 config.yaml tools.default_rerank_enabled）"
+    )
+    enhance_llm_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2，空=跟随对话模型）"
+    )
+    rerank_config_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="Rerank 模型配置 ID（model_type=3，空=用 config.yaml tools.rerank 全局默认）"
     )
     system_prompt: Mapped[str] = mapped_column(
         Text, nullable=False, comment="系统提示词（RAG 模板，可编辑）"

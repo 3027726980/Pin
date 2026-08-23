@@ -48,6 +48,34 @@
         <template #feedback>长对话自动总结时使用的模型；不选则跟随对话模型</template>
       </n-form-item>
 
+      <!-- Phase 4.6：增强模型（MQE/HyDE 改写用，Agent 级） -->
+      <n-form-item label="增强模型">
+        <n-select
+          v-model:value="formData.enhance_llm_config_id"
+          :options="enhanceOptions"
+          placeholder="跟随对话模型"
+        >
+          <template #empty>
+            <div style="padding: 8px">暂无 LLM 配置，请先到「模型配置」页创建</div>
+          </template>
+        </n-select>
+        <template #feedback>查询增强（MQE/HyDE）改写时使用的模型；不选则跟随对话模型</template>
+      </n-form-item>
+
+      <!-- Phase 4.6：Rerank 模型（Agent 级，仅 rerank 开启时显示） -->
+      <n-form-item v-if="showRerankModel" label="Rerank 模型">
+        <n-select
+          v-model:value="formData.rerank_config_id"
+          :options="rerankOptions"
+          placeholder="跟随全局默认"
+        >
+          <template #empty>
+            <div style="padding: 8px">暂无 Rerank 配置，请先到「模型配置」页创建（模型类型选 Rerank）</div>
+          </template>
+        </n-select>
+        <template #feedback>重排序使用的模型；不选则用系统默认（本地 bge-reranker-v2-m3）</template>
+      </n-form-item>
+
       <!-- simple_rag：知识库直接绑定 -->
       <template v-if="formData.type === 'simple_rag'">
         <n-form-item label="知识库" path="kb_id">
@@ -58,6 +86,22 @@
         </n-form-item>
         <n-form-item label="相似度阈值">
           <n-input-number v-model:value="formData.score_threshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
+        </n-form-item>
+        <!-- Phase 4.6 检索增强（独立开关） -->
+        <n-form-item label="多查询扩展 MQE">
+          <n-switch v-model:value="formData.mqe_enabled" />
+          <template #feedback>LLM 将问题改写为多个子问题多路检索，提升召回；额外消耗 token</template>
+        </n-form-item>
+        <n-form-item v-if="formData.mqe_enabled" label="MQE 子问题数">
+          <n-input-number v-model:value="formData.mqe_query_count" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
+        </n-form-item>
+        <n-form-item label="假设文档嵌入 HyDE">
+          <n-switch v-model:value="formData.hyde_enabled" />
+          <template #feedback>LLM 先生成假设回答文档再检索，提升语义匹配；额外消耗 token</template>
+        </n-form-item>
+        <n-form-item label="Rerank 精排">
+          <n-switch v-model:value="formData.rerank_enabled" />
+          <template #feedback>粗召回后二次精排，提升相关性；需配置 Rerank 模型</template>
         </n-form-item>
       </template>
 
@@ -71,6 +115,22 @@
         </n-form-item>
         <n-form-item label="工具 - 相似度阈值">
           <n-input-number v-model:value="toolThreshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
+        </n-form-item>
+        <!-- Phase 4.6 检索增强（独立开关） -->
+        <n-form-item label="工具 - 多查询扩展 MQE">
+          <n-switch v-model:value="toolMqeEnabled" />
+          <template #feedback>LLM 改写多个子问题多路检索；额外消耗 token</template>
+        </n-form-item>
+        <n-form-item v-if="toolMqeEnabled" label="工具 - MQE 子问题数">
+          <n-input-number v-model:value="toolMqeCount" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
+        </n-form-item>
+        <n-form-item label="工具 - 假设文档嵌入 HyDE">
+          <n-switch v-model:value="toolHydeEnabled" />
+          <template #feedback>LLM 生成假设回答文档再检索；额外消耗 token</template>
+        </n-form-item>
+        <n-form-item label="工具 - Rerank 精排">
+          <n-switch v-model:value="toolRerankEnabled" />
+          <template #feedback>粗召回后二次精排，提升相关性</template>
         </n-form-item>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px">
           general Agent 由 LLM 自主决定是否调用 rag 工具（知识库检索），可能多轮调用。
@@ -154,6 +214,26 @@ const summaryOptions = computed<SelectOption[]>(() => [
   ...llmOptions.value,
 ])
 
+// 增强模型选项（MQE/HyDE 改写用）：与总结模型同结构，空 = 跟随对话模型
+const enhanceOptions = computed<SelectOption[]>(() => [
+  { label: '跟随对话模型', value: '' },
+  ...llmOptions.value,
+])
+
+// Rerank 模型选项（model_type=3 配置）：空 = 跟随全局默认
+const rerankOptions = computed<SelectOption[]>(() =>
+  modelConfigs.value
+    .filter(c => c.model_type === 3 && c.is_active)
+    .map(c => ({ label: `${c.provider} / ${c.model_name}`, value: c.id })),
+)
+
+// Rerank 模型选择器显隐：仅对应区块的 rerank 开关开启时显示
+const showRerankModel = computed(() =>
+  formData.value.type === 'simple_rag'
+    ? !!formData.value.rerank_enabled
+    : !!toolRerankEnabled.value,
+)
+
 // ── 表单状态 ────────────────────────────
 const formRef = ref<FormInst>()
 const submitting = ref(false)
@@ -171,12 +251,24 @@ const formData = ref<AgentCreatePayload & { description: string; welcome_message
   top_p: 0.9,
   welcome_message: '',
   system_prompt: '',
+  // Phase 4.6 检索增强
+  mqe_enabled: false,
+  hyde_enabled: false,
+  mqe_query_count: 3,
+  rerank_enabled: false,
+  enhance_llm_config_id: '',
+  rerank_config_id: '',
 })
 
 // general 工具配置（独立 state，提交时组装进 tools）
 const toolKbId = ref<string | null>(null)
 const toolTopK = ref<number | null>(null)
 const toolThreshold = ref<number | null>(null)
+// Phase 4.6 检索增强（工具级独立开关）
+const toolMqeEnabled = ref(false)
+const toolHydeEnabled = ref(false)
+const toolMqeCount = ref<number | null>(null)
+const toolRerankEnabled = ref(false)
 
 const rules: FormRules = {
   name: { required: true, message: '请输入名称', trigger: 'blur' },
@@ -233,11 +325,21 @@ watch(
         top_p: e.top_p,
         welcome_message: e.welcome_message || '',
         system_prompt: e.system_prompt || '',
+        mqe_enabled: e.mqe_enabled,
+        hyde_enabled: e.hyde_enabled,
+        mqe_query_count: e.mqe_query_count,
+        rerank_enabled: e.rerank_enabled,
+        enhance_llm_config_id: e.enhance_llm_config_id || '',
+        rerank_config_id: e.rerank_config_id || '',
       }
       if (e.type === 'general' && e.tools.length > 0) {
         toolKbId.value = e.tools[0].kb_id
         toolTopK.value = e.tools[0].top_k
         toolThreshold.value = e.tools[0].score_threshold
+        toolMqeEnabled.value = e.tools[0].mqe_enabled ?? false
+        toolHydeEnabled.value = e.tools[0].hyde_enabled ?? false
+        toolMqeCount.value = e.tools[0].mqe_query_count ?? null
+        toolRerankEnabled.value = e.tools[0].rerank_enabled ?? false
       }
     } else {
       formData.value = {
@@ -246,10 +348,16 @@ watch(
         kb_id: null, top_k: null, score_threshold: null,
         temperature: 0.7, top_p: 0.9, welcome_message: '',
         system_prompt: defaults.value.system_prompt || '',
+        mqe_enabled: false, hyde_enabled: false, mqe_query_count: 3,
+        rerank_enabled: false, enhance_llm_config_id: '', rerank_config_id: '',
       }
       toolKbId.value = null
       toolTopK.value = null
       toolThreshold.value = null
+      toolMqeEnabled.value = false
+      toolHydeEnabled.value = false
+      toolMqeCount.value = null
+      toolRerankEnabled.value = false
     }
   },
 )
@@ -272,18 +380,29 @@ async function handleSubmit() {
     top_p: formData.value.top_p,
     welcome_message: formData.value.welcome_message || null,
     system_prompt: formData.value.system_prompt || null,
+    // Phase 4.6 检索增强（Agent 级模型引用）
+    enhance_llm_config_id: formData.value.enhance_llm_config_id || null,
+    rerank_config_id: formData.value.rerank_config_id || null,
   }
 
   if (formData.value.type === 'simple_rag') {
     payload.kb_id = formData.value.kb_id
     payload.top_k = formData.value.top_k
     payload.score_threshold = formData.value.score_threshold
+    payload.mqe_enabled = formData.value.mqe_enabled
+    payload.hyde_enabled = formData.value.hyde_enabled
+    payload.mqe_query_count = formData.value.mqe_query_count
+    payload.rerank_enabled = formData.value.rerank_enabled
   } else {
     const tool: ToolConfig = {
       type: 'rag',
       kb_id: toolKbId.value!,
       top_k: toolTopK.value,
       score_threshold: toolThreshold.value,
+      mqe_enabled: toolMqeEnabled.value,
+      hyde_enabled: toolHydeEnabled.value,
+      mqe_query_count: toolMqeCount.value ?? undefined,
+      rerank_enabled: toolRerankEnabled.value,
     }
     payload.tools = [tool]
   }

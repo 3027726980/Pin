@@ -24,6 +24,11 @@ class ToolConfig(BaseModel):
     kb_id: UUID = Field(..., description="rag 工具绑定的知识库 ID")
     top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
     score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
+    # ── Phase 4.6 检索增强（可空，空 → config.yaml 默认）──
+    mqe_enabled: bool | None = Field(None, description="多查询扩展（MQE），不传用 config.yaml tools.default_mqe_enabled")
+    hyde_enabled: bool | None = Field(None, description="假设文档嵌入（HyDE），不传用 config.yaml tools.default_hyde_enabled")
+    mqe_query_count: int | None = Field(None, ge=2, le=5, description="MQE 改写子问题数，不传用 config.yaml tools.default_mqe_query_count")
+    rerank_enabled: bool | None = Field(None, description="Rerank 精排开关，不传用 config.yaml tools.default_rerank_enabled")
     kb_name: str | None = Field(None, description="响应补全：知识库名称（请求时忽略）")
 
 
@@ -40,6 +45,15 @@ class SimpleRagAgentCreate(BaseModel):
         None, description="总结模型配置 ID（model_type=2）；空 = 跟随对话模型")
     top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
     score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
+    # ── Phase 4.6 检索增强 ──
+    mqe_enabled: bool | None = Field(None, description="多查询扩展（MQE），不传用 config.yaml tools.default_mqe_enabled")
+    hyde_enabled: bool | None = Field(None, description="假设文档嵌入（HyDE），不传用 config.yaml tools.default_hyde_enabled")
+    mqe_query_count: int | None = Field(None, ge=2, le=5, description="MQE 改写子问题数，不传用 config.yaml tools.default_mqe_query_count")
+    rerank_enabled: bool | None = Field(None, description="Rerank 精排开关，不传用 config.yaml tools.default_rerank_enabled")
+    enhance_llm_config_id: UUID | None = Field(
+        None, description="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2）；空 = 跟随对话模型")
+    rerank_config_id: UUID | None = Field(
+        None, description="Rerank 模型配置 ID（model_type=3）；空 = 用 config.yaml tools.rerank 全局默认")
     system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     top_p: float = Field(0.9, ge=0.0, le=1.0)
@@ -55,6 +69,10 @@ class GeneralAgentCreate(BaseModel):
     summary_llm_config_id: UUID | None = Field(
         None, description="总结模型配置 ID（model_type=2）；空 = 跟随对话模型")
     tools: list[ToolConfig] = Field(..., min_length=1, description="工具配置列表，至少一个工具")
+    enhance_llm_config_id: UUID | None = Field(
+        None, description="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2）；空 = 跟随对话模型")
+    rerank_config_id: UUID | None = Field(
+        None, description="Rerank 模型配置 ID（model_type=3）；空 = 用 config.yaml tools.rerank 全局默认")
     system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     top_p: float = Field(0.9, ge=0.0, le=1.0)
@@ -79,6 +97,15 @@ class AgentUpdate(BaseModel):
     top_k: int | None = Field(None, ge=1, le=50)
     score_threshold: float | None = Field(None, ge=0.0, le=1.0)
     tools: list[ToolConfig] | None = Field(None, min_length=1, description="general 类型专用，整体替换")
+    # ── Phase 4.6 检索增强 ──
+    mqe_enabled: bool | None = None
+    hyde_enabled: bool | None = None
+    mqe_query_count: int | None = Field(None, ge=2, le=5)
+    rerank_enabled: bool | None = None
+    enhance_llm_config_id: UUID | None = Field(
+        None, description="增强 LLM 配置 ID（model_type=2）；空 = 跟随对话模型")
+    rerank_config_id: UUID | None = Field(
+        None, description="Rerank 模型配置 ID（model_type=3）；空 = 用 config.yaml tools.rerank 全局默认")
     system_prompt: str | None = None
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     top_p: float | None = Field(None, ge=0.0, le=1.0)
@@ -109,6 +136,13 @@ class AgentResponse(BaseModel):
     kb_name: str | None = None
     top_k: int | None = None
     score_threshold: float | None = None
+    # ── Phase 4.6 检索增强 ──
+    mqe_enabled: bool = False
+    hyde_enabled: bool = False
+    mqe_query_count: int = 3
+    rerank_enabled: bool = False
+    enhance_llm_config_id: UUID | None = None
+    rerank_config_id: UUID | None = None
     tools: list[ToolConfig] = []
     system_prompt: str
     temperature: float

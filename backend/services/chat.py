@@ -125,8 +125,15 @@ class ChatService:
     ) -> tuple[str, list[Citation]]:
         """预检索 → 命中注入引用块走 create_agent;无命中短路 + 手动写 checkpoint"""
         config = {"type": "rag", "kb_id": str(agent.kb_id),
-                  "top_k": agent.top_k, "score_threshold": agent.score_threshold}
-        citations = await RAGTool.execute(db, user, config, request.message)
+                  "top_k": agent.top_k, "score_threshold": agent.score_threshold,
+                  "mqe_enabled": agent.mqe_enabled, "hyde_enabled": agent.hyde_enabled,
+                  "mqe_query_count": agent.mqe_query_count,
+                  "rerank_enabled": agent.rerank_enabled}
+        enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
+        citations = await RAGTool.execute(
+            db, user, config, request.message,
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
 
         if not citations:
             await ChatService._persist_turn_without_llm(conv.id, request.message)
@@ -150,8 +157,15 @@ class ChatService:
     ) -> AsyncIterator[dict]:
         """simple_rag 流式:预检索 → 命中流式生成;无命中短路 + 持久化"""
         config = {"type": "rag", "kb_id": str(agent.kb_id),
-                  "top_k": agent.top_k, "score_threshold": agent.score_threshold}
-        refs = await RAGTool.execute(db, user, config, request.message)
+                  "top_k": agent.top_k, "score_threshold": agent.score_threshold,
+                  "mqe_enabled": agent.mqe_enabled, "hyde_enabled": agent.hyde_enabled,
+                  "mqe_query_count": agent.mqe_query_count,
+                  "rerank_enabled": agent.rerank_enabled}
+        enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
+        refs = await RAGTool.execute(
+            db, user, config, request.message,
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
         if not refs:
             await ChatService._persist_turn_without_llm(conv.id, request.message)
             full_answer.append("知识库中没有相关信息。")
@@ -186,8 +200,11 @@ class ChatService:
     ) -> tuple[str, list[Citation]]:
         """general:create_agent 自主决策(工具 + checkpoint 记忆)"""
         citations_store: list[Citation] = []
+        enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
-            db, user, agent.tools, citations_store=citations_store)
+            db, user, agent.tools, citations_store=citations_store,
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
         answer = await ChatService._invoke_agent(
             db, user, agent, llm_cfg, conv, tools=tools,
             user_content=request.message, citations_store=citations_store)
@@ -206,8 +223,11 @@ class ChatService:
     ) -> AsyncIterator[dict]:
         """general 流式:create_agent.astream(工具调用轮不输出)"""
         citations_store: list[Citation] = []
+        enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
+        rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
-            db, user, agent.tools, citations_store=citations_store)
+            db, user, agent.tools, citations_store=citations_store,
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
         async for event in ChatService._invoke_agent_stream(
                 db, user, agent, llm_cfg, conv, tools=tools,
                 user_content=request.message, citations_store=citations_store):
@@ -231,6 +251,32 @@ class ChatService:
         cfg = await UserModelConfigRepo.get_by_id(db, agent.summary_llm_config_id)
         if cfg is None or cfg.user_id != user.id or cfg.model_type != 2:
             return None  # 配置失效时静默回退到对话模型
+        return cfg
+
+    @staticmethod
+    async def _get_enhance_cfg(db: AsyncSession, user: Users, agent: object):
+        """增强 LLM 配置(MQE/HyDE 用):agent.enhance_llm_config_id → user_model_config
+
+        空/失效/归属不符 → None（RAGTool 收到 None 时跳过增强，跟随对话模型）
+        """
+        if not getattr(agent, "enhance_llm_config_id", None):
+            return None
+        cfg = await UserModelConfigRepo.get_by_id(db, agent.enhance_llm_config_id)
+        if cfg is None or cfg.user_id != user.id or cfg.model_type != 2:
+            return None  # 配置失效时静默回退（无增强）
+        return cfg
+
+    @staticmethod
+    async def _get_rerank_cfg(db: AsyncSession, user: Users, agent: object):
+        """Rerank 模型配置:agent.rerank_config_id → user_model_config(model_type=3)
+
+        空/失效/归属不符 → None（RAGTool 收到 None 时用 tools.rerank 全局默认）
+        """
+        if not getattr(agent, "rerank_config_id", None):
+            return None
+        cfg = await UserModelConfigRepo.get_by_id(db, agent.rerank_config_id)
+        if cfg is None or cfg.user_id != user.id or cfg.model_type != 3:
+            return None  # 配置失效时静默回退到全局默认
         return cfg
 
     @staticmethod

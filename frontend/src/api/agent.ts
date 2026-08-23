@@ -14,6 +14,11 @@ export interface ToolConfig {
   kb_id: string
   top_k: number | null
   score_threshold: number | null
+  // Phase 4.6 检索增强（可空 → config.yaml 默认）
+  mqe_enabled?: boolean | null
+  hyde_enabled?: boolean | null
+  mqe_query_count?: number | null
+  rerank_enabled?: boolean | null
   kb_name?: string | null
 }
 
@@ -40,6 +45,13 @@ export interface AgentDetail extends AgentListItem {
   top_k: number | null
   score_threshold: number | null
   welcome_message: string | null
+  // ── Phase 4.6 检索增强 ──
+  mqe_enabled: boolean
+  hyde_enabled: boolean
+  mqe_query_count: number
+  rerank_enabled: boolean
+  enhance_llm_config_id: string | null
+  rerank_config_id: string | null
   // ── 嵌入治理参数（agent_index 表）──
   rate_limit_per_min: number
   allowed_domains: string[]
@@ -61,6 +73,13 @@ export interface AgentCreatePayload {
   temperature?: number
   top_p?: number
   welcome_message?: string | null
+  // ── Phase 4.6 检索增强（Agent 级）──
+  mqe_enabled?: boolean
+  hyde_enabled?: boolean
+  mqe_query_count?: number
+  rerank_enabled?: boolean
+  enhance_llm_config_id?: string | null
+  rerank_config_id?: string | null
 }
 
 export type AgentUpdatePayload = Partial<AgentCreatePayload> & {
@@ -102,11 +121,15 @@ export type ChatEvent =
 
 // ── Agent CRUD ──────────────────────────
 
-/** 获取 Agent 默认配置（默认系统提示词模板 + 默认检索参数） */
+/** 获取 Agent 默认配置（默认系统提示词模板 + 默认检索参数 + 检索增强默认值） */
 export function getAgentDefaults(): Promise<{
   system_prompt: string
   default_top_k: number
   default_score_threshold: number
+  default_mqe_enabled: boolean
+  default_hyde_enabled: boolean
+  default_mqe_query_count: number
+  default_rerank_enabled: boolean
 }> {
   return request.get('/v1/agents/defaults')
 }
