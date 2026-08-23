@@ -35,6 +35,7 @@ class UserModelConfigService:
 
     @staticmethod
     async def create(db: AsyncSession, user: Users, data: UserModelConfigCreate) -> UserModelConfigResponse:
+        await UserModelConfigService._ensure_base_url(db, data.provider, data.base_url)
         cfg = await UserModelConfigRepo.create(
             db,
             user_id=user.id,
@@ -78,10 +79,28 @@ class UserModelConfigService:
         )
 
     @staticmethod
+    async def _ensure_base_url(db: AsyncSession, provider: str, base_url: str | None) -> None:
+        """
+        自定义厂商（不在预置列表）必须填写接口地址
+
+        预置厂商（config.yaml seed 的 default_model_config）有默认地址可推断，base_url 可空；
+        自定义厂商无默认地址，不填会导致调用失败。
+        """
+        if base_url:
+            return
+        if await UserModelConfigRepo.exists_provider(db, provider):
+            return
+        raise HTTPException(status_code=400, detail="自定义厂商必须填写接口地址")
+
+    @staticmethod
     async def update(db: AsyncSession, user: Users, cfg_id: UUID, data: UserModelConfigUpdate) -> UserModelConfigResponse:
         cfg = await UserModelConfigRepo.get_by_id(db, cfg_id)
         if cfg is None or cfg.user_id != user.id:
             raise HTTPException(status_code=404, detail="配置不存在")
+
+        # 仅当厂商变更时校验新厂商的 base_url（未变不重复校验）
+        if data.provider is not None and data.provider != cfg.provider:
+            await UserModelConfigService._ensure_base_url(db, data.provider, data.base_url)
 
         # 禁用前检查引用（知识库 + 两类 Agent）
         if data.is_active is False and cfg.is_active:

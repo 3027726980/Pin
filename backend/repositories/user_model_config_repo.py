@@ -99,3 +99,16 @@ class UserModelConfigRepo:
         q = select(DefaultModelConfig).order_by(DefaultModelConfig.provider, DefaultModelConfig.model_name)
         result = await db.execute(q)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def exists_provider(db: AsyncSession, provider: str) -> bool:
+        """
+        判断厂商是否为预置厂商（存在于 default_model_config 表，即 config.yaml seed）
+
+        用于创建/编辑校验：预置厂商 base_url 可空（走默认地址）；自定义厂商必须填接口地址
+        """
+        q = select(DefaultModelConfig.id).where(
+            DefaultModelConfig.provider == provider
+        ).limit(1)
+        result = await db.execute(q)
+        return result.scalars().first() is not None

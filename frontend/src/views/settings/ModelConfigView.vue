@@ -8,15 +8,22 @@
       </n-button>
     </div>
 
-    <!-- 可选模型列表 -->
+    <!-- 可选模型列表（按类型分组） -->
     <n-card title="可选模型" size="small" class="info-card">
-      <n-data-table
-        :columns="defaultColumns"
-        :data="defaultModels"
-        :pagination="false"
-        :row-key="(row: DefaultModelConfigItem) => row.id"
-        size="small"
-      />
+      <template #header-extra>
+        <span style="font-size: 12px; color: #999">由 config.yaml 定义，启动时同步；自定义模型请在下方手动创建</span>
+      </template>
+      <div v-for="group in groupedDefaults" :key="group.model_type" class="model-group">
+        <div class="model-group-title">{{ group.name }}（{{ group.items.length }}）</div>
+        <n-data-table
+          :columns="defaultColumns"
+          :data="group.items"
+          :pagination="false"
+          :row-key="(row: DefaultModelConfigItem) => row.id"
+          size="small"
+        />
+      </div>
+      <n-empty v-if="groupedDefaults.length === 0" description="暂无预置模型（config.yaml 未配置）" style="padding: 16px 0" />
     </n-card>
 
     <!-- 我的配置 -->
@@ -40,7 +47,9 @@
           <n-select
             v-model:value="form.provider"
             :options="providerOptions"
-            placeholder="选择厂商"
+            placeholder="选择或输入厂商（支持自定义）"
+            filterable
+            tag
             @update:value="onProviderChange"
           />
         </n-form-item>
@@ -56,18 +65,21 @@
           <n-select
             v-model:value="form.model_name"
             :options="filteredModelOptions"
-            placeholder="选择模型"
+            placeholder="选择或输入模型名（支持自定义）"
+            filterable
+            tag
             @update:value="onModelChange"
           />
         </n-form-item>
-        <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址">
-          <n-input v-model:value="form.base_url" placeholder="留空使用默认地址" />
+        <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址" path="base_url">
+          <n-input v-model:value="form.base_url" placeholder="自定义厂商必填，如 https://api.example.com/v1" />
+          <template v-if="isCustomProvider" #feedback>自定义厂商必须填写接口地址</template>
         </n-form-item>
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
         </n-form-item>
-        <n-form-item v-if="form.dimension" label="向量维度">
-          <n-input :value="String(form.dimension)" disabled />
+        <n-form-item v-if="form.model_type === 1" label="向量维度">
+          <n-input-number v-model:value="form.dimension" :min="1" :max="4096" style="width: 100%" placeholder="预置自动带出；自定义模型建议填写" />
         </n-form-item>
       </n-form>
       <template #footer>
@@ -192,6 +204,22 @@ const providerOptions = computed<SelectOption[]>(() => {
     .map(m => ({ label: m.provider, value: m.provider }))
 })
 
+// ── 自定义厂商判定（不在预置列表）───
+const isCustomProvider = computed(() =>
+  !!form.value.provider &&
+  !defaultModels.value.some(m => m.provider === form.value.provider),
+)
+
+// ── 可选模型按类型分组（Embedding / LLM / Rerank）──
+const groupedDefaults = computed(() => {
+  const groups: { model_type: number; name: string; items: DefaultModelConfigItem[] }[] = []
+  for (const t of modelTypes.value) {
+    const items = defaultModels.value.filter(m => m.model_type === t.code)
+    if (items.length) groups.push({ model_type: t.code, name: t.name, items })
+  }
+  return groups
+})
+
 // ── 模型类型标签 ────────────────────
 const modelTypes = ref<ModelTypeItem[]>([])
 const modelTypeLabel = computed(() => {
@@ -199,17 +227,10 @@ const modelTypeLabel = computed(() => {
   return found?.name || `未知 (${form.value.model_type})`
 })
 
-// ── 根据选中厂商过滤可选类型 ──────────
-const typeOptions = computed<SelectOption[]>(() => {
-  const seen = new Set<number>()
-  return defaultModels.value
-    .filter(m => m.provider === form.value.provider)
-    .filter(m => { const dup = seen.has(m.model_type); seen.add(m.model_type); return !dup })
-    .map(m => {
-      const found = modelTypes.value.find(t => t.code === m.model_type)
-      return { label: found?.name || `类型${m.model_type}`, value: m.model_type }
-    })
-})
+// ── 类型选项：始终展示全部类型（自定义厂商也能选类型）──
+const typeOptions = computed<SelectOption[]>(() =>
+  modelTypes.value.map(t => ({ label: t.name, value: t.code })),
+)
 
 // ── 根据选中厂商+类型过滤模型 ──────────
 const filteredModelOptions = computed<SelectOption[]>(() => {
@@ -223,7 +244,7 @@ function findDefault(provider: string, modelName: string): DefaultModelConfigIte
   return defaultModels.value.find(m => m.provider === provider && m.model_name === modelName)
 }
 
-// ── 厂商变更：默认选第一个类型 ──
+// ── 厂商变更：预置厂商默认选第一个类型；自定义厂商保持类型供手输模型 ──
 function onProviderChange(_provider: string) {
   form.value.model_name = ''
   form.value.base_url = null
@@ -233,11 +254,16 @@ function onProviderChange(_provider: string) {
     .filter(m => m.provider === form.value.provider)
     .map(m => m.model_type)
     .filter((v, i, a) => a.indexOf(v) === i)
-  form.value.model_type = types.length > 0 ? types[0] : 0
-  if (form.value.model_type > 0) onTypeChange(form.value.model_type)
+  if (types.length > 0) {
+    form.value.model_type = types[0]
+    onTypeChange(form.value.model_type)
+  } else {
+    // 自定义厂商：类型保持（默认 1 Embedding），模型名等待手输
+    if (!form.value.model_type) form.value.model_type = 1
+  }
 }
 
-// ── 类型变更：默认选第一个模型 ──
+// ── 类型变更：预置模型自动带出；自定义则等待手输 ──
 function onTypeChange(typeCode: number) {
   form.value.model_name = ''
   form.value.base_url = null
@@ -366,4 +392,10 @@ onMounted(() => {
 }
 .page-header h2 { margin: 0; font-size: 20px; }
 .info-card { margin-bottom: 16px; }
+.model-group { margin-bottom: 12px; }
+.model-group:last-child { margin-bottom: 0; }
+.model-group-title {
+  font-size: 13px; font-weight: 600;
+  margin-bottom: 4px; color: #666;
+}
 </style>
