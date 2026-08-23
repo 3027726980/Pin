@@ -62,7 +62,6 @@
                 />
               </div>
             </n-dynamic-input>
-            <span class="hint">示例：sk-3cb94abcd → sk-3***bcd；字段名 api_key/token/password 等自动匹配</span>
           </n-form-item>
         </n-form>
         <div class="save-row">
@@ -70,6 +69,7 @@
             保存脱敏规则
           </n-button>
         </div>
+        <span class="hint">示例：sk-3cb94abcd → sk-3***bcd；字段名 api_key/token/password 等自动匹配</span>
       </n-card>
 
       <!-- 其他设置项：JSON 文本编辑 -->
