@@ -45,7 +45,7 @@ class UserModelConfigService:
         t0 = time.perf_counter()
         try:
             if data.model_type == 2:
-                # 采样/超时参数全部用默认（不写死特殊值）；默认参数下不通则如实反馈给用户
+                # 使用模型配置填写的采样参数（未填则走默认）；max_tokens 透传
                 reply = await LLMService.chat(
                     provider=data.provider,
                     model_name=data.model_name,
@@ -53,6 +53,9 @@ class UserModelConfigService:
                     base_url=data.base_url,
                     messages=[{"role": "user", "content": "ping"}],
                     protocol=data.protocol,
+                    temperature=data.temperature if data.temperature is not None else 0.7,
+                    top_p=data.top_p if data.top_p is not None else 0.9,
+                    max_tokens=data.max_tokens,
                 )
                 return ModelConfigTestResponse(
                     ok=True,

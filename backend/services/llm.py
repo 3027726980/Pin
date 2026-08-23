@@ -34,6 +34,7 @@ class LLMService:
         top_p: float = 0.9,
         protocol: str | None = None,
         timeout: float = 60.0,
+        max_tokens: int | None = None,
     ) -> str:
         """
         非流式对话，返回完整回答文本
@@ -47,9 +48,10 @@ class LLMService:
             temperature / top_p: 采样参数
             protocol:   显式调用模式（协议），优先于厂商推断；空 = 查 config.yaml 默认 openai
             timeout:    请求超时秒数（默认 60；配置测试场景传短超时快速失败）
+            max_tokens: 最大生成 token 数（空 = 厂商默认）
         """
         impl = _resolve_implementation(provider, protocol)
-        return await impl.chat(model_name, api_key, base_url, messages, temperature, top_p, timeout)
+        return await impl.chat(model_name, api_key, base_url, messages, temperature, top_p, timeout, max_tokens)
 
     @staticmethod
     async def chat_stream(
@@ -100,17 +102,22 @@ class OpenAICompatible:
         temperature: float,
         top_p: float,
         timeout: float = 60.0,
+        max_tokens: int | None = None,
     ) -> str:
         """OpenAI 兼容非流式对话（埋点：耗时 + 输出长度 + 错误）"""
         client = OpenAICompatible._build_client(api_key, base_url, timeout)
         t0 = time.perf_counter()
         try:
+            kwargs = {}
+            if max_tokens:
+                kwargs["max_tokens"] = max_tokens
             resp = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 temperature=temperature,
                 top_p=top_p,
                 stream=False,
+                **kwargs,
             )
             content = resp.choices[0].message.content or ""
             _llm_logger.info(

@@ -479,6 +479,9 @@ async function handleTest(row: UserModelConfigItem) {
       api_key: row.api_key || undefined,
       dimension: row.dimension,
       protocol: row.protocol || undefined,
+      temperature: row.temperature,
+      top_p: row.top_p,
+      max_tokens: row.max_tokens,
     })
     if (r.ok) {
       message.success(`✅ ${r.detail}（${r.latency_ms}ms）`)
@@ -509,6 +512,9 @@ async function handleTestForm() {
       api_key: form.value.api_key,
       dimension: form.value.dimension,
       protocol: providerMode.value === 'custom' ? form.value.protocol : null,
+      temperature: form.value.temperature,
+      top_p: form.value.top_p,
+      max_tokens: form.value.max_tokens,
     })
     if (r.ok) {
       message.success(`✅ ${r.detail}（${r.latency_ms}ms）`)
