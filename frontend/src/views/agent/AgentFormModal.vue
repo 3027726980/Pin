@@ -53,6 +53,9 @@
       <n-collapse>
         <!-- 检索配置：top_k / 阈值 / 检索增强开关 -->
         <n-collapse-item title="检索配置" name="retrieval">
+          <n-alert type="warning" :show-icon="false" style="margin-bottom: 12px">
+            开启 MQE / HyDE 查询增强会<b>额外消耗 token</b>，并<b>增加单次对话的查询时间</b>；请按需开启。
+          </n-alert>
           <template v-if="formData.type === 'simple_rag'">
             <n-form-item label="检索块数 top_k">
               <n-input-number v-model:value="formData.top_k" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
