@@ -93,12 +93,14 @@ class UserModelConfigService:
                     extra={"dimension": dim},
                 )
             if data.model_type == 3:
-                from backend.services.rerank import RERANK_IMPLEMENTATIONS
+                from backend.services.rerank import RERANK_IMPLEMENTATIONS, _PROTOCOL_BY_PROVIDER
 
-                impl = RERANK_IMPLEMENTATIONS.get(data.provider)
+                # 分发与 RerankService 一致：显式协议优先，其次厂商名推断（aliyun→dashscope / local→local）
+                proto = data.protocol or _PROTOCOL_BY_PROVIDER.get(data.provider)
+                impl = RERANK_IMPLEMENTATIONS.get(proto)
                 if impl is None:
                     raise ValueError(
-                        f"厂商 {data.provider} 暂不支持 Rerank（可选 local / aliyun）")
+                        f"不支持的 Rerank 调用模式: {proto or data.provider}（可选 DashScope 原生 / 本地）")
                 candidates = [
                     {"chunk_id": "00000000-0000-0000-0000-000000000001",
                      "content": "测试文档一：Pin 是一个 AI 助手平台",
@@ -113,6 +115,7 @@ class UserModelConfigService:
                         model_name=data.model_name,
                         api_key=data.api_key or "",
                         base_url=data.base_url,
+                        protocol=proto,
                     ),
                     "测试查询", candidates, 2)
                 if not result:
