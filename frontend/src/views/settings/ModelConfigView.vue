@@ -305,15 +305,18 @@ function applyPresetModel(m: DefaultModelConfigItem) {
 function onProviderChange(_provider: string) {
   form.value.model_name = ''
   form.value.dimension = null
-  // 自定义厂商自动继承厂商 base_url（可修改）；预置厂商留空（选预置模型 chips 时带出）
   const p = providers.value.find(x => x.name === form.value.provider)
   form.value.base_url = p?.base_url || null
-  const types = defaultModels.value
-    .filter(m => m.provider === form.value.provider)
-    .map(m => m.model_type)
-    .filter((v, i, a) => a.indexOf(v) === i)
-  // 默认选 LLM（2），厂商没有 LLM 才选第一个类型
-  form.value.model_type = types.includes(2) ? 2 : (types.length > 0 ? types[0] : 2)
+  // 统一默认 LLM 类型（所有厂商行为一致）
+  form.value.model_type = 2
+  // 自动带出该厂商第一个预置 LLM 模型（无预置则留空手输）
+  const preset = defaultModels.value.find(
+    m => m.provider === form.value.provider && m.model_type === 2)
+  if (preset) {
+    form.value.model_name = preset.model_name
+    form.value.base_url = preset.base_url || form.value.base_url
+    form.value.dimension = preset.dimension
+  }
 }
 
 function onTypeChange(_typeCode: number) {
