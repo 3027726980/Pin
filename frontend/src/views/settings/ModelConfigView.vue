@@ -101,7 +101,7 @@
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
         </n-form-item>
-        <n-form-item v-if="form.model_type === 1" label="向量维度">
+        <n-form-item v-if="form.provider && form.model_type === 1" label="向量维度">
           <n-input-number v-model:value="form.dimension" :min="1" :max="4096" style="width: 100%" placeholder="预置自动带出；自定义模型建议填写" />
         </n-form-item>
       </n-form>
