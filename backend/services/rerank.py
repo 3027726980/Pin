@@ -103,7 +103,7 @@ class LocalRerank:
             reverse=True,
         )[:top_k]
         return [
-            {**c, "score": round(s, 4)} for c, s in ranked
+            {**c, "original_score": c["score"], "score": round(s, 4)} for c, s in ranked
         ]
 
 
@@ -152,7 +152,10 @@ class DashScopeRerank:
             key=lambda x: by_index[x[0]],
             reverse=True,
         )[:top_k]
-        return [{**c, "score": round(by_index[i], 4)} for i, c in ranked]
+        return [
+            {**c, "original_score": c["score"],
+             "score": round(by_index[i], 4)} for i, c in ranked
+        ]
 
 
 # 厂商名 → 默认调用模式（Rerank 用；模型配置显式选择时优先）

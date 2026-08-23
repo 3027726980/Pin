@@ -65,17 +65,18 @@ class ChatService:
         atype, agent, llm_cfg, conv = await ChatService._load_context(
             db, user, agent_id, request.conversation_id, client_id, exec_user)
 
+        debug_store: dict | None = {} if request.debug else None
         if atype == "simple_rag":
             answer, citations = await ChatService._chat_simple_rag(
-                db, user, agent, llm_cfg, conv, request)
+                db, user, agent, llm_cfg, conv, request, debug_store=debug_store)
         else:
             answer, citations = await ChatService._chat_general(
-                db, user, agent, llm_cfg, conv, request)
+                db, user, agent, llm_cfg, conv, request, debug_store=debug_store)
 
         await ChatService._persist_messages(
             db, conv, request.message, answer, citations)
         return ChatResponse(conversation_id=conv.id, answer=answer,
-                            citations=citations)
+                            citations=citations, debug=debug_store)
 
     @staticmethod
     async def chat_stream(
@@ -95,16 +96,17 @@ class ChatService:
             db, user, agent_id, request.conversation_id, client_id, exec_user)
         full_answer: list[str] = []
         citations: list[Citation] = []
+        debug_store: dict | None = {} if request.debug else None
         try:
             if atype == "simple_rag":
                 async for event in ChatService._chat_simple_rag_stream(
                         db, user, agent, llm_cfg, conv, request,
-                        full_answer, citations):
+                        full_answer, citations, debug_store=debug_store):
                     yield event
             else:
                 async for event in ChatService._chat_general_stream(
                         db, user, agent, llm_cfg, conv, request,
-                        full_answer, citations):
+                        full_answer, citations, debug_store=debug_store):
                     yield event
         finally:
             await ChatService._persist_messages(
@@ -122,6 +124,7 @@ class ChatService:
         llm_cfg: object,
         conv: object,
         request: ChatRequest,
+        debug_store: dict | None = None,
     ) -> tuple[str, list[Citation]]:
         """预检索 → 命中注入引用块走 create_agent;无命中短路 + 手动写 checkpoint"""
         config = {"type": "rag", "kb_id": str(agent.kb_id),
@@ -135,7 +138,7 @@ class ChatService:
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         citations = await RAGTool.execute(
             db, user, config, request.message,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg, debug_store=debug_store)
 
         if not citations:
             await ChatService._persist_turn_without_llm(conv.id, request.message)
@@ -156,6 +159,7 @@ class ChatService:
         request: ChatRequest,
         full_answer: list[str],
         citations: list[Citation],
+        debug_store: dict | None = None,
     ) -> AsyncIterator[dict]:
         """simple_rag 流式:预检索 → 命中流式生成;无命中短路 + 持久化"""
         config = {"type": "rag", "kb_id": str(agent.kb_id),
@@ -169,7 +173,7 @@ class ChatService:
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         refs = await RAGTool.execute(
             db, user, config, request.message,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg, debug_store=debug_store)
         if not refs:
             await ChatService._persist_turn_without_llm(conv.id, request.message)
             full_answer.append("知识库中没有相关信息。")
@@ -185,6 +189,8 @@ class ChatService:
             if event.get("type") == "delta":
                 full_answer.append(event["content"])
             yield event
+        if debug_store is not None:
+            yield {"type": "debug", "debug": debug_store}
         yield {"type": "citations",
                "citations": [c.model_dump(mode="json") for c in refs]}
         yield {"type": "done"}
@@ -201,6 +207,7 @@ class ChatService:
         llm_cfg: object,
         conv: object,
         request: ChatRequest,
+        debug_store: dict | None = None,
     ) -> tuple[str, list[Citation]]:
         """general:create_agent 自主决策(工具 + checkpoint 记忆)"""
         citations_store: list[Citation] = []
@@ -210,7 +217,8 @@ class ChatService:
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
             db, user, agent.tools, citations_store=citations_store,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
+            debug_store=debug_store)
         answer = await ChatService._invoke_agent(
             db, user, agent, llm_cfg, conv, tools=tools,
             user_content=request.message, citations_store=citations_store)
@@ -226,6 +234,7 @@ class ChatService:
         request: ChatRequest,
         full_answer: list[str],
         citations: list[Citation],
+        debug_store: dict | None = None,
     ) -> AsyncIterator[dict]:
         """general 流式:create_agent.astream(工具调用轮不输出)"""
         citations_store: list[Citation] = []
@@ -235,7 +244,8 @@ class ChatService:
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
             db, user, agent.tools, citations_store=citations_store,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
+            debug_store=debug_store)
         async for event in ChatService._invoke_agent_stream(
                 db, user, agent, llm_cfg, conv, tools=tools,
                 user_content=request.message, citations_store=citations_store):
@@ -243,6 +253,8 @@ class ChatService:
                 full_answer.append(event["content"])
             yield event
         citations.extend(citations_store)
+        if debug_store is not None:
+            yield {"type": "debug", "debug": debug_store}
         yield {"type": "citations",
                "citations": [c.model_dump(mode="json") for c in citations_store]}
         yield {"type": "done"}

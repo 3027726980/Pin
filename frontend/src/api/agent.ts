@@ -108,11 +108,18 @@ export interface ChatCitation {
   document_name: string
   content: string
   score: number
+  original_score?: number | null
+}
+
+export interface ChatDebug {
+  queries?: string[]
+  rerank?: { enabled: boolean; provider?: string | null; model?: string | null }
 }
 
 export interface ChatResult {
   answer: string
   citations: ChatCitation[]
+  debug?: ChatDebug | null
 }
 
 export interface ChatSuggestion {
@@ -123,6 +130,7 @@ export interface ChatSuggestion {
 export type ChatEvent =
   | { type: 'delta'; content: string }
   | { type: 'citations'; citations: ChatCitation[] }
+  | { type: 'debug'; debug: ChatDebug }
   | { type: 'done' }
   | { type: 'error'; code: number; message: string; suggestion?: ChatSuggestion | null }
 
@@ -176,7 +184,7 @@ export function batchAgents(ids: string[], action: 'enable' | 'disable' | 'delet
 // ── 对话 ────────────────────────────────
 
 /** 非流式对话(记忆由服务端 checkpoint 管理,前端不传 history) */
-export function chatAgent(agentId: string, body: { message: string; conversation_id?: string | null; stream?: boolean }): Promise<ChatResult & { conversation_id: string }> {
+export function chatAgent(agentId: string, body: { message: string; conversation_id?: string | null; stream?: boolean; debug?: boolean }): Promise<ChatResult & { conversation_id: string }> {
   return request.post(`/v1/agents/${agentId}/chat`, body)
 }
 
@@ -186,7 +194,7 @@ export function chatAgent(agentId: string, body: { message: string; conversation
  */
 export async function chatAgentStream(
   agentId: string,
-  body: { message: string; conversation_id?: string | null; stream: true },
+  body: { message: string; conversation_id?: string | null; stream: true; debug?: boolean },
   onEvent: (e: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {

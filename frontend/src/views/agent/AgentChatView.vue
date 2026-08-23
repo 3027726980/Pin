@@ -19,6 +19,8 @@
         <div class="chat-header-right">
           <span class="stream-option">流式输出</span>
           <n-switch v-model:value="streamMode" size="small" />
+          <span class="stream-option" title="展示检索链路：拓展 Query / Rerank 分数">Debug</span>
+          <n-switch v-model:value="debugMode" size="small" />
           <n-button size="small" :disabled="streaming" @click="newConversation">
             <template #icon><n-icon><AddOutline /></n-icon></template>
             新会话
@@ -73,7 +75,11 @@
                 >
                   <div class="citation-head">
                     <span class="citation-doc">[{{ msg.rawCitations ? msg.rawCitations.indexOf(c) + 1 : i + 1 }}]《{{ c.document_name }}》</span>
-                    <n-tag size="tiny" type="info" :bordered="false">相似度 {{ c.score.toFixed(2) }}</n-tag>
+                    <n-tag size="tiny" type="info" :bordered="false">
+                      {{ c.original_score != null && Math.abs(c.original_score - c.score) > 0.001
+                        ? `向量 ${c.original_score.toFixed(2)} → 精排 ${c.score.toFixed(2)}`
+                        : `相似度 ${c.score.toFixed(2)}` }}
+                    </n-tag>
                   </div>
                   <div class="citation-content" :class="{ expanded: isCitationExpanded(msg, msg.rawCitations ? msg.rawCitations.indexOf(c) : i) }">{{ c.content }}</div>
                   <div
@@ -82,6 +88,35 @@
                     @click="toggleCitation(msg, msg.rawCitations ? msg.rawCitations.indexOf(c) : i)"
                   >
                     {{ isCitationExpanded(msg, msg.rawCitations ? msg.rawCitations.indexOf(c) : i) ? '收起 ▲' : '展开 ▼' }}
+                  </div>
+                </div>
+              </n-collapse-item>
+            </n-collapse>
+          </div>
+          <!-- 检索调试信息（Debug 模式） -->
+          <div v-if="msg.role === 'assistant' && msg.debug" class="msg-debug">
+            <n-collapse>
+              <n-collapse-item title="🔍 检索调试信息" name="debug">
+                <div v-if="msg.debug.queries && msg.debug.queries.length" class="debug-section">
+                  <div class="debug-title">检索 Query（{{ msg.debug.queries.length }} 路）</div>
+                  <div v-for="(q, i) in msg.debug.queries" :key="i" class="debug-query">
+                    <n-tag size="tiny" :type="i === 0 ? 'default' : 'info'" :bordered="false">
+                      {{ i === 0 ? '原始' : '增强' }}
+                    </n-tag>
+                    <span>{{ q }}</span>
+                  </div>
+                </div>
+                <div v-if="msg.debug.rerank" class="debug-section">
+                  <div class="debug-title">Rerank 精排</div>
+                  <div class="debug-query">模型：{{ msg.debug.rerank.provider }} / {{ msg.debug.rerank.model }}</div>
+                </div>
+                <div v-if="hasScoreDiff(msg)" class="debug-section">
+                  <div class="debug-title">分数对比（向量相似度 → Rerank 精排）</div>
+                  <div v-for="(c, i) in msg.citations" :key="i" class="debug-score">
+                    <span>[{{ msg.rawCitations ? msg.rawCitations.indexOf(c) + 1 : i + 1 }}]《{{ c.document_name }}》</span>
+                    <span class="debug-score-val">
+                      向量 {{ c.original_score?.toFixed(4) ?? '-' }} → 精排 {{ c.score.toFixed(4) }}
+                    </span>
                   </div>
                 </div>
               </n-collapse-item>
@@ -189,6 +224,7 @@ import {
   type AgentDetail,
   type ChatMessage,
   type ChatCitation,
+  type ChatDebug,
   type ChatSuggestion,
 } from '@/api/agent'
 import {
@@ -200,6 +236,8 @@ import {
 } from '@/api/conversation'
 
 interface DisplayMessage extends ChatMessage {
+  /** 检索调试信息（Debug 模式） */
+  debug?: ChatDebug | null
   /** 消息唯一标识（引用定位锚点用） */
   uid: number
   citations?: ChatCitation[]
@@ -227,6 +265,7 @@ const sending = ref(false)
 const streaming = ref(false)
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
+const debugMode = ref(false)
 // 当前阶段：retrieving=检索中（加载圈），generating=生成中（打字机）
 const currentStage = ref<'idle' | 'retrieving' | 'generating'>('idle')
 let abortCtrl: AbortController | null = null
@@ -397,9 +436,10 @@ async function doRequest(
   // 非流式：一次性返回 answer + citations
   if (!streamMode.value) {
     try {
-      const res = await chatAgent(agentId, { message: text, conversation_id: conversationId })
+      const res = await chatAgent(agentId, { message: text, conversation_id: conversationId, debug: debugMode.value })
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
+      assistantMsg.debug = res.debug || null
     } catch (e) {
       const err = e as Error & { suggestion?: ChatSuggestion | null }
       handleChatError(assistantMsg, err.message, err.suggestion, text, conversationId)
@@ -416,7 +456,7 @@ async function doRequest(
   try {
     await chatAgentStream(
       agentId,
-      { message: text, conversation_id: conversationId, stream: true },
+      { message: text, conversation_id: conversationId, stream: true, debug: debugMode.value },
       (event) => {
         if (event.type === 'delta') {
           // 首个 delta 到达 → 检索完成，进入生成阶段（打字机）
@@ -430,6 +470,8 @@ async function doRequest(
           assistantMsg.rawCitations = event.citations
           const used = extractRefIndexes(assistantMsg.content)
           assistantMsg.citations = event.citations.filter((_, i) => used.has(i + 1))
+        } else if (event.type === 'debug') {
+          assistantMsg.debug = event.debug
         } else if (event.type === 'error') {
           handleChatError(assistantMsg, event.message, event.suggestion, text, conversationId)
         }
@@ -505,6 +547,12 @@ function showTemperatureDialog(
 
 function stopStream() {
   abortCtrl?.abort()
+}
+
+// Debug：是否有 Rerank 分数对比可展示
+function hasScoreDiff(msg: DisplayMessage): boolean {
+  return !!msg.citations?.some(
+    c => c.original_score != null && Math.abs(c.original_score - c.score) > 0.001)
 }
 
 function onInputKeydown(e: KeyboardEvent) {

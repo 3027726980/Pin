@@ -199,6 +199,7 @@ class ChatRequest(BaseModel):
     conversation_id: UUID | None = Field(
         None, description="会话 ID;缺省时后端自动创建并随响应返回")
     stream: bool = Field(False, description="true=SSE 流式返回")
+    debug: bool = Field(False, description="true=返回检索调试信息（拓展 query / rerank 分数等）")
 
 
 class Citation(BaseModel):
@@ -207,6 +208,8 @@ class Citation(BaseModel):
     document_name: str
     content: str
     score: float
+    original_score: float | None = Field(
+        None, description="原始向量相似度（Rerank 开启时与 score 不同，便于对比）")
 
 
 class ChatResponse(BaseModel):
@@ -214,3 +217,5 @@ class ChatResponse(BaseModel):
     conversation_id: UUID
     answer: str
     citations: list[Citation] = []
+    debug: dict | None = Field(
+        None, description="调试信息（请求 debug=true 时返回）：queries/rerank 等")

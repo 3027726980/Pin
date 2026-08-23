@@ -101,6 +101,7 @@ class RAGTool(BaseTool):
         citations_store = kwargs.get("citations_store")
         enhance_cfg = kwargs.get("enhance_cfg")
         rerank_cfg = kwargs.get("rerank_cfg")
+        debug_store = kwargs.get("debug_store")  # 调试信息收集器（request.debug=true 时传入）
 
         @tool
         async def rag(query: str) -> str:
@@ -108,7 +109,8 @@ class RAGTool(BaseTool):
             try:
                 cits = await RAGTool.execute(
                     db, user, config, message=query,
-                    enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg)
+                    enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
+                    debug_store=debug_store)
             except HTTPException as e:
                 return json.dumps({"error": e.detail}, ensure_ascii=False)
             if citations_store is not None:
@@ -157,6 +159,7 @@ class RAGTool(BaseTool):
             rerank_enabled = settings.tools.default_rerank_enabled
         enhance_cfg = kwargs.get("enhance_cfg")
         rerank_cfg = kwargs.get("rerank_cfg")
+        debug_store = kwargs.get("debug_store")  # 调试信息收集器（request.debug=true 时传入）
 
         # 1. 知识库校验：归属 + 未删除 + 启用
         await RAGTool.validate_config(db, user, config)
@@ -183,6 +186,10 @@ class RAGTool(BaseTool):
                 queries.append(hypo)
             else:
                 logger.warning("HyDE 生成失败，跳过")
+
+        # 调试信息：实际执行的检索 query 列表（原始 + MQE 子问题 + HyDE 假设文档）
+        if debug_store is not None:
+            debug_store["queries"] = list(queries)
 
         # 4. 批量向量化（多 query 一次调用）
         query_vecs = EmbeddingService.embed(
@@ -222,15 +229,24 @@ class RAGTool(BaseTool):
             ]
             # RerankService 内部降级：模型缺失/异常 → 纯向量排序返回前 top_k
             ranked = await RerankService.rerank(rerank_cfg, message, candidates, top_k)
-            return [
+            result = [
                 Citation(
                     chunk_id=UUID(c["chunk_id"]),
                     document_name=c["filename"],
                     content=c["content"],
                     score=round(c["score"], 4),
+                    original_score=round(c.get("original_score", c["score"]), 4),
                 )
                 for c in ranked
             ]
+            if debug_store is not None:
+                debug_store["rerank"] = {
+                    "enabled": True,
+                    "provider": getattr(rerank_cfg, "provider", None) or "local",
+                    "model": getattr(rerank_cfg, "model_name", None)
+                    or settings.local_models.rerank.model_name,
+                }
+            return result
 
         ranked = sorted(seen.items(), key=lambda kv: kv[1][2], reverse=True)[:top_k]
         return [
@@ -239,6 +255,7 @@ class RAGTool(BaseTool):
                 document_name=filename,
                 content=content,
                 score=round(score, 4),
+                original_score=round(score, 4),
             )
             for cid, (content, filename, score) in ranked
         ]
