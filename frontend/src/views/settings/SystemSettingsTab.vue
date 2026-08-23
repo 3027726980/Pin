@@ -292,16 +292,14 @@ async function saveRedactRules() {
   }
 }
 
-/**
- * DynamicInput 变更处理：添加行时 naive-ui 默认 push null，
- * 这里把 null 统一替换为默认规则对象（模板编译器不支持 #create-default 箭头函数写法）
- */
-function onRulesUpdate(v: unknown[]) {
+function addRule() {
   if (!redactConfig.value) return
-  redactConfig.value.rules = (v || []).map((item) => {
-    const r = item as RedactRule | null
-    return r && r.type ? r : { type: 'field_name', pattern: '', mask: 'keep_4_4' }
-  })
+  redactConfig.value.rules.push({ type: 'value_pattern', pattern: '', mask: 'keep_3_3' })
+}
+
+function removeRule(index: number) {
+  if (!redactConfig.value) return
+  redactConfig.value.rules.splice(index, 1)
 }
 
 async function saveJsonItem(key: string) {

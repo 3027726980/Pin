@@ -13,7 +13,7 @@ export interface SystemSetting {
 export interface RedactRule {
   type: 'field_name' | 'value_pattern'
   pattern: string
-  mask: 'keep_4_4' | 'full_mask'
+  mask: 'keep_3_3' | 'keep_4_4' | 'full_mask'
 }
 
 export interface RedactRulesConfig {
