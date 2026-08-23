@@ -8,6 +8,7 @@
     @after-leave="resetForm"
   >
     <n-form ref="formRef" :model="formData" :rules="rules" label-placement="left" label-width="120" require-mark-placement="right-hanging">
+      <!-- ── 基础选项 ─────────────────────── -->
       <n-form-item label="类型" path="type">
         <n-radio-group v-model:value="formData.type" :disabled="!!editing">
           <n-radio-button value="simple_rag">简单 RAG Agent</n-radio-button>
@@ -35,122 +36,131 @@
         </n-select>
       </n-form-item>
 
-      <n-form-item label="总结模型">
-        <n-select
-          v-model:value="formData.summary_llm_config_id"
-          :options="summaryOptions"
-          placeholder="跟随对话模型"
-        >
-          <template #empty>
-            <div style="padding: 8px">暂无 LLM 配置，请先到「模型配置」页创建</div>
-          </template>
-        </n-select>
-        <template #feedback>长对话自动总结时使用的模型；不选则跟随对话模型</template>
+      <!-- 知识库（按类型） -->
+      <n-form-item v-if="formData.type === 'simple_rag'" label="知识库" path="kb_id">
+        <n-select v-model:value="formData.kb_id" :options="kbOptions" placeholder="选择绑定的知识库" />
       </n-form-item>
-
-      <!-- Phase 4.6：增强模型（MQE/HyDE 改写用，Agent 级） -->
-      <n-form-item label="增强模型">
-        <n-select
-          v-model:value="formData.enhance_llm_config_id"
-          :options="enhanceOptions"
-          placeholder="跟随对话模型"
-        >
-          <template #empty>
-            <div style="padding: 8px">暂无 LLM 配置，请先到「模型配置」页创建</div>
-          </template>
-        </n-select>
-        <template #feedback>查询增强（MQE/HyDE）改写时使用的模型；不选则跟随对话模型</template>
-      </n-form-item>
-
-      <!-- Phase 4.6：Rerank 模型（Agent 级，仅 rerank 开启时显示） -->
-      <n-form-item v-if="showRerankModel" label="Rerank 模型">
-        <n-select
-          v-model:value="formData.rerank_config_id"
-          :options="rerankOptions"
-          placeholder="跟随全局默认"
-        >
-          <template #empty>
-            <div style="padding: 8px">暂无 Rerank 配置，请先到「模型配置」页创建（模型类型选 Rerank）</div>
-          </template>
-        </n-select>
-        <template #feedback>重排序使用的模型；不选则用系统默认（本地 bge-reranker-v2-m3）</template>
-      </n-form-item>
-
-      <!-- simple_rag：知识库直接绑定 -->
-      <template v-if="formData.type === 'simple_rag'">
-        <n-form-item label="知识库" path="kb_id">
-          <n-select v-model:value="formData.kb_id" :options="kbOptions" placeholder="选择绑定的知识库" />
-        </n-form-item>
-        <n-form-item label="检索块数 top_k">
-          <n-input-number v-model:value="formData.top_k" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
-        </n-form-item>
-        <n-form-item label="相似度阈值">
-          <n-input-number v-model:value="formData.score_threshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
-        </n-form-item>
-        <!-- Phase 4.6 检索增强（独立开关） -->
-        <n-form-item label="多查询扩展 MQE">
-          <n-switch v-model:value="formData.mqe_enabled" />
-          <template #feedback>LLM 将问题改写为多个子问题多路检索，提升召回；额外消耗 token</template>
-        </n-form-item>
-        <n-form-item v-if="formData.mqe_enabled" label="MQE 子问题数">
-          <n-input-number v-model:value="formData.mqe_query_count" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
-        </n-form-item>
-        <n-form-item label="假设文档嵌入 HyDE">
-          <n-switch v-model:value="formData.hyde_enabled" />
-          <template #feedback>LLM 先生成假设回答文档再检索，提升语义匹配；额外消耗 token</template>
-        </n-form-item>
-        <n-form-item label="Rerank 精排">
-          <n-switch v-model:value="formData.rerank_enabled" />
-          <template #feedback>粗召回后二次精排，提升相关性；需配置 Rerank 模型</template>
-        </n-form-item>
-      </template>
-
-      <!-- general：rag 工具注册 -->
       <template v-else>
         <n-form-item label="工具 - 知识库" path="toolKbId">
           <n-select v-model:value="toolKbId" :options="kbOptions" placeholder="rag 工具绑定的知识库" />
-        </n-form-item>
-        <n-form-item label="工具 - top_k">
-          <n-input-number v-model:value="toolTopK" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
-        </n-form-item>
-        <n-form-item label="工具 - 相似度阈值">
-          <n-input-number v-model:value="toolThreshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
-        </n-form-item>
-        <!-- Phase 4.6 检索增强（独立开关） -->
-        <n-form-item label="工具 - 多查询扩展 MQE">
-          <n-switch v-model:value="toolMqeEnabled" />
-          <template #feedback>LLM 改写多个子问题多路检索；额外消耗 token</template>
-        </n-form-item>
-        <n-form-item v-if="toolMqeEnabled" label="工具 - MQE 子问题数">
-          <n-input-number v-model:value="toolMqeCount" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
-        </n-form-item>
-        <n-form-item label="工具 - 假设文档嵌入 HyDE">
-          <n-switch v-model:value="toolHydeEnabled" />
-          <template #feedback>LLM 生成假设回答文档再检索；额外消耗 token</template>
-        </n-form-item>
-        <n-form-item label="工具 - Rerank 精排">
-          <n-switch v-model:value="toolRerankEnabled" />
-          <template #feedback>粗召回后二次精排，提升相关性</template>
         </n-form-item>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px">
           general Agent 由 LLM 自主决定是否调用 rag 工具（知识库检索），可能多轮调用。
         </n-alert>
       </template>
 
-      <n-form-item label="采样 temperature">
-        <n-input-number v-model:value="formData.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7" />
-      </n-form-item>
-      <n-form-item label="采样 top_p">
-        <n-input-number v-model:value="formData.top_p" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.9" />
-      </n-form-item>
-
-      <n-form-item label="欢迎语">
-        <n-input v-model:value="formData.welcome_message" placeholder="可选（浮窗展示用）" />
-      </n-form-item>
-
+      <!-- ── 高级选项（默认折叠）────────── -->
       <n-collapse>
-        <n-collapse-item title="系统提示词（默认 RAG 模板）" name="prompt">
-          <n-input v-model:value="formData.system_prompt" type="textarea" :autosize="{ minRows: 5, maxRows: 10 }" placeholder="留空使用默认模板" />
+        <!-- 检索配置：top_k / 阈值 / 检索增强开关 -->
+        <n-collapse-item title="检索配置" name="retrieval">
+          <template v-if="formData.type === 'simple_rag'">
+            <n-form-item label="检索块数 top_k">
+              <n-input-number v-model:value="formData.top_k" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
+            </n-form-item>
+            <n-form-item label="相似度阈值">
+              <n-input-number v-model:value="formData.score_threshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
+            </n-form-item>
+            <!-- Phase 4.6 检索增强（独立开关，按需开启节省 token） -->
+            <n-form-item label="多查询扩展 MQE">
+              <n-switch v-model:value="formData.mqe_enabled" />
+              <template #feedback>LLM 将问题改写为多个子问题多路检索，提升召回；额外消耗 token</template>
+            </n-form-item>
+            <n-form-item v-if="formData.mqe_enabled" label="MQE 子问题数">
+              <n-input-number v-model:value="formData.mqe_query_count" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
+            </n-form-item>
+            <n-form-item label="假设文档嵌入 HyDE">
+              <n-switch v-model:value="formData.hyde_enabled" />
+              <template #feedback>LLM 先生成假设回答文档再检索，提升语义匹配；额外消耗 token</template>
+            </n-form-item>
+            <n-form-item label="Rerank 精排">
+              <n-switch v-model:value="formData.rerank_enabled" />
+              <template #feedback>粗召回后二次精排，提升相关性；需配置 Rerank 模型</template>
+            </n-form-item>
+          </template>
+          <template v-else>
+            <n-form-item label="工具 - top_k">
+              <n-input-number v-model:value="toolTopK" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
+            </n-form-item>
+            <n-form-item label="工具 - 相似度阈值">
+              <n-input-number v-model:value="toolThreshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
+            </n-form-item>
+            <!-- Phase 4.6 检索增强（工具级独立开关） -->
+            <n-form-item label="工具 - 多查询扩展 MQE">
+              <n-switch v-model:value="toolMqeEnabled" />
+              <template #feedback>LLM 改写多个子问题多路检索；额外消耗 token</template>
+            </n-form-item>
+            <n-form-item v-if="toolMqeEnabled" label="工具 - MQE 子问题数">
+              <n-input-number v-model:value="toolMqeCount" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
+            </n-form-item>
+            <n-form-item label="工具 - 假设文档嵌入 HyDE">
+              <n-switch v-model:value="toolHydeEnabled" />
+              <template #feedback>LLM 生成假设回答文档再检索；额外消耗 token</template>
+            </n-form-item>
+            <n-form-item label="工具 - Rerank 精排">
+              <n-switch v-model:value="toolRerankEnabled" />
+              <template #feedback>粗召回后二次精排，提升相关性</template>
+            </n-form-item>
+          </template>
+        </n-collapse-item>
+
+        <!-- 模型配置：总结 / 增强 / Rerank -->
+        <n-collapse-item title="模型配置" name="models">
+          <n-form-item label="总结模型">
+            <n-select
+              v-model:value="formData.summary_llm_config_id"
+              :options="summaryOptions"
+              placeholder="跟随对话模型"
+            >
+              <template #empty>
+                <div style="padding: 8px">暂无 LLM 配置，请先到「模型配置」页创建</div>
+              </template>
+            </n-select>
+            <template #feedback>长对话自动总结时使用的模型；不选则跟随对话模型</template>
+          </n-form-item>
+
+          <n-form-item label="增强模型">
+            <n-select
+              v-model:value="formData.enhance_llm_config_id"
+              :options="enhanceOptions"
+              placeholder="跟随对话模型"
+            >
+              <template #empty>
+                <div style="padding: 8px">暂无 LLM 配置，请先到「模型配置」页创建</div>
+              </template>
+            </n-select>
+            <template #feedback>查询增强（MQE/HyDE）改写时使用的模型；不选则跟随对话模型</template>
+          </n-form-item>
+
+          <n-form-item v-if="showRerankModel" label="Rerank 模型">
+            <n-select
+              v-model:value="formData.rerank_config_id"
+              :options="rerankOptions"
+              placeholder="跟随全局默认"
+            >
+              <template #empty>
+                <div style="padding: 8px">暂无 Rerank 配置，请先到「模型配置」页创建（模型类型选 Rerank）</div>
+              </template>
+            </n-select>
+            <template #feedback>重排序使用的模型；不选则用系统默认（本地 bge-reranker-v2-m3）</template>
+          </n-form-item>
+        </n-collapse-item>
+
+        <!-- 生成参数：采样 / 欢迎语 / 提示词 -->
+        <n-collapse-item title="生成参数" name="generation">
+          <n-form-item label="采样 temperature">
+            <n-input-number v-model:value="formData.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" placeholder="默认 0.7" />
+          </n-form-item>
+          <n-form-item label="采样 top_p">
+            <n-input-number v-model:value="formData.top_p" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.9" />
+          </n-form-item>
+
+          <n-form-item label="欢迎语">
+            <n-input v-model:value="formData.welcome_message" placeholder="可选（浮窗展示用）" />
+          </n-form-item>
+
+          <n-form-item label="系统提示词">
+            <n-input v-model:value="formData.system_prompt" type="textarea" :autosize="{ minRows: 5, maxRows: 10 }" placeholder="留空使用默认模板" />
+          </n-form-item>
         </n-collapse-item>
       </n-collapse>
     </n-form>
