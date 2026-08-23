@@ -44,14 +44,28 @@
     <n-modal v-model:show="modalShow" :title="modalTitle" preset="card" style="width: 520px" :mask-closable="false">
       <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="100">
         <n-form-item label="厂商" path="provider">
-          <n-select
-            v-model:value="form.provider"
-            :options="providerOptions"
-            placeholder="选择或输入厂商（支持自定义）"
-            filterable
-            tag
-            @update:value="onProviderChange"
-          />
+          <n-space align="center" style="width: 100%">
+            <template v-if="providerMode === 'preset'">
+              <n-select
+                v-model:value="form.provider"
+                :options="providerOptions"
+                placeholder="选择预置厂商"
+                filterable
+                style="flex: 1"
+                @update:value="onProviderChange"
+              />
+              <n-button text type="primary" @click="switchToCustom">✏️ 自定义厂商</n-button>
+            </template>
+            <template v-else>
+              <n-input
+                v-model:value="form.provider"
+                placeholder="输入厂商名，如 openrouter"
+                style="flex: 1"
+              />
+              <n-button text @click="switchToPreset">使用预置</n-button>
+            </template>
+          </n-space>
+          <template #feedback>预置厂商由 config.yaml 定义；自定义厂商需填写接口地址</template>
         </n-form-item>
         <n-form-item v-if="form.provider" label="模型类型" path="model_type">
           <n-select
@@ -62,14 +76,23 @@
           />
         </n-form-item>
         <n-form-item v-if="form.provider" label="模型" path="model_name">
-          <n-select
-            v-model:value="form.model_name"
-            :options="filteredModelOptions"
-            placeholder="选择或输入模型名（支持自定义）"
-            filterable
-            tag
-            @update:value="onModelChange"
-          />
+          <template v-if="providerMode === 'preset'">
+            <n-select
+              v-model:value="form.model_name"
+              :options="filteredModelOptions"
+              placeholder="选择模型"
+              filterable
+              style="width: 100%"
+              @update:value="onModelChange"
+            />
+          </template>
+          <template v-else>
+            <n-input
+              v-model:value="form.model_name"
+              placeholder="输入模型名，如 gpt-4o"
+              style="width: 100%"
+            />
+          </template>
         </n-form-item>
         <n-form-item v-if="form.provider && form.provider !== 'local'" label="接口地址" path="base_url">
           <n-input v-model:value="form.base_url" placeholder="自定义厂商必填，如 https://api.example.com/v1" />
@@ -182,9 +205,28 @@ const form = ref({
   dimension: null as number | null,
 })
 
+// 厂商选择方式：preset=预置下拉 / custom=自定义输入（显式切换，避免看不出可输入）
+const providerMode = ref<'preset' | 'custom'>('preset')
+
+function switchToCustom() {
+  providerMode.value = 'custom'
+  form.value.provider = ''
+  form.value.model_name = ''
+  form.value.base_url = null
+  form.value.dimension = null
+}
+
+function switchToPreset() {
+  providerMode.value = 'preset'
+  form.value.provider = ''
+  form.value.model_name = ''
+  form.value.base_url = null
+  form.value.dimension = null
+}
+
 const rules: FormRules = {
-  provider: { required: true, message: '请选择厂商', trigger: 'change' },
-  model_name: { required: true, message: '请选择模型', trigger: 'change' },
+  provider: { required: true, message: '请选择或输入厂商', trigger: 'change' },
+  model_name: { required: true, message: '请选择或输入模型', trigger: 'change' },
   api_key: {
     message: '请输入 API Key',
     trigger: 'blur',
@@ -194,9 +236,18 @@ const rules: FormRules = {
       return true
     },
   },
+  base_url: {
+    message: '自定义厂商必须填写接口地址',
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (providerMode.value !== 'custom') return true
+      if (!value) return new Error('自定义厂商必须填写接口地址')
+      return true
+    },
+  },
 }
 
-// ── 厂商选项（去重）───────────────────
+// ── 厂商选项（仅预置厂商，去重；自定义走输入模式）──
 const providerOptions = computed<SelectOption[]>(() => {
   const seen = new Set<string>()
   return defaultModels.value
@@ -204,11 +255,8 @@ const providerOptions = computed<SelectOption[]>(() => {
     .map(m => ({ label: m.provider, value: m.provider }))
 })
 
-// ── 自定义厂商判定（不在预置列表）───
-const isCustomProvider = computed(() =>
-  !!form.value.provider &&
-  !defaultModels.value.some(m => m.provider === form.value.provider),
-)
+// ── 自定义厂商判定（自定义输入模式）───
+const isCustomProvider = computed(() => providerMode.value === 'custom')
 
 // ── 可选模型按类型分组（Embedding / LLM / Rerank）──
 const groupedDefaults = computed(() => {
@@ -302,13 +350,18 @@ async function fetchMyConfigs() {
 function openCreate() {
   editingId.value = null
   modalTitle.value = '添加配置'
-  form.value = { provider: '', model_name: '', model_type: 0, base_url: null, api_key: null, dimension: null }
+  providerMode.value = 'preset'
+  form.value = { provider: '', model_name: '', model_type: 1, base_url: null, api_key: null, dimension: null }
   modalShow.value = true
 }
 
 function openEdit(row: UserModelConfigItem) {
   editingId.value = row.id
   modalTitle.value = '编辑配置'
+  // 编辑回显：预置厂商用下拉，自定义厂商自动切输入模式
+  providerMode.value = defaultModels.value.some(m => m.provider === row.provider)
+    ? 'preset'
+    : 'custom'
   form.value = {
     provider: row.provider,
     model_name: row.model_name,
