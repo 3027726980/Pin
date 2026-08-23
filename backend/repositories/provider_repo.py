@@ -18,10 +18,12 @@ class ProviderRepo:
         user_id: UUID,
         name: str,
         protocol: str = "openai",
+        base_url: str | None = None,
         description: str | None = None,
     ) -> UserProviders:
         """创建自定义厂商（只 flush 不 commit）"""
-        p = UserProviders(user_id=user_id, name=name, protocol=protocol, description=description)
+        p = UserProviders(user_id=user_id, name=name, protocol=protocol,
+                          base_url=base_url, description=description)
         db.add(p)
         await db.flush()
         return p

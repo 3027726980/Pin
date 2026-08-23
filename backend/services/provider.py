@@ -62,7 +62,7 @@ class ProviderService:
             cfg_counts = dict((await db.execute(q)).all())
             result.extend([
                 ProviderResponse(
-                    id=p.id, name=p.name, protocol=p.protocol,
+                    id=p.id, name=p.name, protocol=p.protocol, base_url=p.base_url,
                     description=p.description, source="custom",
                     model_count=cfg_counts.get(p.name, 0),
                     created_at=p.created_at,
@@ -83,11 +83,12 @@ class ProviderService:
         if preset is not None:
             raise HTTPException(status_code=409, detail=f"厂商 {data.name} 是预置厂商，无需自定义")
 
-        p = await ProviderRepo.create(db, user.id, data.name, data.protocol, data.description)
+        p = await ProviderRepo.create(
+            db, user.id, data.name, data.protocol, data.base_url, data.description)
         await db.commit()
         await db.refresh(p)
         return ProviderResponse(
-            id=p.id, name=p.name, protocol=p.protocol,
+            id=p.id, name=p.name, protocol=p.protocol, base_url=p.base_url,
             description=p.description, source="custom", model_count=0,
             created_at=p.created_at,
         )
@@ -112,12 +113,13 @@ class ProviderService:
             db, p,
             name=data.name,
             protocol=data.protocol,
+            base_url=data.base_url,
             description=data.description,
         )
         await db.commit()
         await db.refresh(p)
         return ProviderResponse(
-            id=p.id, name=p.name, protocol=p.protocol,
+            id=p.id, name=p.name, protocol=p.protocol, base_url=p.base_url,
             description=p.description, source="custom", model_count=0,
             created_at=p.created_at,
         )

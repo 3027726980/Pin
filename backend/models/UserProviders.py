@@ -20,6 +20,9 @@ class UserProviders(Base):
     protocol: Mapped[str] = mapped_column(
         String(20), default="openai", nullable=False, comment="调用模式（协议）：openai 等"
     )
+    base_url: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, comment="厂商默认接口地址（自定义厂商必填，模型配置创建时自动继承，可覆盖）"
+    )
     description: Mapped[str | None] = mapped_column(
         String(200), nullable=True, comment="备注说明"
     )

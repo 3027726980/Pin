@@ -7,6 +7,7 @@ export interface ProviderItem {
   id: string | null
   name: string
   protocol: string
+  base_url: string | null
   description: string | null
   source: 'preset' | 'custom'
   model_count: number
@@ -16,12 +17,14 @@ export interface ProviderItem {
 export interface ProviderCreatePayload {
   name: string
   protocol?: string
+  base_url: string
   description?: string | null
 }
 
 export interface ProviderUpdatePayload {
   name?: string
   protocol?: string
+  base_url?: string
   description?: string | null
 }
 

@@ -169,6 +169,10 @@
           <n-select v-model:value="providerForm.protocol" :options="protocolOptions" />
           <template #feedback>目前仅支持 OpenAI 兼容模式；更多模式后续扩展</template>
         </n-form-item>
+        <n-form-item label="接口地址" path="base_url">
+          <n-input v-model:value="providerForm.base_url" placeholder="如 https://api.example.com/v1" />
+          <template #feedback>添加模型时自动继承，可在模型配置中修改</template>
+        </n-form-item>
         <n-form-item label="描述">
           <n-input v-model:value="providerForm.description" placeholder="可选" />
         </n-form-item>
@@ -300,8 +304,10 @@ function applyPresetModel(m: DefaultModelConfigItem) {
 
 function onProviderChange(_provider: string) {
   form.value.model_name = ''
-  form.value.base_url = null
   form.value.dimension = null
+  // 自定义厂商自动继承厂商 base_url（可修改）；预置厂商留空（选预置模型 chips 时带出）
+  const p = providers.value.find(x => x.name === form.value.provider)
+  form.value.base_url = p?.base_url || null
   const types = defaultModels.value
     .filter(m => m.provider === form.value.provider)
     .map(m => m.model_type)
@@ -325,6 +331,7 @@ const providerModalTitle = ref('添加厂商')
 const providerForm = ref({
   name: '',
   protocol: 'openai',
+  base_url: '',
   description: null as string | null,
 })
 const protocolOptions: SelectOption[] = [
@@ -333,19 +340,23 @@ const protocolOptions: SelectOption[] = [
 const providerRules: FormRules = {
   name: { required: true, message: '请输入厂商名', trigger: 'blur' },
   protocol: { required: true, message: '请选择调用模式', trigger: 'change' },
+  base_url: { required: true, message: '请输入接口地址', trigger: 'blur' },
 }
 
 function openProviderCreate() {
   providerEditingId.value = null
   providerModalTitle.value = '添加厂商'
-  providerForm.value = { name: '', protocol: 'openai', description: null }
+  providerForm.value = { name: '', protocol: 'openai', base_url: '', description: null }
   providerModalShow.value = true
 }
 
 function openProviderEdit(p: ProviderItem) {
   providerEditingId.value = p.id
   providerModalTitle.value = '编辑厂商'
-  providerForm.value = { name: p.name, protocol: p.protocol, description: p.description }
+  providerForm.value = {
+    name: p.name, protocol: p.protocol,
+    base_url: p.base_url || '', description: p.description,
+  }
   providerModalShow.value = true
 }
 
@@ -361,6 +372,7 @@ async function handleProviderSubmit() {
       await updateProvider(providerEditingId.value, {
         name: providerForm.value.name,
         protocol: providerForm.value.protocol,
+        base_url: providerForm.value.base_url,
         description: providerForm.value.description,
       })
       message.success('厂商已更新')
@@ -368,6 +380,7 @@ async function handleProviderSubmit() {
       const p = await createProvider({
         name: providerForm.value.name,
         protocol: providerForm.value.protocol,
+        base_url: providerForm.value.base_url,
         description: providerForm.value.description,
       })
       message.success('厂商已添加')

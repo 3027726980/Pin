@@ -563,6 +563,7 @@ CREATE TABLE IF NOT EXISTS user_providers (
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        VARCHAR(50) NOT NULL,
     protocol    VARCHAR(20) NOT NULL DEFAULT 'openai',
+    base_url    VARCHAR(500),
     description VARCHAR(200),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -573,6 +574,7 @@ COMMENT ON TABLE user_providers IS '用户自定义厂商表：前端可增删�
 COMMENT ON COLUMN user_providers.user_id IS '所属用户 ID';
 COMMENT ON COLUMN user_providers.name IS '厂商名（同用户下唯一）';
 COMMENT ON COLUMN user_providers.protocol IS '调用模式（协议）：openai 等';
+COMMENT ON COLUMN user_providers.base_url IS '厂商默认接口地址（自定义厂商必填，模型配置创建时自动继承，可覆盖）';
 COMMENT ON COLUMN user_providers.description IS '备注说明';
 
 -- ============================================================
