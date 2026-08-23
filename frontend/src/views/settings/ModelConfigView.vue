@@ -98,7 +98,7 @@
           <n-input v-model:value="form.base_url" placeholder="自定义厂商必填，如 https://api.example.com/v1" />
           <template v-if="isCustomProvider" #feedback>自定义厂商必须填写接口地址</template>
         </n-form-item>
-        <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key">
+        <n-form-item v-if="form.provider && form.provider !== 'local'" label="API Key" path="api_key" require-mark="true">
           <n-input v-model:value="form.api_key" type="password" show-password-on="click" placeholder="请输入 API Key" />
         </n-form-item>
         <n-form-item v-if="form.provider && form.model_type === 1" label="向量维度">
