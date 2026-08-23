@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import get_current_user
+from backend.core.config import settings
 from backend.core.database import get_db
 from backend.models import Users
 from backend.schemas.common import SuccessResponse
@@ -15,6 +16,14 @@ router = APIRouter(prefix="/api/v1/settings", tags=["系统设置"])
 class SettingBody(BaseModel):
     """设置更新请求体：value 为任意 JSON"""
     value: dict
+
+
+@router.get("/protocols", response_model=SuccessResponse[list[dict]], summary="调用模式（协议）列表", description="数据源：config.yaml protocols 节点（前端调用模式下拉用，新增模式零前端改动）")
+async def list_protocols(
+    user: Users = Depends(get_current_user),
+):
+    items = getattr(settings, "protocols", None) or []
+    return SuccessResponse(result=items)
 
 
 @router.get("", response_model=SuccessResponse[list[dict]], summary="设置列表")

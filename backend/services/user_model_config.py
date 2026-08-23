@@ -23,10 +23,22 @@ from backend.schemas.user_model_config import (
     ModelConfigTestResponse,
 )
 from backend.services.embedding import EmbeddingService
+from backend.core.config import settings
 from backend.services.llm import LLMService
 
 
 class UserModelConfigService:
+
+
+    @staticmethod
+    def _ensure_protocol(protocol: str | None) -> None:
+        """校验调用模式（协议）在 config.yaml protocols 节点内"""
+        if not protocol:
+            return
+        valid = {x.get("code") for x in getattr(settings, "protocols", None) or []}
+        if protocol not in valid:
+            raise HTTPException(
+                status_code=400, detail=f"不支持的调用模式: {protocol}（config.yaml protocols 节点可配置）")
 
     @staticmethod
     async def test_config(user: Users, data: UserModelConfigCreate) -> ModelConfigTestResponse:
@@ -131,6 +143,7 @@ class UserModelConfigService:
     @staticmethod
     async def create(db: AsyncSession, user: Users, data: UserModelConfigCreate) -> UserModelConfigResponse:
         await UserModelConfigService._ensure_base_url(db, data.provider, data.base_url)
+        UserModelConfigService._ensure_protocol(data.protocol)
         cfg = await UserModelConfigRepo.create(
             db,
             user_id=user.id,
@@ -197,6 +210,7 @@ class UserModelConfigService:
         if cfg is None or cfg.user_id != user.id:
             raise HTTPException(status_code=404, detail="配置不存在")
 
+        UserModelConfigService._ensure_protocol(data.protocol)
         # 仅当厂商变更时校验新厂商的 base_url（未变不重复校验）
         if data.provider is not None and data.provider != cfg.provider:
             await UserModelConfigService._ensure_base_url(db, data.provider, data.base_url)

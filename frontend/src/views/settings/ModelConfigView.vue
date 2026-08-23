@@ -206,6 +206,7 @@ import {
   deleteProvider,
   type ProviderItem,
 } from '@/api/providers'
+import { listProtocols, type ProtocolItem } from '@/api/settings'
 
 const message = useMessage()
 
@@ -213,6 +214,8 @@ const message = useMessage()
 const defaultModels = ref<DefaultModelConfigItem[]>([])
 const myConfigs = ref<UserModelConfigItem[]>([])
 const providers = ref<ProviderItem[]>([])
+// 调用模式（协议）：config.yaml protocols 节点，接口下发
+const protocolItems = ref<ProtocolItem[]>([])
 
 // ── 模型类型 ────────────────────────
 const modelTypes = ref<ModelTypeItem[]>([])
@@ -233,12 +236,18 @@ const isCustomProvider = computed(() =>
   providers.value.find(p => p.name === form.value.provider)?.source === 'custom',
 )
 
-// 调用模式选项：三种都展示（带适用类型说明），用户自由选择
-const protocolTypeOptions = computed<SelectOption[]>(() => [
-  { label: 'OpenAI 兼容（LLM / Embedding）', value: 'openai' },
-  { label: 'DashScope 原生（LLM / Embedding / Rerank）', value: 'dashscope' },
-  { label: '本地（Embedding / Rerank）', value: 'local' },
-])
+// 调用模式选项：config.yaml 配置 + 接口下发，不写死
+const protocolTypeOptions = computed<SelectOption[]>(() =>
+  protocolItems.value.map(p => ({
+    label: p.desc ? `${p.name}（${p.desc}）` : p.name,
+    value: p.code,
+  })),
+)
+
+// 厂商弹窗的调用模式选项（同源，简洁展示）
+const protocolOptions = computed<SelectOption[]>(() =>
+  protocolItems.value.map(p => ({ label: p.name, value: p.code })),
+)
 
 // 选中厂商时带出默认调用模式（aliyun→dashscope / local→local / 其他→openai）
 function defaultProtocolFor(providerName: string): string {
@@ -357,9 +366,6 @@ const providerForm = ref({
   base_url: '',
   description: null as string | null,
 })
-const protocolOptions: SelectOption[] = [
-  { label: 'OpenAI（兼容）', value: 'openai' },
-]
 const providerRules: FormRules = {
   name: { required: true, message: '请输入厂商名', trigger: 'blur' },
   protocol: { required: true, message: '请选择调用模式', trigger: 'change' },
@@ -587,6 +593,14 @@ async function fetchProviders() {
   }
 }
 
+async function fetchProtocols() {
+  try {
+    protocolItems.value = await listProtocols()
+  } catch {
+    protocolItems.value = []
+  }
+}
+
 async function fetchDefaults() {
   try {
     defaultModels.value = await listDefaultModels()
@@ -607,6 +621,7 @@ onMounted(() => {
   fetchProviders()
   fetchDefaults()
   fetchMyConfigs()
+  fetchProtocols()
   listModelTypes().then(list => { modelTypes.value = list }).catch(() => {})
 })
 </script>

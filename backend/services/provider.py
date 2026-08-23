@@ -24,6 +24,17 @@ from backend.schemas.providers import (
 class ProviderService:
 
     @staticmethod
+
+    @staticmethod
+    def _ensure_protocol(protocol: str | None) -> None:
+        """校验调用模式（协议）在 config.yaml protocols 节点内"""
+        if not protocol:
+            return
+        valid = {x.get("code") for x in getattr(settings, "protocols", None) or []}
+        if protocol not in valid:
+            raise HTTPException(
+                status_code=400, detail=f"不支持的调用模式: {protocol}（config.yaml protocols 节点可配置）")
+
     async def list_all(db: AsyncSession, user: Users) -> list[ProviderResponse]:
         """厂商合并列表：预置（config.yaml seed 的 model_providers）+ 自定义（user_providers）
 
@@ -75,6 +86,7 @@ class ProviderService:
     @staticmethod
     async def create(db: AsyncSession, user: Users, data: ProviderCreate) -> ProviderResponse:
         """添加自定义厂商（同用户下名称唯一；与预置厂商同名冲突也拒绝）"""
+        ProviderService._ensure_protocol(data.protocol)
         if await ProviderRepo.get_by_name(db, user.id, data.name):
             raise HTTPException(status_code=409, detail=f"厂商 {data.name} 已存在")
         # 与预置厂商重名冲突
@@ -97,6 +109,7 @@ class ProviderService:
     @staticmethod
     async def update(db: AsyncSession, user: Users, provider_id: UUID, data: ProviderUpdate) -> ProviderResponse:
         """编辑自定义厂商（名称变更时校验唯一）"""
+        ProviderService._ensure_protocol(data.protocol)
         p = await ProviderRepo.get_by_id(db, provider_id)
         if p is None or p.user_id != user.id:
             raise HTTPException(status_code=404, detail="厂商不存在")

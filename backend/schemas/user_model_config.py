@@ -16,8 +16,8 @@ class UserModelConfigCreate(BaseModel):
     base_url: str | None = Field(None, max_length=500)
     api_key: str | None = Field(None, max_length=500)
     dimension: int | None = None
-    protocol: Literal["openai", "dashscope", "local"] | None = Field(
-        None, description="调用模式（协议）：openai=OpenAI 兼容 / dashscope=DashScope 原生 / local=本地；空 = 按厂商推断")
+    protocol: str | None = Field(None, max_length=20,
+        description="调用模式（协议）：取自 config.yaml protocols 节点；空 = 按厂商推断")
     # ── Phase 4.8 采样参数（可空 = 未配置，Agent 未单独设置时生效）──
     temperature: float | None = Field(None, ge=0.0, le=2.0, description="采样温度，默认 0.7")
     top_p: float | None = Field(None, ge=0.0, le=1.0, description="核采样，默认 0.9")
@@ -33,8 +33,8 @@ class UserModelConfigUpdate(BaseModel):
     base_url: str | None = Field(None, max_length=500)
     api_key: str | None = Field(None, max_length=500)
     dimension: int | None = None
-    protocol: Literal["openai", "dashscope", "local"] | None = Field(
-        None, description="调用模式（协议）：openai / dashscope / local；空 = 按厂商推断")
+    protocol: str | None = Field(None, max_length=20,
+        description="调用模式（协议）：取自 config.yaml protocols 节点；空 = 按厂商推断")
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     top_p: float | None = Field(None, ge=0.0, le=1.0)
     max_tokens: int | None = Field(None, ge=1, le=1000000)

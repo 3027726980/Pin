@@ -40,6 +40,17 @@ export interface LogLevelInfo {
 }
 
 /** 查看各 logger 当前/初始级别 */
+export interface ProtocolItem {
+  code: string
+  name: string
+  desc?: string
+}
+
+/** 调用模式（协议）列表：config.yaml protocols 节点 */
+export function listProtocols(): Promise<ProtocolItem[]> {
+  return request.get('/v1/settings/protocols')
+}
+
 export function getLogLevels(): Promise<Record<string, LogLevelInfo>> {
   return request.get('/v1/debug/log-level')
 }

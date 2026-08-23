@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 class ProviderCreate(BaseModel):
     """添加自定义厂商"""
     name: str = Field(..., min_length=1, max_length=50, description="厂商名（同用户下唯一）")
-    protocol: Literal["openai"] = Field("openai", description="调用模式（协议）：目前仅 openai")
+    protocol: str = Field("openai", max_length=20, description="调用模式（协议）：取自 config.yaml protocols 节点")
     base_url: str = Field(..., max_length=500, description="厂商默认接口地址（必填）")
     description: str | None = Field(None, max_length=200)
 
@@ -19,7 +19,7 @@ class ProviderCreate(BaseModel):
 class ProviderUpdate(BaseModel):
     """编辑自定义厂商（全部可选）"""
     name: str | None = Field(None, min_length=1, max_length=50)
-    protocol: Literal["openai"] | None = None
+    protocol: str | None = Field(None, max_length=20)
     base_url: str | None = Field(None, max_length=500)
     description: str | None = Field(None, max_length=200)
 
