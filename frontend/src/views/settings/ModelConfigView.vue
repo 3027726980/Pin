@@ -312,12 +312,13 @@ function onProviderChange(_provider: string) {
     .filter(m => m.provider === form.value.provider)
     .map(m => m.model_type)
     .filter((v, i, a) => a.indexOf(v) === i)
-  form.value.model_type = types.length > 0 ? types[0] : 1
+  // 默认选 LLM（2），厂商没有 LLM 才选第一个类型
+  form.value.model_type = types.includes(2) ? 2 : (types.length > 0 ? types[0] : 2)
 }
 
 function onTypeChange(_typeCode: number) {
+  // 仅清空模型名与维度（预置 chips 随类型变化）；已填的 base_url / api_key 保留
   form.value.model_name = ''
-  form.value.base_url = null
   form.value.dimension = null
 }
 
@@ -412,7 +413,7 @@ function openModelCreate() {
   editingId.value = null
   modalTitle.value = '添加模型'
   form.value = {
-    provider: '', model_name: '', model_type: 1, base_url: null, api_key: null,
+    provider: '', model_name: '', model_type: 2, base_url: null, api_key: null,
     dimension: null, temperature: null, top_p: null, max_tokens: null,
   }
   modalShow.value = true
