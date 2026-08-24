@@ -348,10 +348,12 @@ class XxxTool(BaseTool):
 ```
 
 ```bash
-# 2. 保存文件即生效（后端 --reload 自动加载）
+# 2. 保存文件即生效（tool-defs 请求前自动目录同步，前端刷新即可见）
 # 3. 验证
 curl http://localhost:8000/api/v1/agents/tool-defs -H "Authorization: Bearer <token>"
 # → 新工具自动出现（含参数 Schema 与动态选项），前端表单自动渲染
+
+> **热更新语义**：新增/删除工具文件**即时生效**（tool-defs 每次请求前重新扫描磁盘目录，无需重启后端，前端点「刷新」即可见）；但**修改已有工具文件的代码**（改 description / 参数 / 逻辑）需要**重启后端**（Python 模块缓存机制，改文件不会自动重载）。
 ```
 
 #### 参数类型
