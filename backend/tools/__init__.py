@@ -13,6 +13,8 @@
 """
 from backend.tools.common.base import BaseTool
 from backend.tools.agent.rag import RAGTool
+from backend.tools.agent.plan import PlanTool
+from backend.tools.agent.reflect import ReflectTool
 from backend.core.utils import to_uuid
 from backend.schemas.agent import ToolConfig
 from fastapi import HTTPException
@@ -23,6 +25,8 @@ class ToolRegistry:
 
     TOOLS: dict[str, type] = {
         "rag": RAGTool,
+        "plan": PlanTool,
+        "reflect": ReflectTool,
     }
 
     # ═══════════════════════════════════════════════
@@ -116,4 +120,4 @@ class ToolRegistry:
         return result
 
 
-__all__ = ["BaseTool", "RAGTool", "ToolRegistry"]
+__all__ = ["BaseTool", "RAGTool", "PlanTool", "ReflectTool", "ToolRegistry"]
