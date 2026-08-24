@@ -19,9 +19,10 @@ from pydantic import BaseModel, Field
 # ── 工具配置（general Agent 用）─────────
 
 class ToolConfig(BaseModel):
-    """工具配置：MVP 仅 rag（知识库检索），扩展新工具时扩充 type 并加字段"""
-    type: Literal["rag"]
-    kb_id: UUID = Field(..., description="rag 工具绑定的知识库 ID")
+    """工具配置：type 由后端工具注册表动态定义（Phase 4.10 起不再静态枚举），
+    各工具参数由 param_schema 描述（kb_id 等字段以额外键传入，工具自行读取）"""
+    type: str = Field(..., description="工具类型（来自后端 ToolRegistry，如 rag）")
+    kb_id: UUID | None = Field(None, description="rag 工具绑定的知识库 ID（必填校验由 rag 的 validate_config 负责）")
     top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
     score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
     # ── Phase 4.6 检索增强（可空，空 → config.yaml 默认）──
@@ -30,6 +31,9 @@ class ToolConfig(BaseModel):
     mqe_query_count: int | None = Field(None, ge=2, le=5, description="MQE 改写子问题数，不传用 config.yaml tools.default_mqe_query_count")
     rerank_enabled: bool | None = Field(None, description="Rerank 精排开关，不传用 config.yaml tools.default_rerank_enabled")
     kb_name: str | None = Field(None, description="响应补全：知识库名称（请求时忽略）")
+
+    # 允许未声明字段（未来新工具的自有参数自动透传，前端 schema 驱动提交）
+    model_config = {"extra": "allow"}
 
 
 # ── 意图识别规则（general Agent 意图路由用）──
@@ -89,7 +93,7 @@ class GeneralAgentCreate(BaseModel):
     llm_config_id: UUID = Field(..., description="LLM 模型配置 ID（model_type=2）")
     summary_llm_config_id: UUID | None = Field(
         None, description="总结模型配置 ID（model_type=2）；空 = 跟随对话模型")
-    tools: list[ToolConfig] = Field(..., min_length=1, description="工具配置列表，至少一个工具")
+    tools: list[ToolConfig] = Field(..., description="工具配置列表，可空（纯对话 Agent）")
     enhance_llm_config_id: UUID | None = Field(
         None, description="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2）；空 = 跟随对话模型")
     rerank_config_id: UUID | None = Field(
@@ -124,7 +128,7 @@ class AgentUpdate(BaseModel):
     kb_id: UUID | None = Field(None, description="simple_rag 类型专用")
     top_k: int | None = Field(None, ge=1, le=50)
     score_threshold: float | None = Field(None, ge=0.0, le=1.0)
-    tools: list[ToolConfig] | None = Field(None, min_length=1, description="general 类型专用，整体替换")
+    tools: list[ToolConfig] | None = Field(None, description="general 类型专用，整体替换（可传空数组清空）")
     # ── Phase 4.6 检索增强 ──
     mqe_enabled: bool | None = None
     hyde_enabled: bool | None = None

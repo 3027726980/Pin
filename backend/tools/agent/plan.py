@@ -41,6 +41,8 @@ class PlanTool(BaseTool):
     type = "plan"
     description = PLAN_TOOL_DESCRIPTION
     name_ref_keys = {}
+    # 内置推理能力：不进 tool-defs 接口（前端走独立开关）
+    builtin = True
 
     @staticmethod
     async def validate_config(db, user, config: dict, **kwargs) -> None:

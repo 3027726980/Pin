@@ -67,6 +67,38 @@ class RAGTool(BaseTool):
     # 配置中的 kb_id 需要补全知识库名称（响应 kb_name）
     name_ref_keys = {"kb_id": "kb_name"}
 
+    # ── Phase 4.10 参数 Schema（前端动态表单渲染，与 ToolConfig 字段对齐）──
+    param_schema: list[dict] = [
+        {"key": "kb_id", "label": "知识库", "type": "select", "required": True,
+         "source": "knowledge_bases"},
+        {"key": "top_k", "label": "检索块数", "type": "number",
+         "default": 5, "min": 1, "max": 50},
+        {"key": "score_threshold", "label": "相似度阈值", "type": "number",
+         "default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05},
+        {"key": "mqe_enabled", "label": "多查询扩展 MQE", "type": "boolean",
+         "default": False},
+        {"key": "hyde_enabled", "label": "假设文档嵌入 HyDE", "type": "boolean",
+         "default": False},
+        {"key": "mqe_query_count", "label": "MQE 子问题数", "type": "number",
+         "default": 3, "min": 2, "max": 5},
+        {"key": "rerank_enabled", "label": "Rerank 精排", "type": "boolean",
+         "default": False},
+    ]
+
+    @staticmethod
+    async def fetch_options(db: AsyncSession, user: Users, source: str) -> list[dict]:
+        """select 参数动态选项：knowledge_bases → 当前用户启用状态的知识库列表
+
+        未知 source 返回 []（默认实现由 BaseTool 提供，本工具覆写）
+        """
+        if source != "knowledge_bases":
+            return []
+        rows, _ = await KnowledgeBaseRepo.list_by_user(db, user.id, 1, 200)
+        return [
+            {"label": kb.name, "value": str(kb.id)}
+            for kb in rows if kb.status == 1
+        ]
+
     @staticmethod
     async def validate_config(db: AsyncSession, user: Users, config: dict, **kwargs) -> None:
         """

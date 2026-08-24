@@ -74,6 +74,17 @@ async def get_agent_defaults(
     })
 
 
+@router.get("/tool-defs", response_model=SuccessResponse[list], summary="获取可用工具定义", description="工具注册表自动收集（过滤内置工具），含参数 Schema 与动态选项（select 由工具自身 fetch_options 填充）；前端据此渲染动态表单，新增工具无需改前端", include_in_schema=True)
+async def get_tool_defs(
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    from backend.tools import ToolRegistry
+
+    result = await ToolRegistry.collect_defs(db, user)
+    return SuccessResponse(result=result)
+
+
 @router.get("/{agent_id}", response_model=SuccessResponse[AgentResponse], summary="获取指定 Agent 的详细信息", description="包含绑定的知识库名称、LLM 配置摘要")
 async def get_agent(
     agent_id: UUID,

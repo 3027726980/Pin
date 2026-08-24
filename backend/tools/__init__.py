@@ -2,16 +2,18 @@
 工具包 — Agent 能力单元
 
 结构：
-  tools/__init__.py    ← ToolRegistry 注册表（统一调度：校验/构建/补全）
+  tools/__init__.py    ← ToolRegistry 注册表（统一调度：校验/构建/补全/定义收集）
   tools/common/        ← 通用工具类（BaseTool 抽象基类等）
-  tools/agent/         ← Agent 可注册的工具（rag 等）
+  tools/agent/         ← Agent 可注册的工具（rag / plan / reflect 等，目录扫描自动注册）
 
-新增工具流程（调用方零改动）：
-  1. tools/agent/ 下新建工具类（继承 BaseTool：type/description/name_ref_keys + validate_config/build_langchain/execute）
-  2. 在 ToolRegistry.TOOLS 注册 type → 工具类
-  3. schemas 中 ToolConfig.type 扩充对应 Literal 成员
+新增工具流程（Phase 4.10 起，调用方零改动）：
+  1. tools/agent/ 下新建工具类文件（继承 BaseTool：type/description/param_schema
+     + validate_config/build_langchain/execute；select 参数需要动态选项时覆写 fetch_options）
+  2. 完成 —— 自动注册（__init_subclass__ + 目录扫描）、tool-defs 接口、前端动态表单
+     全部自动生效，无需修改任何其他文件
 """
 from backend.tools.common.base import BaseTool
+# 显式 import（触发 tools/agent 目录扫描自动注册；本模块引用这些类供 ChatService 等使用）
 from backend.tools.agent.rag import RAGTool
 from backend.tools.agent.plan import PlanTool
 from backend.tools.agent.reflect import ReflectTool
@@ -21,13 +23,10 @@ from fastapi import HTTPException
 
 
 class ToolRegistry:
-    """工具注册表：按 type 统一调度工具的校验、LangChain 构建、响应补全"""
+    """工具注册表：按 type 统一调度工具的校验、构建、补全、定义收集"""
 
-    TOOLS: dict[str, type] = {
-        "rag": RAGTool,
-        "plan": PlanTool,
-        "reflect": ReflectTool,
-    }
+    # 自动注册表（BaseTool.__init_subclass__ 维护，import 即注册）
+    TOOLS: dict[str, type] = BaseTool._registry
 
     # ═══════════════════════════════════════════════
     # 内部
@@ -40,6 +39,39 @@ class ToolRegistry:
         if cls is None:
             raise HTTPException(status_code=400, detail=f"不支持的工具类型: {tool_type}")
         return cls
+
+    # ═══════════════════════════════════════════════
+    # 工具定义收集（GET /agents/tool-defs 时调用）
+    # ═══════════════════════════════════════════════
+
+    @staticmethod
+    async def collect_defs(db, user) -> list[dict]:
+        """
+        收集全部可配置工具定义（过滤 builtin），供前端动态表单渲染
+
+        每个工具：{type, description, params}；
+        select 参数调用工具类自身 fetch_options 填充选项（未知 source 返回空列表）。
+        """
+        result = []
+        for tool_type, cls in sorted(ToolRegistry.TOOLS.items()):
+            if getattr(cls, "builtin", False):
+                continue
+            params = []
+            for p in cls.param_schema or []:
+                p = dict(p)
+                if p.get("type") == "select" and p.get("source"):
+                    try:
+                        options = await cls.fetch_options(db, user, p["source"])
+                    except Exception:
+                        options = []
+                    p["options"] = options
+                params.append(p)
+            result.append({
+                "type": tool_type,
+                "description": cls.description,
+                "params": params,
+            })
+        return result
 
     # ═══════════════════════════════════════════════
     # 配置校验（创建/编辑 Agent 时调用）
