@@ -1,0 +1,224 @@
+# Pin 配置文件
+app:
+  name: Pin
+  version: "0.1.0"
+
+# 文件存储配置
+storage:
+  # 上传目录（相对于项目根目录）
+  upload_dir: uploads
+  # 单文件默认大小上限（字节），100MB = 104857600
+  default_max_file_size: 104857600
+
+# 本地模型配置（local 厂商使用，统一目录管理）
+local_models:
+  # 本地模型存储目录（embedding / rerank / llm 共用，按模型名建子目录）
+  cache_dir: backend/local_models
+  # 本地 Embedding 模型
+  embedding:
+    model_name: bge-small-zh-v1.5
+    dimension: 512
+  # 本地 Rerank 模型（需预下载到 <cache_dir>/<model_name>）
+  rerank:
+    model_name: BAAI/bge-reranker-v2-m3
+    device: cpu
+  # 本地 LLM 模型（预留：GGUF 等本地推理模型）
+#  llm:
+#    model_name:
+#    device:
+
+# Embedding 向量配置
+embedding:
+  # 最大向量维度（chunks 表 vector 类型固定值，小于此维度的模型零填充）
+  max_dimension: 4096
+  # 每批向量化条数
+  batch_size: 100
+
+# Agent 工具默认配置
+# Agent 未显式配置工具参数时使用以下默认值
+tools:
+  # rag 工具：检索返回块数
+  default_top_k: 5
+  # rag 工具：相似度阈值（余弦相似度，低于则丢弃）
+  default_score_threshold: 0.3
+  # ── Phase 4.6 检索增强（独立开关，按需开启节省 token）──
+  # 多查询扩展（MQE）：LLM 改写多个子问题多路召回（额外 LLM + 向量化消耗）
+  default_mqe_enabled: false
+  # 假设文档嵌入（HyDE）：LLM 生成假设回答文档作为检索线索（额外 LLM + 向量化消耗）
+  default_hyde_enabled: false
+  # MQE 改写子问题数（2~5）
+  default_mqe_query_count: 3
+  # Rerank 精排（粗召回 top_k*factor → 精排 top_k）
+  default_rerank_enabled: false
+  rerank:
+    # 粗召回倍数：top_k * factor → 精排 top_k（模型配置见 local_models.rerank）
+    factor: 5
+
+# ── 意图识别（general Agent 意图路由，Phase 4.10）──
+intent:
+  simple_max_length: 30          # 规则判 simple 的最大消息长度（超过升级 LLM 兜底分类）
+  simple_history_limit: 20       # simple 档保留的历史消息条数（0 = 不限）
+  simple_context_max_chars: 1500 # 最近一轮检索残留注入的最大字符数（0 = 不注入）
+  classify_temperature: 0.2      # LLM 兜底分类 / plan / reflect 的采样温度
+
+# 对话记忆 Checkpoint（基于 LangGraph + PostgreSQL）
+checkpoint:
+  # psycopg 异步连接串（注意与 database.url 的 asyncpg 格式不同）
+  url: postgresql://postgres:YOUR_PASSWORD@localhost:5432/pin_dev
+  # 每个会话保留最近 N 轮的 checkpoint（LangGraph 每轮会写多条快照且从不自动清理，
+  # 旧快照无人读取且含全量历史，属 O(N²) 死数据；对话结束时按此阈值清理）
+  keep_rounds: 5
+  # 短期记忆：消息总结（SummarizationMiddleware）
+  summarization:
+    # 是否启用总结中间件
+    enabled: true
+    # 消息数 ≥ 此值时触发总结
+    trigger_message_count: 20
+    # 总结后保留最近 N 条原文
+    keep_message_count: 4
+
+# 模型类型对照（code → 名称）
+model_types:
+  - code: 1
+    name: Embedding（向量化）
+  - code: 2
+    name: LLM（大语言模型）
+  - code: 3
+    name: Rerank（重排序）
+
+# 调用模式（协议）定义：前端「调用模式」下拉的数据来源
+# code 与后端实现注册表对应（LLM_IMPLEMENTATIONS / EMBEDDING_IMPLEMENTATIONS / RERANK_IMPLEMENTATIONS）
+# 新增模式 = config.yaml 加一项 + 后端注册表加实现，前端零改动
+protocols:
+  - code: openai
+    name: OpenAI 兼容
+    desc: LLM / Embedding
+  - code: dashscope
+    name: DashScope 原生
+    desc: LLM / Embedding / Rerank
+  - code: local
+    name: 本地
+    desc: Embedding / Rerank
+
+# 出厂预设厂商（启动时同步到 model_providers 表，前端「厂商」卡片展示）
+# protocol：调用模式（openai=OpenAI 兼容 API / local=本地模型）
+# base_url：厂商默认接口地址（模型配置创建时自动继承；模型可在 preset_models 中覆盖）
+preset_providers:
+  - name: local
+    protocol: local
+    base_url: ""
+  - name: aliyun
+    protocol: openai
+    base_url: https://dashscope.aliyuncs.com/api/v1
+  - name: deepseek
+    protocol: openai
+    base_url: https://api.deepseek.com
+
+# 出厂预设模型（启动时同步到 default_model_config 表，按厂商归属）
+# model_type：1=Embedding 2=LLM 3=Rerank；dimension 仅 Embedding 需要
+# base_url 可选：不填继承厂商默认，填了覆盖厂商默认（如不同模型的专用端点）
+preset_models:
+  - provider: local
+    model_name: bge-small-zh-v1.5
+    model_type: 1
+    dimension: 512
+  - provider: local
+    model_name: BAAI/bge-reranker-v2-m3
+    model_type: 3
+  - provider: aliyun
+    model_name: text-embedding-v1
+    model_type: 1
+    dimension: 1536
+  - provider: aliyun
+    model_name: text-embedding-v2
+    model_type: 1
+    base_url: https://dashscope.aliyuncs.com/api/v2
+    dimension: 1536
+  - provider: aliyun
+    model_name: text-rerank-v2
+    model_type: 3
+  - provider: deepseek
+    model_name: deepseek-v4-flash
+    model_type: 2
+
+# 数据库配置
+database:
+  # 数据库URL
+  url: postgresql+asyncpg://postgres:YOUR_PASSWORD@localhost:5432/pin_dev
+  # SQL 原生 echo 输出（不受日志体系控制，默认关闭；
+  # 需要看 SQL 时用日志级别接口把 sqlalchemy.engine 调到 INFO，走 sql.log 的 [SQL] 监听格式）
+  echo: False
+  # 连接池大小
+  pool_size: 10
+  # 溢出连接池大小
+  max_overflow: 20
+  # 连接池回收时间
+  pool_recycle: 600
+# 分页配置
+pagination:
+  # 默认页码
+  default_page: 1
+  # 默认每页数量
+  default_page_size: 20
+  # 最大每页数量
+  max_page_size: 100
+
+# JWT 配置
+jwt:
+  # 密钥
+  secret_key: change-me-in-production
+  # 加密算法
+  algorithm: HS256
+  # 访问令牌有效期
+  access_token_expire: 30   # 分钟
+  refresh_token_expire: 7   # 天
+# 初始管理员
+admin:
+  # 用户名
+  username: admin
+  # 密码
+  password: admin123
+
+# ── 日志调试系统（统一 logging 体系，详见 dev-docs/15）──
+logging:
+  # 日志目录（相对项目根，启动自动创建）
+  dir: logs
+  # 文件名模板：{{date}} 当前日期 / {{module}} 模块短名；非法字符自动清洗为 -
+  filename_template: "{{date}}-{{module}}.log"
+  # 默认级别
+  level: INFO
+  # 各模块初始级别（也是动态切换的还原基准）
+  levels:
+    backend.llm: INFO
+    backend.http: INFO
+    backend.services.llm: INFO
+    backend.services.chat: INFO
+    backend.tools: INFO
+    sqlalchemy.engine: WARNING
+    httpx: WARNING
+    uvicorn: WARNING
+    uvicorn.access: WARNING
+  # 分文件开关
+  separate_files:
+    llm: true
+    http: true
+    sql: true
+  # 轮转（所有文件统一）
+  rotation:
+    max_bytes_mb: 10
+    backup_count: -1            # -1=保留全部 / 0=不保留 / N=保留 N 个
+  # 定时清理（按日期目录）
+  cleanup:
+    enabled: true
+    retention_days: 30
+    time: "03:30"
+  # 控制台（分模块 + 彩色，仅开发）
+  console:
+    enabled: true
+    colors: true
+    modules:
+      backend.llm: false
+  # 脱敏总开关（默认值；实际规则存 system_settings.logging.redact_rules）
+  redact_sensitive: true
+  # HTTP 日志请求/响应体收集上限（字节，0 = 不收集）
+  http_body_max_bytes: 1048576
