@@ -39,11 +39,22 @@
       <!-- 工具配置（Schema 驱动动态表单：simple_rag 仅 rag 卡片强制启用，general 全部可选） -->
       <n-form-item label="工具" label-style="align-self: flex-start">
         <div class="tool-config-area">
-          <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
-            {{ formData.type === 'simple_rag'
-              ? '绑定知识库检索：在下方 rag 工具中配置知识库与检索参数。'
-              : '工具列表由后端自动发现；启用后按需填写参数，新增工具无需升级前端。' }}
-          </n-alert>
+          <div class="tool-config-header">
+            <n-alert type="info" :show-icon="false" style="flex: 1">
+              {{ formData.type === 'simple_rag'
+                ? '绑定知识库检索：在下方 rag 工具中配置知识库与检索参数。'
+                : '工具列表由后端自动发现；启用后按需填写参数，新增工具无需升级前端。' }}
+            </n-alert>
+            <n-button
+              size="small"
+              :loading="toolDefsLoading"
+              title="重新从后端获取工具列表（后端新增/删除工具后点击）"
+              @click="refreshToolDefs"
+            >
+              <template #icon><n-icon><Refresh /></n-icon></template>
+              刷新
+            </n-button>
+          </div>
           <div
             v-for="def in (formData.type === 'simple_rag' ? (ragDef ? [ragDef] : []) : toolDefs)"
             :key="def.type"
@@ -256,7 +267,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import type { FormInst, FormRules, SelectOption } from 'naive-ui'
-import { ChevronDown, ChevronForward } from '@vicons/ionicons5'
+import { ChevronDown, ChevronForward, Refresh } from '@vicons/ionicons5'
 import {
   createAgent,
   updateAgent,
@@ -422,6 +433,8 @@ function resetIntentRules() {
 
 // ── 工具配置（general：Schema 驱动动态表单）──
 const toolDefs = ref<ToolDef[]>([])
+// 工具列表加载中（刷新按钮 loading 态）
+const toolDefsLoading = ref(false)
 // 工具启用状态：{ [toolType]: boolean }
 const enabledTools = ref<Record<string, boolean>>({})
 // 工具卡片展开状态（独立于启用：未启用也可展开预览/预配置）：{ [toolType]: boolean }
@@ -459,10 +472,43 @@ function toggleTool(def: ToolDef, on: boolean) {
 }
 
 async function fetchToolDefs() {
+  toolDefsLoading.value = true
   try {
     toolDefs.value = await getToolDefs()
   } catch {
     toolDefs.value = []
+  } finally {
+    toolDefsLoading.value = false
+  }
+}
+
+/** 手动刷新工具列表：重新获取 + 移除已失效工具 + 用户提示（刷新按钮 / 新建 Agent 时调用） */
+async function refreshToolDefs() {
+  toolDefsLoading.value = true
+  try {
+    const defs = await getToolDefs()
+    // 已启用但后端已不存在的工具：从当前配置移除
+    const removed: string[] = []
+    for (const type of Object.keys(enabledTools.value)) {
+      if (enabledTools.value[type] && !defs.some(d => d.type === type)) {
+        removed.push(type)
+        delete enabledTools.value[type]
+        delete toolValues.value[type]
+        delete expandedTools.value[type]
+      }
+    }
+    toolDefs.value = defs
+    // simple_rag 的 rag 参数兜底初始化（如首次刷新才拿到 rag 定义）
+    if (formData.value.type === 'simple_rag' && ragDef.value && !toolValues.value['rag']) {
+      initToolValues(ragDef.value)
+    }
+    message.success(removed.length
+      ? `工具列表已刷新（已移除失效工具：${removed.join(', ')}）`
+      : '工具列表已刷新')
+  } catch (e) {
+    message.error((e as Error).message || '工具列表刷新失败')
+  } finally {
+    toolDefsLoading.value = false
   }
 }
 
@@ -724,6 +770,12 @@ async function fetchModelConfigs() {
 /* ── Phase 4.10：工具配置区（Schema 驱动动态表单）── */
 .tool-config-area {
   width: 100%;
+}
+.tool-config-header {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 12px;
 }
 .tool-card {
   border: 1px solid rgba(128, 128, 128, 0.2);
