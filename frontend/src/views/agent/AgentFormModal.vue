@@ -534,7 +534,6 @@ watch(
             else if (p.type === 'boolean') values[p.key] = false
           }
           toolValues.value['rag'] = values
-          expandedTools.value['rag'] = true  // 必选工具默认展开
         }
       } else {
         for (const t of e.tools || []) {
@@ -573,10 +572,9 @@ watch(
       enabledTools.value = {}
       expandedTools.value = {}
       toolValues.value = {}
-      // 新建默认 simple_rag：初始化 rag 工具默认参数（ToolParamForm 也有 default 兑底）
+      // 新建默认 simple_rag：初始化 rag 工具默认参数（ToolParamForm 也有 default 兑底），卡片默认收起
       if (ragDef.value) {
         initToolValues(ragDef.value)
-        expandedTools.value['rag'] = true  // 必选工具默认展开
       }
     }
   },
