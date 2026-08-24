@@ -1,4 +1,4 @@
-from sqlalchemy import Float, ForeignKey, SmallInteger, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid import UUID
@@ -37,6 +37,20 @@ class GeneralAgents(Base):
     tools: Mapped[list] = mapped_column(
         JSONB, default=list, nullable=False,
         comment='工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]',
+    )
+    # ── 意图路由 + 内置推理工具（Phase 4.10）──
+    intent_rules: Mapped[dict] = mapped_column(
+        JSONB, default=dict, nullable=False,
+        comment='意图识别规则集：[{"name": "问候语", "kind": "keyword", "keywords": [...], "target": "simple", "priority": 10}]',
+    )
+    intent_routing: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, comment="意图路由开关：false=纯 ReAct；true=规则+LLM 兜底分类"
+    )
+    plan_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, comment="注册 plan 工具（复杂任务规划）"
+    )
+    reflect_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, comment="注册 reflect 工具（答案反思）"
     )
     system_prompt: Mapped[str] = mapped_column(
         Text, nullable=False, comment="系统提示词（RAG 模板，可编辑）"

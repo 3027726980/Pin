@@ -419,6 +419,11 @@ CREATE TABLE IF NOT EXISTS general_agents (
     description     TEXT,
     llm_config_id   UUID          REFERENCES user_model_config(id) ON DELETE SET NULL,
     tools           JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    -- Phase 4.10：意图路由 + 内置推理工具
+    intent_rules    JSONB         NOT NULL DEFAULT '{"rules": []}'::jsonb,
+    intent_routing  BOOLEAN       NOT NULL DEFAULT FALSE,
+    plan_enabled    BOOLEAN       NOT NULL DEFAULT TRUE,
+    reflect_enabled BOOLEAN       NOT NULL DEFAULT TRUE,
     system_prompt   TEXT          NOT NULL,
     -- 采样参数可空（Phase 4.8）：空 = 跟随模型配置（模型未配置时默认 0.7/0.9）
     temperature     FLOAT,
