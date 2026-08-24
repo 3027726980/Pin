@@ -32,6 +32,26 @@ class ToolConfig(BaseModel):
     kb_name: str | None = Field(None, description="响应补全：知识库名称（请求时忽略）")
 
 
+# ── 意图识别规则（general Agent 意图路由用）──
+
+class IntentRule(BaseModel):
+    """意图识别规则：priority 升序执行，命中即返回 target"""
+    id: UUID | None = None
+    name: str = Field(..., min_length=1, max_length=100)
+    kind: Literal["keyword", "regex", "length"]
+    keywords: list[str] | None = Field(None, description="kind=keyword 时必填（任一命中即中）")
+    pattern: str | None = Field(None, description="kind=regex 时必填（正则表达式）")
+    max_length: int | None = Field(None, ge=1, le=10000, description="kind=length 时必填（消息长度上限）")
+    target: Literal["simple", "general"]
+    enabled: bool = True
+    priority: int = Field(100, ge=0, le=10000, description="越小越先执行")
+
+
+class IntentRules(BaseModel):
+    """意图识别规则集（Agent 级）"""
+    rules: list[IntentRule] = []
+
+
 # ── 创建请求（discriminated union）──────
 
 class SimpleRagAgentCreate(BaseModel):
@@ -79,6 +99,12 @@ class GeneralAgentCreate(BaseModel):
     top_p: float | None = Field(None, ge=0.0, le=1.0, description="核采样；空 = 跟随模型配置（模型也未配置时默认 0.9）")
     max_tokens: int | None = Field(None, ge=1, le=1000000, description="最大生成 token 数；空 = 跟随模型配置/厂商默认")
     welcome_message: str | None = Field(None, max_length=500)
+    # ── 意图路由 + 内置推理工具 ──
+    intent_rules: IntentRules | None = Field(
+        None, description="意图识别规则集；不传用全局模板 DEFAULT_INTENT_RULES")
+    intent_routing: bool = Field(False, description="意图路由开关；false=纯 ReAct（LLM 自我路由）")
+    plan_enabled: bool = Field(True, description="注册 plan 工具（复杂任务规划）")
+    reflect_enabled: bool = Field(True, description="注册 reflect 工具（答案反思）")
 
 
 AgentCreate = Annotated[
@@ -114,6 +140,12 @@ class AgentUpdate(BaseModel):
     max_tokens: int | None = Field(None, ge=1, le=1000000)
     welcome_message: str | None = Field(None, max_length=500)
     status: int | None = Field(None, ge=0, le=9)
+    # ── 意图路由 + 内置推理工具 ──
+    intent_rules: IntentRules | None = Field(
+        None, description="意图识别规则集整体替换；None=不修改")
+    intent_routing: bool | None = Field(None, description="意图路由开关")
+    plan_enabled: bool | None = Field(None, description="plan 工具开关")
+    reflect_enabled: bool | None = Field(None, description="reflect 工具开关")
     # ── 嵌入治理参数（agent_index 表，数据库动态可改）──
     rate_limit_per_min: int | None = Field(None, ge=1, le=10000,
                                            description="公开接口限流（次/分钟）")
@@ -157,6 +189,11 @@ class AgentResponse(BaseModel):
     rate_limit_per_min: int = 60
     allowed_domains: list[str] = []
     anonymous_retention_days: int = 30
+    # ── 意图路由 + 内置推理工具 ──
+    intent_rules: IntentRules = IntentRules()
+    intent_routing: bool = False
+    plan_enabled: bool = True
+    reflect_enabled: bool = True
     created_at: datetime
     updated_at: datetime
 
