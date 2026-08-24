@@ -8,6 +8,7 @@ async_engine = create_async_engine(
     echo=settings.database.echo,                    # 是否打印 SQL
     pool_size=settings.database.pool_size,          # 连接池大小
     max_overflow=settings.database.max_overflow,    # 连接池溢出大小
+    pool_pre_ping=True,                             # 取连接时验证存活（防 PG 断开空闲连接后复用失效连接）
 )
 
 # 创建异步会话工厂
