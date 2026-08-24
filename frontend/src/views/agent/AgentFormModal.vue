@@ -49,7 +49,7 @@
             :key="def.type"
             class="tool-card"
           >
-            <div class="tool-card-head" @click="toggleExpanded(def.type)">
+            <div class="tool-card-head" @click="toggleExpanded(def)">
               <n-switch
                 v-if="formData.type === 'general'"
                 v-model:value="enabledTools[def.type]"
@@ -429,9 +429,13 @@ const expandedTools = ref<Record<string, boolean>>({})
 // 工具参数值：{ [toolType]: { [paramKey]: value } }
 const toolValues = ref<Record<string, Record<string, any>>>({})
 
-/** 切换工具卡片展开/收起（点击卡片头部） */
-function toggleExpanded(type: string) {
-  expandedTools.value[type] = !expandedTools.value[type]
+/** 切换工具卡片展开/收起（点击卡片头部）；展开时若无参数值则用默认值初始化 */
+function toggleExpanded(def: ToolDef) {
+  const expanded = !expandedTools.value[def.type]
+  expandedTools.value[def.type] = expanded
+  if (expanded && !toolValues.value[def.type]) {
+    initToolValues(def)
+  }
 }
 
 /** 启用工具时用 param.default 初始化参数值 */
