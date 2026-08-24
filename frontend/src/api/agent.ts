@@ -10,8 +10,8 @@ import { TOKEN_KEY } from './request'
 export type AgentType = 'simple_rag' | 'general'
 
 export interface ToolConfig {
-  type: 'rag'
-  kb_id: string
+  type: string
+  kb_id: string | null
   top_k: number | null
   score_threshold: number | null
   // Phase 4.6 检索增强（可空 → config.yaml 默认）
@@ -20,6 +20,32 @@ export interface ToolConfig {
   mqe_query_count?: number | null
   rerank_enabled?: boolean | null
   kb_name?: string | null
+  // Phase 4.10：动态工具自有参数（schema 驱动，额外字段透传）
+  [key: string]: unknown
+}
+
+// ── Phase 4.10 工具定义（Schema 驱动动态表单）──
+
+export type ToolParamType = 'string' | 'textarea' | 'number' | 'boolean' | 'select'
+
+export interface ToolParamDef {
+  key: string
+  label: string
+  type: ToolParamType
+  required: boolean
+  default?: unknown
+  min?: number
+  max?: number
+  step?: number
+  placeholder?: string
+  source?: string
+  options?: { label: string; value: string }[]
+}
+
+export interface ToolDef {
+  type: string
+  description: string
+  params: ToolParamDef[]
 }
 
 // ── Phase 4.10 意图识别规则 ──
@@ -182,6 +208,11 @@ export function getAgentDefaults(): Promise<{
   default_rerank_enabled: boolean
 }> {
   return request.get('/v1/agents/defaults')
+}
+
+/** 获取可用工具定义（工具注册表自动收集，含参数 Schema 与动态选项；新增工具前端零改动） */
+export function getToolDefs(): Promise<ToolDef[]> {
+  return request.get('/v1/agents/tool-defs')
 }
 
 /** 获取 Agent 列表（type 可选筛选） */

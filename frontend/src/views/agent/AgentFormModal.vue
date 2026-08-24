@@ -40,13 +40,36 @@
       <n-form-item v-if="formData.type === 'simple_rag'" label="知识库" path="kb_id">
         <n-select v-model:value="formData.kb_id" :options="kbOptions" placeholder="选择绑定的知识库" />
       </n-form-item>
+      <!-- 工具配置（general：Schema 驱动动态表单） -->
       <template v-else>
-        <n-form-item label="工具 - 知识库" path="toolKbId">
-          <n-select v-model:value="toolKbId" :options="kbOptions" placeholder="rag 工具绑定的知识库" />
+        <n-form-item label="工具" label-style="align-self: flex-start">
+          <div class="tool-config-area">
+            <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
+              工具列表由后端自动发现；启用后按需填写参数，新增工具无需升级前端。
+            </n-alert>
+            <div
+              v-for="def in toolDefs"
+              :key="def.type"
+              class="tool-card"
+            >
+              <div class="tool-card-head">
+                <n-switch
+                  v-model:value="enabledTools[def.type]"
+                  size="small"
+                  @update:value="(v: boolean) => toggleTool(def, v)"
+                />
+                <span class="tool-card-name">{{ def.type }}</span>
+                <span class="tool-card-desc">{{ def.description }}</span>
+              </div>
+              <div v-if="enabledTools[def.type]" class="tool-card-params">
+                <ToolParamForm v-model="toolValues[def.type]" :def="def" />
+              </div>
+            </div>
+            <div v-if="!toolDefs.length" style="color: #999; font-size: 13px">
+              暂无可用工具（后端工具注册表为空）
+            </div>
+          </div>
         </n-form-item>
-        <n-alert type="info" :show-icon="false" style="margin-bottom: 16px">
-          general Agent 由 LLM 自主决定是否调用 rag 工具（知识库检索），可能多轮调用。
-        </n-alert>
       </template>
 
       <!-- ── 高级选项（默认折叠）────────── -->
@@ -81,28 +104,7 @@
             </n-form-item>
           </template>
           <template v-else>
-            <n-form-item label="工具 - top_k">
-              <n-input-number v-model:value="toolTopK" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
-            </n-form-item>
-            <n-form-item label="工具 - 相似度阈值">
-              <n-input-number v-model:value="toolThreshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
-            </n-form-item>
-            <!-- Phase 4.6 检索增强（工具级独立开关） -->
-            <n-form-item label="工具 - 多查询扩展 MQE">
-              <n-switch v-model:value="toolMqeEnabled" />
-              <template #feedback>LLM 改写多个子问题多路检索；额外消耗 token</template>
-            </n-form-item>
-            <n-form-item v-if="toolMqeEnabled" label="工具 - MQE 子问题数">
-              <n-input-number v-model:value="toolMqeCount" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
-            </n-form-item>
-            <n-form-item label="工具 - 假设文档嵌入 HyDE">
-              <n-switch v-model:value="toolHydeEnabled" />
-              <template #feedback>LLM 生成假设回答文档再检索；额外消耗 token</template>
-            </n-form-item>
-            <n-form-item label="工具 - Rerank 精排">
-              <n-switch v-model:value="toolRerankEnabled" />
-              <template #feedback>粗召回后二次精排，提升相关性</template>
-            </n-form-item>
+            <!-- general：工具参数已由 Schema 驱动表单承载（见上方工具配置区），此处不再重复 -->
           </template>
         </n-collapse-item>
 
@@ -279,13 +281,16 @@ import {
   createAgent,
   updateAgent,
   getAgentDefaults,
+  getToolDefs,
   type AgentDetail,
   type AgentCreatePayload,
   type ToolConfig,
+  type ToolDef,
   type IntentRule,
 } from '@/api/agent'
 import { listKnowledgeBases, type KnowledgeBaseListItem } from '@/api/knowledge'
 import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
+import ToolParamForm from './ToolParamForm.vue'
 
 const props = defineProps<{
   show: boolean
@@ -336,11 +341,11 @@ const rerankOptions = computed<SelectOption[]>(() =>
     .map(c => ({ label: `${c.provider} / ${c.model_name}`, value: c.id })),
 )
 
-// Rerank 模型选择器显隐：仅对应区块的 rerank 开关开启时显示
+// Rerank 模型选择器显隐：simple_rag 看自己的开关；general 看 rag 工具启用且参数 rerank_enabled
 const showRerankModel = computed(() =>
   formData.value.type === 'simple_rag'
     ? !!formData.value.rerank_enabled
-    : !!toolRerankEnabled.value,
+    : !!(enabledTools.value['rag'] && (toolValues.value['rag'] as any)?.rerank_enabled),
 )
 
 // ── 表单状态 ────────────────────────────
@@ -442,15 +447,37 @@ function resetIntentRules() {
   )
 }
 
-// general 工具配置（独立 state，提交时组装进 tools）
-const toolKbId = ref<string | null>(null)
-const toolTopK = ref<number | null>(null)
-const toolThreshold = ref<number | null>(null)
-// Phase 4.6 检索增强（工具级独立开关）
-const toolMqeEnabled = ref(false)
-const toolHydeEnabled = ref(false)
-const toolMqeCount = ref<number | null>(null)
-const toolRerankEnabled = ref(false)
+// ── 工具配置（general：Schema 驱动动态表单）──
+const toolDefs = ref<ToolDef[]>([])
+// 工具启用状态：{ [toolType]: boolean }
+const enabledTools = ref<Record<string, boolean>>({})
+// 工具参数值：{ [toolType]: { [paramKey]: value } }
+const toolValues = ref<Record<string, Record<string, any>>>({})
+
+/** 启用工具时用 param.default 初始化参数值 */
+function initToolValues(def: ToolDef) {
+  const values: Record<string, any> = {}
+  for (const p of def.params) {
+    if (p.default !== undefined) values[p.key] = p.default
+    else if (p.type === 'boolean') values[p.key] = false
+  }
+  toolValues.value[def.type] = values
+}
+
+/** 切换工具启用：开启时初始化默认值 */
+function toggleTool(def: ToolDef, on: boolean) {
+  if (on && !toolValues.value[def.type]) {
+    initToolValues(def)
+  }
+}
+
+async function fetchToolDefs() {
+  try {
+    toolDefs.value = await getToolDefs()
+  } catch {
+    toolDefs.value = []
+  }
+}
 
 const rules: FormRules = {
   name: { required: true, message: '请输入名称', trigger: 'blur' },
@@ -464,20 +491,11 @@ const rules: FormRules = {
     },
     trigger: 'change',
   },
-  toolKbId: {
-    validator: () => {
-      if (formData.value.type === 'general' && !toolKbId.value) {
-        return new Error('请选择工具绑定的知识库')
-      }
-      return true
-    },
-    trigger: 'change',
-  },
   rerank_config_id: {
     validator: () => {
       const enabled = formData.value.type === 'simple_rag'
         ? formData.value.rerank_enabled
-        : toolRerankEnabled.value
+        : showRerankModel.value
       if (enabled && !formData.value.rerank_config_id) {
         return new Error('开启 Rerank 必须选择 Rerank 模型')
       }
@@ -503,7 +521,7 @@ watch(
   () => props.show,
   async (val) => {
     if (!val) return
-    await Promise.all([fetchKbs(), fetchModelConfigs(), fetchDefaults()])
+    await Promise.all([fetchKbs(), fetchModelConfigs(), fetchDefaults(), fetchToolDefs()])
     if (props.editing) {
       const e = props.editing
       formData.value = {
@@ -531,14 +549,28 @@ watch(
         reflect_enabled: e.reflect_enabled ?? true,
       }
       intentRules.value = toEditableRules((e.intent_rules?.rules || []).map(r => ({ ...r })))
-      if (e.type === 'general' && e.tools.length > 0) {
-        toolKbId.value = e.tools[0].kb_id
-        toolTopK.value = e.tools[0].top_k
-        toolThreshold.value = e.tools[0].score_threshold
-        toolMqeEnabled.value = e.tools[0].mqe_enabled ?? false
-        toolHydeEnabled.value = e.tools[0].hyde_enabled ?? false
-        toolMqeCount.value = e.tools[0].mqe_query_count ?? null
-        toolRerankEnabled.value = e.tools[0].rerank_enabled ?? false
+      // 工具回填（Schema 驱动：按 tool-defs 匹配，未知工具提示将被移除）
+      enabledTools.value = {}
+      toolValues.value = {}
+      const unknownTools: string[] = []
+      for (const t of e.tools || []) {
+        const def = toolDefs.value.find(d => d.type === t.type)
+        if (!def) {
+          unknownTools.push(t.type)
+          continue
+        }
+        enabledTools.value[def.type] = true
+        const values: Record<string, any> = {}
+        for (const p of def.params) {
+          const v = (t as any)[p.key]
+          if (v !== undefined && v !== null) values[p.key] = v
+          else if (p.default !== undefined) values[p.key] = p.default
+          else if (p.type === 'boolean') values[p.key] = false
+        }
+        toolValues.value[def.type] = values
+      }
+      if (unknownTools.length) {
+        message.warning(`工具已不存在，保存后将移除：${unknownTools.join(', ')}`)
       }
     } else {
       formData.value = {
@@ -554,13 +586,8 @@ watch(
       intentRules.value = toEditableRules(
         DEFAULT_INTENT_RULE_TEMPLATE.map(r => ({ ...r })),
       )
-      toolKbId.value = null
-      toolTopK.value = null
-      toolThreshold.value = null
-      toolMqeEnabled.value = false
-      toolHydeEnabled.value = false
-      toolMqeCount.value = null
-      toolRerankEnabled.value = false
+      enabledTools.value = {}
+      toolValues.value = {}
     }
   },
 )
@@ -598,17 +625,20 @@ async function handleSubmit() {
     payload.mqe_query_count = formData.value.mqe_query_count
     payload.rerank_enabled = formData.value.rerank_enabled
   } else {
-    const tool: ToolConfig = {
-      type: 'rag',
-      kb_id: toolKbId.value!,
-      top_k: toolTopK.value,
-      score_threshold: toolThreshold.value,
-      mqe_enabled: toolMqeEnabled.value,
-      hyde_enabled: toolHydeEnabled.value,
-      mqe_query_count: toolMqeCount.value ?? undefined,
-      rerank_enabled: toolRerankEnabled.value,
+    // Schema 驱动组装：仅提交启用的工具（含必填参数校验）
+    const tools: ToolConfig[] = []
+    for (const def of toolDefs.value) {
+      if (!enabledTools.value[def.type]) continue
+      const values = toolValues.value[def.type] || {}
+      for (const p of def.params) {
+        if (p.required && (values[p.key] === undefined || values[p.key] === null || values[p.key] === '')) {
+          message.error(`工具「${def.type}」参数「${p.label}」为必填项`)
+          return
+        }
+      }
+      tools.push({ type: def.type, ...values } as ToolConfig)
     }
-    payload.tools = [tool]
+    payload.tools = tools
     // Phase 4.10 意图路由 + 内置推理工具
     payload.intent_routing = formData.value.intent_routing
     payload.plan_enabled = formData.value.plan_enabled
@@ -696,5 +726,38 @@ async function fetchModelConfigs() {
   flex-shrink: 0;
   font-size: 12px;
   color: #aaa;
+}
+/* ── Phase 4.10：工具配置区（Schema 驱动动态表单）── */
+.tool-config-area {
+  width: 100%;
+}
+.tool-card {
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: rgba(128, 128, 128, 0.04);
+}
+.tool-card-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.tool-card-name {
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.tool-card-desc {
+  color: #888;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card-params {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(128, 128, 128, 0.25);
 }
 </style>
