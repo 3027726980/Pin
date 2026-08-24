@@ -288,6 +288,10 @@ class GeneralAgentRepo:
         enhance_llm_config_id: UUID | None = None,
         rerank_config_id: UUID | None = None,
         max_tokens: int | None = None,
+        intent_rules: dict | None = None,
+        intent_routing: bool = False,
+        plan_enabled: bool = True,
+        reflect_enabled: bool = True,
     ) -> GeneralAgents:
         """
         创建综合 Agent 记录
@@ -309,6 +313,10 @@ class GeneralAgentRepo:
             enhance_llm_config_id=enhance_llm_config_id,
             rerank_config_id=rerank_config_id,
             max_tokens=max_tokens,
+            intent_rules=intent_rules or {},
+            intent_routing=intent_routing,
+            plan_enabled=plan_enabled,
+            reflect_enabled=reflect_enabled,
         )
         db.add(agent)
         await db.flush()
