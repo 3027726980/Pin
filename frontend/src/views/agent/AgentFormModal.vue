@@ -3,7 +3,7 @@
     v-model:show="show"
     :title="editing ? '编辑 Agent' : '新建 Agent'"
     preset="card"
-    style="width: 620px"
+    style="width: 780px"
     :mask-closable="false"
     @after-leave="resetForm"
   >
@@ -128,56 +128,61 @@
           <!-- 意图规则列表 -->
           <n-form-item label="识别规则" label-style="align-self: flex-start">
             <div style="width: 100%">
+              <!-- 每条规则：第一行属性（名称/判定/类型/优先级/开关），第二行条件输入占满 -->
               <div
                 v-for="(rule, i) in intentRules"
                 :key="i"
-                style="display: flex; gap: 6px; align-items: center; margin-bottom: 8px"
+                class="intent-rule-card"
               >
-                <n-input v-model:value="rule.name" size="small" placeholder="规则名" style="width: 90px" />
-                <n-select
-                  v-model:value="rule.target"
-                  size="small"
-                  style="width: 84px"
-                  :options="[
-                    { label: '→简单', value: 'simple' },
-                    { label: '→复杂', value: 'general' },
-                  ]"
-                />
-                <n-select
-                  v-model:value="rule.kind"
-                  size="small"
-                  style="width: 90px"
-                  :options="[
-                    { label: '关键词', value: 'keyword' },
-                    { label: '正则', value: 'regex' },
-                    { label: '长度', value: 'length' },
-                  ]"
-                />
-                <n-input
-                  v-if="rule.kind === 'keyword'"
-                  v-model:value="rule.keywordsText"
-                  size="small"
-                  placeholder="关键词，逗号分隔"
-                  style="flex: 1"
-                />
-                <n-input
-                  v-else-if="rule.kind === 'regex'"
-                  v-model:value="rule.pattern"
-                  size="small"
-                  placeholder="正则表达式"
-                  style="flex: 1"
-                />
-                <n-input-number
-                  v-else
-                  v-model:value="rule.max_length"
-                  size="small"
-                  :min="1"
-                  placeholder="长度上限"
-                  style="flex: 1"
-                />
-                <n-input-number v-model:value="rule.priority" size="small" :min="0" :max="10000" style="width: 72px" />
-                <n-switch v-model:value="rule.enabled" size="small" />
-                <n-button size="tiny" quaternary type="error" @click="removeIntentRule(i)">删</n-button>
+                <div class="intent-rule-row">
+                  <span class="intent-rule-idx">{{ i + 1 }}</span>
+                  <n-input v-model:value="rule.name" size="small" placeholder="规则名" style="width: 130px" />
+                  <n-select
+                    v-model:value="rule.target"
+                    size="small"
+                    style="width: 92px"
+                    :options="[
+                      { label: '→ 简单', value: 'simple' },
+                      { label: '→ 复杂', value: 'general' },
+                    ]"
+                  />
+                  <n-select
+                    v-model:value="rule.kind"
+                    size="small"
+                    style="width: 100px"
+                    :options="[
+                      { label: '关键词', value: 'keyword' },
+                      { label: '正则', value: 'regex' },
+                      { label: '长度', value: 'length' },
+                    ]"
+                  />
+                  <n-input-number v-model:value="rule.priority" size="small" :min="0" :max="10000" style="width: 88px" placeholder="优先级" />
+                  <span class="intent-rule-hint">启用</span>
+                  <n-switch v-model:value="rule.enabled" size="small" />
+                  <n-button size="tiny" quaternary type="error" @click="removeIntentRule(i)">删除</n-button>
+                </div>
+                <div class="intent-rule-row">
+                  <span class="intent-rule-idx"></span>
+                  <span class="cond-label">条件</span>
+                  <n-input
+                    v-if="rule.kind === 'keyword'"
+                    v-model:value="rule.keywordsText"
+                    size="small"
+                    placeholder="关键词，逗号分隔，任一命中即中（如：你好,hi,早上好）"
+                    style="flex: 1"
+                  />
+                  <n-input
+                    v-else-if="rule.kind === 'regex'"
+                    v-model:value="rule.pattern"
+                    size="small"
+                    placeholder="正则表达式（如：^\\d+$ 表示纯数字）"
+                    style="flex: 1"
+                  />
+                  <template v-else>
+                    <n-input-number v-model:value="rule.max_length" size="small" :min="1" placeholder="如 20" style="width: 200px" />
+                    <span class="cond-hint">消息长度 ≤ 该值即命中</span>
+                  </template>
+                </div>
               </div>
               <n-space>
                 <n-button size="small" dashed @click="addIntentRule">+ 添加规则</n-button>
@@ -650,3 +655,46 @@ async function fetchModelConfigs() {
   }
 }
 </script>
+
+<style scoped>
+/* ── Phase 4.10：意图规则编辑器排版 ── */
+.intent-rule-card {
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: rgba(128, 128, 128, 0.04);
+}
+.intent-rule-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.intent-rule-row + .intent-rule-row {
+  margin-top: 8px;
+}
+.intent-rule-idx {
+  width: 20px;
+  flex-shrink: 0;
+  text-align: center;
+  color: #999;
+  font-size: 12px;
+  font-weight: 600;
+}
+.intent-rule-hint {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #888;
+}
+.cond-label {
+  flex-shrink: 0;
+  width: 30px;
+  font-size: 12px;
+  color: #888;
+}
+.cond-hint {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #aaa;
+}
+</style>
