@@ -71,7 +71,11 @@ import type { ToolDef } from '@/api/agent'
 const props = defineProps<{ def: ToolDef }>()
 
 // v-model 参数值对象（直接读写 props 传入对象的属性，父组件持有的引用同步生效）
+// 防御：父组件异步重置时可能传入 undefined，此处兜底初始化为空对象
 const values = defineModel<Record<string, any>>({ required: true })
+if (!values.value) {
+  values.value = {}
+}
 
 // 未预填的参数用 default 兜底（父组件启用工具时已用 default 初始化，此处防御性补全）
 for (const param of props.def.params) {

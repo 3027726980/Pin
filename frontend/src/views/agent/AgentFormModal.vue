@@ -60,7 +60,7 @@
               <span class="tool-card-name">{{ def.type }}</span>
               <span class="tool-card-desc">{{ def.description }}</span>
             </div>
-            <div v-if="formData.type === 'simple_rag' || enabledTools[def.type]" class="tool-card-params">
+            <div v-if="(formData.type === 'simple_rag' || enabledTools[def.type]) && toolValues[def.type]" class="tool-card-params">
               <ToolParamForm v-model="toolValues[def.type]" :def="def" />
             </div>
           </div>
