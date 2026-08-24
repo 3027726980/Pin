@@ -36,77 +36,42 @@
         </n-select>
       </n-form-item>
 
-      <!-- 知识库（按类型） -->
-      <n-form-item v-if="formData.type === 'simple_rag'" label="知识库" path="kb_id">
-        <n-select v-model:value="formData.kb_id" :options="kbOptions" placeholder="选择绑定的知识库" />
-      </n-form-item>
-      <!-- 工具配置（general：Schema 驱动动态表单） -->
-      <template v-else>
-        <n-form-item label="工具" label-style="align-self: flex-start">
-          <div class="tool-config-area">
-            <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
-              工具列表由后端自动发现；启用后按需填写参数，新增工具无需升级前端。
-            </n-alert>
-            <div
-              v-for="def in toolDefs"
-              :key="def.type"
-              class="tool-card"
-            >
-              <div class="tool-card-head">
-                <n-switch
-                  v-model:value="enabledTools[def.type]"
-                  size="small"
-                  @update:value="(v: boolean) => toggleTool(def, v)"
-                />
-                <span class="tool-card-name">{{ def.type }}</span>
-                <span class="tool-card-desc">{{ def.description }}</span>
-              </div>
-              <div v-if="enabledTools[def.type]" class="tool-card-params">
-                <ToolParamForm v-model="toolValues[def.type]" :def="def" />
-              </div>
+      <!-- 工具配置（Schema 驱动动态表单：simple_rag 仅 rag 卡片强制启用，general 全部可选） -->
+      <n-form-item label="工具" label-style="align-self: flex-start">
+        <div class="tool-config-area">
+          <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
+            {{ formData.type === 'simple_rag'
+              ? '绑定知识库检索：在下方 rag 工具中配置知识库与检索参数。'
+              : '工具列表由后端自动发现；启用后按需填写参数，新增工具无需升级前端。' }}
+          </n-alert>
+          <div
+            v-for="def in (formData.type === 'simple_rag' ? (ragDef ? [ragDef] : []) : toolDefs)"
+            :key="def.type"
+            class="tool-card"
+          >
+            <div class="tool-card-head">
+              <n-switch
+                v-if="formData.type === 'general'"
+                v-model:value="enabledTools[def.type]"
+                size="small"
+                @update:value="(v: boolean) => toggleTool(def, v)"
+              />
+              <n-tag v-else size="small" type="primary" :bordered="false">必选</n-tag>
+              <span class="tool-card-name">{{ def.type }}</span>
+              <span class="tool-card-desc">{{ def.description }}</span>
             </div>
-            <div v-if="!toolDefs.length" style="color: #999; font-size: 13px">
-              暂无可用工具（后端工具注册表为空）
+            <div v-if="formData.type === 'simple_rag' || enabledTools[def.type]" class="tool-card-params">
+              <ToolParamForm v-model="toolValues[def.type]" :def="def" />
             </div>
           </div>
-        </n-form-item>
-      </template>
+          <div v-if="!toolDefs.length" style="color: #999; font-size: 13px">
+            暂无可用工具（后端工具注册表为空）
+          </div>
+        </div>
+      </n-form-item>
 
       <!-- ── 高级选项（默认折叠）────────── -->
       <n-collapse>
-        <!-- 检索配置：top_k / 阈值 / 检索增强开关 -->
-        <n-collapse-item title="检索配置" name="retrieval">
-          <n-alert type="warning" :show-icon="false" style="margin-bottom: 12px">
-            开启 MQE / HyDE 查询增强会<b>额外消耗 token</b>，并<b>增加单次对话的查询时间</b>；请按需开启。
-          </n-alert>
-          <template v-if="formData.type === 'simple_rag'">
-            <n-form-item label="检索块数 top_k">
-              <n-input-number v-model:value="formData.top_k" :min="1" :max="50" style="width: 100%" placeholder="默认 5" />
-            </n-form-item>
-            <n-form-item label="相似度阈值">
-              <n-input-number v-model:value="formData.score_threshold" :min="0" :max="1" :step="0.05" style="width: 100%" placeholder="默认 0.3" />
-            </n-form-item>
-            <!-- Phase 4.6 检索增强（独立开关，按需开启节省 token） -->
-            <n-form-item label="多查询扩展 MQE">
-              <n-switch v-model:value="formData.mqe_enabled" />
-              <template #feedback>LLM 将问题改写为多个子问题多路检索，提升召回；额外消耗 token</template>
-            </n-form-item>
-            <n-form-item v-if="formData.mqe_enabled" label="MQE 子问题数">
-              <n-input-number v-model:value="formData.mqe_query_count" :min="2" :max="5" style="width: 100%" placeholder="默认 3" />
-            </n-form-item>
-            <n-form-item label="假设文档嵌入 HyDE">
-              <n-switch v-model:value="formData.hyde_enabled" />
-              <template #feedback>LLM 先生成假设回答文档再检索，提升语义匹配；额外消耗 token</template>
-            </n-form-item>
-            <n-form-item label="Rerank 精排">
-              <n-switch v-model:value="formData.rerank_enabled" />
-              <template #feedback>粗召回后二次精排，提升相关性；需配置 Rerank 模型</template>
-            </n-form-item>
-          </template>
-          <template v-else>
-            <!-- general：工具参数已由 Schema 驱动表单承载（见上方工具配置区），此处不再重复 -->
-          </template>
-        </n-collapse-item>
 
         <!-- 意图路由 + 内置推理工具（仅 general） -->
         <n-collapse-item v-if="formData.type === 'general'" title="意图路由" name="intent">
@@ -341,11 +306,12 @@ const rerankOptions = computed<SelectOption[]>(() =>
     .map(c => ({ label: `${c.provider} / ${c.model_name}`, value: c.id })),
 )
 
-// Rerank 模型选择器显隐：simple_rag 看自己的开关；general 看 rag 工具启用且参数 rerank_enabled
+// rag 工具定义（simple_rag 强制启用；找不到时 simple_rag 表单提示无可用工具）
+const ragDef = computed(() => toolDefs.value.find(d => d.type === 'rag') || null)
+
+// Rerank 模型选择器显隐：两种类型都看 rag 工具参数 rerank_enabled
 const showRerankModel = computed(() =>
-  formData.value.type === 'simple_rag'
-    ? !!formData.value.rerank_enabled
-    : !!(enabledTools.value['rag'] && (toolValues.value['rag'] as any)?.rerank_enabled),
+  !!(toolValues.value['rag'] as any)?.rerank_enabled,
 )
 
 // ── 表单状态 ────────────────────────────
@@ -358,19 +324,11 @@ const formData = ref<AgentCreatePayload & { description: string; welcome_message
   description: '',
   llm_config_id: '',
   summary_llm_config_id: '',
-  kb_id: null,
-  top_k: null,
-  score_threshold: null,
   temperature: null,
   top_p: null,
   max_tokens: null,
   welcome_message: '',
   system_prompt: '',
-  // Phase 4.6 检索增强
-  mqe_enabled: false,
-  hyde_enabled: false,
-  mqe_query_count: 3,
-  rerank_enabled: false,
   enhance_llm_config_id: '',
   rerank_config_id: '',
   // Phase 4.10 意图路由
@@ -482,21 +440,9 @@ async function fetchToolDefs() {
 const rules: FormRules = {
   name: { required: true, message: '请输入名称', trigger: 'blur' },
   llm_config_id: { required: true, message: '请选择 LLM 模型', trigger: 'change' },
-  kb_id: {
-    validator: () => {
-      if (formData.value.type === 'simple_rag' && !formData.value.kb_id) {
-        return new Error('请选择知识库')
-      }
-      return true
-    },
-    trigger: 'change',
-  },
   rerank_config_id: {
     validator: () => {
-      const enabled = formData.value.type === 'simple_rag'
-        ? formData.value.rerank_enabled
-        : showRerankModel.value
-      if (enabled && !formData.value.rerank_config_id) {
+      if (showRerankModel.value && !formData.value.rerank_config_id) {
         return new Error('开启 Rerank 必须选择 Rerank 模型')
       }
       return true
@@ -530,18 +476,11 @@ watch(
         description: e.description || '',
         llm_config_id: e.llm_config_id,
         summary_llm_config_id: e.summary_llm_config_id || '',
-        kb_id: e.kb_id,
-        top_k: e.top_k,
-        score_threshold: e.score_threshold,
         temperature: e.temperature,
         top_p: e.top_p,
         max_tokens: e.max_tokens,
         welcome_message: e.welcome_message || '',
         system_prompt: e.system_prompt || '',
-        mqe_enabled: e.mqe_enabled,
-        hyde_enabled: e.hyde_enabled,
-        mqe_query_count: e.mqe_query_count,
-        rerank_enabled: e.rerank_enabled,
         enhance_llm_config_id: e.enhance_llm_config_id || '',
         rerank_config_id: e.rerank_config_id || '',
         intent_routing: e.intent_routing ?? false,
@@ -553,21 +492,36 @@ watch(
       enabledTools.value = {}
       toolValues.value = {}
       const unknownTools: string[] = []
-      for (const t of e.tools || []) {
-        const def = toolDefs.value.find(d => d.type === t.type)
-        if (!def) {
-          unknownTools.push(t.type)
-          continue
+      if (e.type === 'simple_rag') {
+        // simple_rag：表字段映射到 rag 工具参数
+        const def = ragDef.value
+        if (def) {
+          const values: Record<string, any> = {}
+          for (const p of def.params) {
+            const v = (e as any)[p.key]
+            if (v !== undefined && v !== null) values[p.key] = v
+            else if (p.default !== undefined) values[p.key] = p.default
+            else if (p.type === 'boolean') values[p.key] = false
+          }
+          toolValues.value['rag'] = values
         }
-        enabledTools.value[def.type] = true
-        const values: Record<string, any> = {}
-        for (const p of def.params) {
-          const v = (t as any)[p.key]
-          if (v !== undefined && v !== null) values[p.key] = v
-          else if (p.default !== undefined) values[p.key] = p.default
-          else if (p.type === 'boolean') values[p.key] = false
+      } else {
+        for (const t of e.tools || []) {
+          const def = toolDefs.value.find(d => d.type === t.type)
+          if (!def) {
+            unknownTools.push(t.type)
+            continue
+          }
+          enabledTools.value[def.type] = true
+          const values: Record<string, any> = {}
+          for (const p of def.params) {
+            const v = (t as any)[p.key]
+            if (v !== undefined && v !== null) values[p.key] = v
+            else if (p.default !== undefined) values[p.key] = p.default
+            else if (p.type === 'boolean') values[p.key] = false
+          }
+          toolValues.value[def.type] = values
         }
-        toolValues.value[def.type] = values
       }
       if (unknownTools.length) {
         message.warning(`工具已不存在，保存后将移除：${unknownTools.join(', ')}`)
@@ -576,11 +530,9 @@ watch(
       formData.value = {
         type: 'simple_rag', name: '', description: '', llm_config_id: '',
         summary_llm_config_id: '',
-        kb_id: null, top_k: null, score_threshold: null,
         temperature: null, top_p: null, max_tokens: null, welcome_message: '',
         system_prompt: defaults.value.system_prompt || '',
-        mqe_enabled: false, hyde_enabled: false, mqe_query_count: 3,
-        rerank_enabled: false, enhance_llm_config_id: '', rerank_config_id: '',
+        enhance_llm_config_id: '', rerank_config_id: '',
         intent_routing: false, plan_enabled: true, reflect_enabled: true,
       }
       intentRules.value = toEditableRules(
@@ -588,6 +540,10 @@ watch(
       )
       enabledTools.value = {}
       toolValues.value = {}
+      // 新建默认 simple_rag：初始化 rag 工具默认参数（ToolParamForm 也有 default 兑底）
+      if (ragDef.value) {
+        initToolValues(ragDef.value)
+      }
     }
   },
 )
@@ -617,13 +573,19 @@ async function handleSubmit() {
   }
 
   if (formData.value.type === 'simple_rag') {
-    payload.kb_id = formData.value.kb_id
-    payload.top_k = formData.value.top_k
-    payload.score_threshold = formData.value.score_threshold
-    payload.mqe_enabled = formData.value.mqe_enabled
-    payload.hyde_enabled = formData.value.hyde_enabled
-    payload.mqe_query_count = formData.value.mqe_query_count
-    payload.rerank_enabled = formData.value.rerank_enabled
+    // rag 工具参数 → 表字段映射（kb_id 必填校验）
+    const values = toolValues.value['rag'] || {}
+    if (!values.kb_id) {
+      message.error('请选择绑定的知识库')
+      return
+    }
+    payload.kb_id = values.kb_id
+    payload.top_k = values.top_k ?? null
+    payload.score_threshold = values.score_threshold ?? null
+    payload.mqe_enabled = values.mqe_enabled ?? false
+    payload.hyde_enabled = values.hyde_enabled ?? false
+    payload.mqe_query_count = values.mqe_query_count ?? 3
+    payload.rerank_enabled = values.rerank_enabled ?? false
   } else {
     // Schema 驱动组装：仅提交启用的工具（含必填参数校验）
     const tools: ToolConfig[] = []
