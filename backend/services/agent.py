@@ -12,6 +12,7 @@ Agent 业务逻辑（分类分表 + 索引表，统一入口）
 默认 system_prompt：不传时使用 RAG 模板（{agent_name} 占位替换）
 默认检索参数：top_k / score_threshold 不传时取 config.yaml tools 节点
 """
+import re
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -19,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
-from backend.core.constants import DEFAULT_SYSTEM_PROMPT
+from backend.core.constants import DEFAULT_INTENT_RULES, DEFAULT_SYSTEM_PROMPT
 from backend.models import GeneralAgents, KnowledgeBases, SimpleRagAgents, UserModelConfig, Users
 from backend.repositories import (
     AgentIndexRepo,
@@ -34,6 +35,7 @@ from backend.schemas.agent import (
     AgentResponse,
     AgentUpdate,
     GeneralAgentCreate,
+    IntentRules,
     SimpleRagAgentCreate,
     ToolConfig,
 )
@@ -234,6 +236,7 @@ class AgentService:
         else:
             if data.tools is not None:
                 await AgentService._ensure_tools(db, user, data.tools)
+            AgentService._validate_intent_rules(data.intent_rules)
             agent = await GeneralAgentRepo.update(
                 db, agent,
                 name=data.name,
@@ -250,6 +253,11 @@ class AgentService:
                 enhance_llm_config_id=data.enhance_llm_config_id,
                 rerank_config_id=data.rerank_config_id,
                 max_tokens=data.max_tokens,
+                intent_rules=(data.intent_rules.model_dump(mode="json")
+                              if data.intent_rules is not None else None),
+                intent_routing=data.intent_routing,
+                plan_enabled=data.plan_enabled,
+                reflect_enabled=data.reflect_enabled,
             )
 
         # 索引表基础字段同步
@@ -367,6 +375,7 @@ class AgentService:
     ) -> AgentResponse:
         """创建综合 Agent：校验工具列表，类型表 + 索引表双写（同 id）"""
         await AgentService._ensure_tools(db, user, data.tools)
+        AgentService._validate_intent_rules(data.intent_rules)
 
         prompt = data.system_prompt or DEFAULT_SYSTEM_PROMPT.replace("{agent_name}", data.name)
         agent = await GeneralAgentRepo.create(
@@ -384,6 +393,12 @@ class AgentService:
             enhance_llm_config_id=data.enhance_llm_config_id,
             rerank_config_id=data.rerank_config_id,
             max_tokens=data.max_tokens,
+            intent_rules=(data.intent_rules.model_dump(mode="json")
+                          if data.intent_rules is not None
+                          else DEFAULT_INTENT_RULES),
+            intent_routing=data.intent_routing,
+            plan_enabled=data.plan_enabled,
+            reflect_enabled=data.reflect_enabled,
         )
         # 索引表（id 共用）
         await AgentIndexRepo.create(
@@ -443,6 +458,27 @@ class AgentService:
         await ToolRegistry.validate_all(
             db, user, [t.model_dump(mode="json", exclude={"kb_name"}) for t in tools]
         )
+
+    @staticmethod
+    def _validate_intent_rules(rules: IntentRules | None) -> None:
+        """校验意图规则结构：kind 对应字段必填；regex 可编译
+
+        Raises: HTTPException 422
+        """
+        if rules is None:
+            return
+        for r in rules.rules:
+            if r.kind == "keyword" and not r.keywords:
+                raise HTTPException(status_code=422, detail=f"规则「{r.name}」缺少关键词")
+            if r.kind == "regex":
+                if not r.pattern:
+                    raise HTTPException(status_code=422, detail=f"规则「{r.name}」缺少正则")
+                try:
+                    re.compile(r.pattern)
+                except re.error:
+                    raise HTTPException(status_code=422, detail=f"规则「{r.name}」正则表达式非法")
+            if r.kind == "length" and r.max_length is None:
+                raise HTTPException(status_code=422, detail=f"规则「{r.name}」缺少长度上限")
 
     @staticmethod
     async def _ensure_kb(db: AsyncSession, user: Users, kb_id: UUID) -> None:
@@ -510,6 +546,10 @@ class AgentService:
             if refs.get("kb_id"):
                 ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
             resp.tools = ToolRegistry.enrich_tools(agent.tools, ref_names)
+            resp.intent_rules = IntentRules.model_validate(agent.intent_rules or {})
+            resp.intent_routing = agent.intent_routing
+            resp.plan_enabled = agent.plan_enabled
+            resp.reflect_enabled = agent.reflect_enabled
         return resp
 
     @staticmethod
