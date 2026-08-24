@@ -31,16 +31,40 @@ class BaseTool(ABC):
     _registry: dict[str, type] = {}
 
     def __init_subclass__(cls, **kwargs):
-        """子类定义时自动注册到 _registry（按 type 去重，后者覆盖并警告）"""
+        """子类定义时自动注册到 _registry（按 type 去重，后者覆盖并警告）
+
+        注册前校验：
+        - type 为空（辅助类/中间抽象类）→ 跳过，不视为工具
+        - 未实现抽象方法（validate_config/build_langchain/execute）→ WARNING + 拒绝注册
+        - type 重复 → WARNING + 后者覆盖
+
+        注意：__init_subclass__ 在类创建过程中调用，此时 cls.__abstractmethods__
+        尚未设置（ABCMeta 在类创建后才计算），须通过基类 BaseTool.__abstractmethods__
+        逐个检查子类是否覆写。
+        """
         super().__init_subclass__(**kwargs)
+        import logging
+        logger = logging.getLogger(__name__)
+
         tool_type = getattr(cls, "type", "")
-        if tool_type:
-            prev = BaseTool._registry.get(tool_type)
-            if prev is not None and prev is not cls:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "工具类型 %r 重复注册：%s 覆盖 %s", tool_type, cls, prev)
-            BaseTool._registry[tool_type] = cls
+        if not tool_type:
+            return  # 辅助类/中间抽象类，不视为工具
+        # 未实现抽象方法 → 拒绝注册（避免工具出现在列表但调用时崩溃）
+        missing = [
+            n for n in BaseTool.__abstractmethods__
+            if getattr(getattr(cls, n, None), "__isabstractmethod__", False)
+        ]
+        if missing:
+            logger.warning(
+                "工具类 %s 未实现抽象方法 %s，已跳过注册",
+                cls.__name__, sorted(missing))
+            return
+        prev = BaseTool._registry.get(tool_type)
+        if prev is not None and prev is not cls:
+            logger.warning(
+                "工具类型 %r 重复注册：%s 覆盖 %s", tool_type, cls, prev)
+        BaseTool._registry[tool_type] = cls
+        logger.info("工具已注册: type=%s class=%s", tool_type, cls.__name__)
 
     # 工具类型（注册表 key，与 schema 中 ToolConfig.type 对应）
     type: str = ""
@@ -112,10 +136,12 @@ class BaseTool(ABC):
         raise NotImplementedError
 
     @staticmethod
-    @abstractmethod
     def execute(db, user, config: dict, **kwargs):
         """
         工具核心执行逻辑（simple_rag 等代码控制场景直接调用）
+
+        非抽象方法：仅代码控制场景需要（如 rag 的预检索）；
+        纯 LLM 自主调用型工具（如 plan/reflect）无需实现。
 
         参数:
             db: AsyncSession
@@ -125,4 +151,4 @@ class BaseTool(ABC):
 
         返回: 工具输出（结构由各工具定义，如 rag 返回 list[Citation]）
         """
-        raise NotImplementedError
+        raise NotImplementedError("execute 未实现（仅代码控制场景需要，如 rag 预检索）")
