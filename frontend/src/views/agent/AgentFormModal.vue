@@ -49,18 +49,32 @@
             :key="def.type"
             class="tool-card"
           >
-            <div class="tool-card-head">
+            <div class="tool-card-head" @click="toggleExpanded(def.type)">
               <n-switch
                 v-if="formData.type === 'general'"
                 v-model:value="enabledTools[def.type]"
                 size="small"
+                @click.stop
                 @update:value="(v: boolean) => toggleTool(def, v)"
               />
               <n-tag v-else size="small" type="primary" :bordered="false">必选</n-tag>
               <span class="tool-card-name">{{ def.type }}</span>
               <span class="tool-card-desc">{{ def.description }}</span>
+              <span class="tool-card-toggle">
+                <n-icon size="14">
+                  <ChevronDown v-if="expandedTools[def.type]" />
+                  <ChevronForward v-else />
+                </n-icon>
+              </span>
             </div>
-            <div v-if="(formData.type === 'simple_rag' || enabledTools[def.type]) && toolValues[def.type]" class="tool-card-params">
+            <div v-if="expandedTools[def.type] && toolValues[def.type]" class="tool-card-params">
+              <n-alert
+                v-if="formData.type === 'general' && !enabledTools[def.type]"
+                type="warning" :show-icon="false" size="small"
+                style="margin-bottom: 10px"
+              >
+                该工具未启用，参数配置暂不生效；启用后再提交。
+              </n-alert>
               <ToolParamForm v-model="toolValues[def.type]" :def="def" />
             </div>
           </div>
@@ -242,6 +256,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import type { FormInst, FormRules, SelectOption } from 'naive-ui'
+import { ChevronDown, ChevronForward } from '@vicons/ionicons5'
 import {
   createAgent,
   updateAgent,
@@ -409,8 +424,15 @@ function resetIntentRules() {
 const toolDefs = ref<ToolDef[]>([])
 // 工具启用状态：{ [toolType]: boolean }
 const enabledTools = ref<Record<string, boolean>>({})
+// 工具卡片展开状态（独立于启用：未启用也可展开预览/预配置）：{ [toolType]: boolean }
+const expandedTools = ref<Record<string, boolean>>({})
 // 工具参数值：{ [toolType]: { [paramKey]: value } }
 const toolValues = ref<Record<string, Record<string, any>>>({})
+
+/** 切换工具卡片展开/收起（点击卡片头部） */
+function toggleExpanded(type: string) {
+  expandedTools.value[type] = !expandedTools.value[type]
+}
 
 /** 启用工具时用 param.default 初始化参数值 */
 function initToolValues(def: ToolDef) {
@@ -422,10 +444,13 @@ function initToolValues(def: ToolDef) {
   toolValues.value[def.type] = values
 }
 
-/** 切换工具启用：开启时初始化默认值 */
+/** 切换工具启用：开启时初始化默认值并自动展开 */
 function toggleTool(def: ToolDef, on: boolean) {
-  if (on && !toolValues.value[def.type]) {
-    initToolValues(def)
+  if (on) {
+    if (!toolValues.value[def.type]) {
+      initToolValues(def)
+    }
+    expandedTools.value[def.type] = true
   }
 }
 
@@ -490,6 +515,7 @@ watch(
       intentRules.value = toEditableRules((e.intent_rules?.rules || []).map(r => ({ ...r })))
       // 工具回填（Schema 驱动：按 tool-defs 匹配，未知工具提示将被移除）
       enabledTools.value = {}
+      expandedTools.value = {}
       toolValues.value = {}
       const unknownTools: string[] = []
       if (e.type === 'simple_rag') {
@@ -504,6 +530,7 @@ watch(
             else if (p.type === 'boolean') values[p.key] = false
           }
           toolValues.value['rag'] = values
+          expandedTools.value['rag'] = true  // 必选工具默认展开
         }
       } else {
         for (const t of e.tools || []) {
@@ -513,6 +540,7 @@ watch(
             continue
           }
           enabledTools.value[def.type] = true
+          expandedTools.value[def.type] = true  // 已启用的工具展开显示参数
           const values: Record<string, any> = {}
           for (const p of def.params) {
             const v = (t as any)[p.key]
@@ -539,10 +567,12 @@ watch(
         DEFAULT_INTENT_RULE_TEMPLATE.map(r => ({ ...r })),
       )
       enabledTools.value = {}
+      expandedTools.value = {}
       toolValues.value = {}
       // 新建默认 simple_rag：初始化 rag 工具默认参数（ToolParamForm 也有 default 兑底）
       if (ragDef.value) {
         initToolValues(ragDef.value)
+        expandedTools.value['rag'] = true  // 必选工具默认展开
       }
     }
   },
@@ -704,6 +734,20 @@ async function fetchModelConfigs() {
   display: flex;
   gap: 10px;
   align-items: center;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.tool-card-head:hover .tool-card-toggle {
+  color: #18a058;
+}
+.tool-card-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: #aaa;
+  transition: color 0.2s;
 }
 .tool-card-name {
   font-weight: 600;
