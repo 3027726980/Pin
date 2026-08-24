@@ -106,6 +106,90 @@
           </template>
         </n-collapse-item>
 
+        <!-- 意图路由 + 内置推理工具（仅 general） -->
+        <n-collapse-item v-if="formData.type === 'general'" title="意图路由" name="intent">
+          <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
+            开启后简单问题（问候/感谢/闲聊）走<b>零工具直接回答</b>，省 token、降低延迟；
+            复杂问题仍由 LLM 自主规划（plan）与反思（reflect）。规则可自定义。
+          </n-alert>
+          <n-form-item label="意图路由">
+            <n-switch v-model:value="formData.intent_routing" />
+            <template #feedback>关闭 = 纯 ReAct（所有问题由 LLM 自行判断）</template>
+          </n-form-item>
+          <n-form-item label="规划工具 plan">
+            <n-switch v-model:value="formData.plan_enabled" />
+            <template #feedback>复杂任务先制定分步计划再执行</template>
+          </n-form-item>
+          <n-form-item label="反思工具 reflect">
+            <n-switch v-model:value="formData.reflect_enabled" />
+            <template #feedback>生成答案前自动审查并修正</template>
+          </n-form-item>
+
+          <!-- 意图规则列表 -->
+          <n-form-item label="识别规则" label-style="align-self: flex-start">
+            <div style="width: 100%">
+              <div
+                v-for="(rule, i) in intentRules"
+                :key="i"
+                style="display: flex; gap: 6px; align-items: center; margin-bottom: 8px"
+              >
+                <n-input v-model:value="rule.name" size="small" placeholder="规则名" style="width: 90px" />
+                <n-select
+                  v-model:value="rule.target"
+                  size="small"
+                  style="width: 84px"
+                  :options="[
+                    { label: '→简单', value: 'simple' },
+                    { label: '→复杂', value: 'general' },
+                  ]"
+                />
+                <n-select
+                  v-model:value="rule.kind"
+                  size="small"
+                  style="width: 90px"
+                  :options="[
+                    { label: '关键词', value: 'keyword' },
+                    { label: '正则', value: 'regex' },
+                    { label: '长度', value: 'length' },
+                  ]"
+                />
+                <n-input
+                  v-if="rule.kind === 'keyword'"
+                  v-model:value="rule.keywordsText"
+                  size="small"
+                  placeholder="关键词，逗号分隔"
+                  style="flex: 1"
+                />
+                <n-input
+                  v-else-if="rule.kind === 'regex'"
+                  v-model:value="rule.pattern"
+                  size="small"
+                  placeholder="正则表达式"
+                  style="flex: 1"
+                />
+                <n-input-number
+                  v-else
+                  v-model:value="rule.max_length"
+                  size="small"
+                  :min="1"
+                  placeholder="长度上限"
+                  style="flex: 1"
+                />
+                <n-input-number v-model:value="rule.priority" size="small" :min="0" :max="10000" style="width: 72px" />
+                <n-switch v-model:value="rule.enabled" size="small" />
+                <n-button size="tiny" quaternary type="error" @click="removeIntentRule(i)">删</n-button>
+              </div>
+              <n-space>
+                <n-button size="small" dashed @click="addIntentRule">+ 添加规则</n-button>
+                <n-button size="small" dashed @click="resetIntentRules">恢复默认</n-button>
+              </n-space>
+              <div style="color: #888; font-size: 12px; margin-top: 8px">
+                按优先级从小到大执行，命中即判定；简单规则请保持保守（仅问候/感谢等），复杂规则可放宽。
+              </div>
+            </div>
+          </n-form-item>
+        </n-collapse-item>
+
         <!-- 模型配置：总结 / 增强 / Rerank -->
         <n-collapse-item title="模型配置" name="models">
           <n-form-item label="总结模型">
@@ -193,6 +277,7 @@ import {
   type AgentDetail,
   type AgentCreatePayload,
   type ToolConfig,
+  type IntentRule,
 } from '@/api/agent'
 import { listKnowledgeBases, type KnowledgeBaseListItem } from '@/api/knowledge'
 import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
@@ -278,7 +363,79 @@ const formData = ref<AgentCreatePayload & { description: string; welcome_message
   rerank_enabled: false,
   enhance_llm_config_id: '',
   rerank_config_id: '',
+  // Phase 4.10 意图路由
+  intent_routing: false,
+  plan_enabled: true,
+  reflect_enabled: true,
 })
+
+// 意图规则编辑态（keywordsText 为逗号分隔的编辑中间态，提交时 split）
+interface EditableIntentRule extends IntentRule {
+  keywordsText: string
+}
+
+const intentRules = ref<EditableIntentRule[]>([])
+
+/** 默认规则模板（与后端 DEFAULT_INTENT_RULES 对齐的展示副本，用于「恢复默认」） */
+const DEFAULT_INTENT_RULE_TEMPLATE: Array<Omit<EditableIntentRule, 'keywordsText'> & { keywords: string[] }> = [
+  { name: '检索意图', kind: 'keyword', keywords: ['查', '搜索', '检索', '看看', '找一下', '查询'], target: 'general', priority: 5, enabled: true },
+  { name: '对比分析', kind: 'keyword', keywords: ['对比', '比较', '分析', '评估', '优缺点', '区别', '差异'], target: 'general', priority: 5, enabled: true },
+  { name: '任务规划', kind: 'keyword', keywords: ['规划', '方案', '计划', '步骤', '流程', '怎么做', '如何', '帮我'], target: 'general', priority: 5, enabled: true },
+  { name: '数据类', kind: 'keyword', keywords: ['数据', '统计', '报表', '指标', '趋势'], target: 'general', priority: 5, enabled: true },
+  { name: '问候语', kind: 'keyword', keywords: ['你好', '您好', 'hi', 'hello', '嗨', '哈喽', '早上好', '中午好', '下午好', '晚上好'], target: 'simple', priority: 10, enabled: true },
+  { name: '感谢语', kind: 'keyword', keywords: ['谢谢', '感谢', '辛苦了', '多谢'], target: 'simple', priority: 20, enabled: true },
+  { name: '告别语', kind: 'keyword', keywords: ['再见', '拜拜', '晚安'], target: 'simple', priority: 30, enabled: true },
+  { name: '简短肯定', kind: 'keyword', keywords: ['好的', '可以', '明白了', '知道了', 'ok', '嗯'], target: 'simple', priority: 40, enabled: true },
+]
+
+/** 后端 IntentRules → 编辑态 */
+function toEditableRules(rules: IntentRule[]): EditableIntentRule[] {
+  return rules.map(r => ({
+    ...r,
+    keywordsText: (r.keywords || []).join(','),
+  }))
+}
+
+/** 编辑态 → 提交 payload（keywordsText 转数组，空规则剔除） */
+function toPayloadRules(): IntentRule[] {
+  return intentRules.value
+    .map(r => ({
+      id: r.id,
+      name: r.name,
+      kind: r.kind,
+      keywords: r.kind === 'keyword' ? r.keywordsText.split(/[,，]/).map(s => s.trim()).filter(Boolean) : null,
+      pattern: r.kind === 'regex' ? r.pattern || null : null,
+      max_length: r.kind === 'length' ? r.max_length ?? null : null,
+      target: r.target,
+      enabled: r.enabled,
+      priority: r.priority,
+    }))
+    .filter(r => r.name.trim())
+}
+
+function addIntentRule() {
+  intentRules.value.push({
+    id: null,
+    name: '',
+    kind: 'keyword',
+    keywordsText: '',
+    pattern: null,
+    max_length: null,
+    target: 'simple',
+    enabled: true,
+    priority: 100,
+  })
+}
+
+function removeIntentRule(i: number) {
+  intentRules.value.splice(i, 1)
+}
+
+function resetIntentRules() {
+  intentRules.value = toEditableRules(
+    DEFAULT_INTENT_RULE_TEMPLATE.map(r => ({ ...r })),
+  )
+}
 
 // general 工具配置（独立 state，提交时组装进 tools）
 const toolKbId = ref<string | null>(null)
@@ -364,7 +521,11 @@ watch(
         rerank_enabled: e.rerank_enabled,
         enhance_llm_config_id: e.enhance_llm_config_id || '',
         rerank_config_id: e.rerank_config_id || '',
+        intent_routing: e.intent_routing ?? false,
+        plan_enabled: e.plan_enabled ?? true,
+        reflect_enabled: e.reflect_enabled ?? true,
       }
+      intentRules.value = toEditableRules((e.intent_rules?.rules || []).map(r => ({ ...r })))
       if (e.type === 'general' && e.tools.length > 0) {
         toolKbId.value = e.tools[0].kb_id
         toolTopK.value = e.tools[0].top_k
@@ -383,7 +544,11 @@ watch(
         system_prompt: defaults.value.system_prompt || '',
         mqe_enabled: false, hyde_enabled: false, mqe_query_count: 3,
         rerank_enabled: false, enhance_llm_config_id: '', rerank_config_id: '',
+        intent_routing: false, plan_enabled: true, reflect_enabled: true,
       }
+      intentRules.value = toEditableRules(
+        DEFAULT_INTENT_RULE_TEMPLATE.map(r => ({ ...r })),
+      )
       toolKbId.value = null
       toolTopK.value = null
       toolThreshold.value = null
@@ -439,6 +604,11 @@ async function handleSubmit() {
       rerank_enabled: toolRerankEnabled.value,
     }
     payload.tools = [tool]
+    // Phase 4.10 意图路由 + 内置推理工具
+    payload.intent_routing = formData.value.intent_routing
+    payload.plan_enabled = formData.value.plan_enabled
+    payload.reflect_enabled = formData.value.reflect_enabled
+    payload.intent_rules = { rules: toPayloadRules() }
   }
 
   submitting.value = true

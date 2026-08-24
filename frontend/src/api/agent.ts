@@ -22,6 +22,27 @@ export interface ToolConfig {
   kb_name?: string | null
 }
 
+// ── Phase 4.10 意图识别规则 ──
+
+export type IntentRuleKind = 'keyword' | 'regex' | 'length'
+export type IntentTarget = 'simple' | 'general'
+
+export interface IntentRule {
+  id?: string | null
+  name: string
+  kind: IntentRuleKind
+  keywords?: string[] | null
+  pattern?: string | null
+  max_length?: number | null
+  target: IntentTarget
+  enabled: boolean
+  priority: number
+}
+
+export interface IntentRules {
+  rules: IntentRule[]
+}
+
 export interface AgentListItem {
   id: string
   type: AgentType
@@ -57,6 +78,11 @@ export interface AgentDetail extends AgentListItem {
   rate_limit_per_min: number
   allowed_domains: string[]
   anonymous_retention_days: number
+  // ── Phase 4.10 意图路由 + 内置推理工具 ──
+  intent_rules: IntentRules
+  intent_routing: boolean
+  plan_enabled: boolean
+  reflect_enabled: boolean
   updated_at: string
 }
 
@@ -82,6 +108,11 @@ export interface AgentCreatePayload {
   rerank_enabled?: boolean
   enhance_llm_config_id?: string | null
   rerank_config_id?: string | null
+  // ── Phase 4.10 意图路由 + 内置推理工具 ──
+  intent_rules?: IntentRules
+  intent_routing?: boolean
+  plan_enabled?: boolean
+  reflect_enabled?: boolean
 }
 
 export type AgentUpdatePayload = Partial<AgentCreatePayload> & {
@@ -114,6 +145,7 @@ export interface ChatCitation {
 export interface ChatDebug {
   queries?: string[]
   rerank?: { enabled: boolean; provider?: string | null; model?: string | null }
+  intent?: 'simple' | 'general'
 }
 
 export interface ChatResult {
@@ -131,6 +163,9 @@ export type ChatEvent =
   | { type: 'delta'; content: string }
   | { type: 'citations'; citations: ChatCitation[] }
   | { type: 'debug'; debug: ChatDebug }
+  | { type: 'intent'; intent: 'simple' | 'general' }
+  | { type: 'plan'; plan: string }
+  | { type: 'reflect'; suggestions: string }
   | { type: 'done' }
   | { type: 'error'; code: number; message: string; suggestion?: ChatSuggestion | null }
 

@@ -47,6 +47,23 @@
           </template>
           <!-- 正常内容：分段渲染（文本 + [N] 可点击引用标注） -->
           <template v-else>
+          <!-- Phase 4.10：意图标签（轻量/完整模式） -->
+          <div v-if="msg.intentLabel" class="intent-tag-row">
+            <n-tag size="tiny" :type="msg.intentLabel === 'simple' ? 'success' : 'warning'" :bordered="false">
+              {{ msg.intentLabel === 'simple' ? '⚡ 轻量模式' : '🛠 完整模式' }}
+            </n-tag>
+          </div>
+          <!-- Phase 4.10：规划 / 反思过程展示（可折叠） -->
+          <div v-if="msg.plan || msg.reflect" class="msg-process">
+            <n-collapse>
+              <n-collapse-item v-if="msg.plan" title="📋 执行计划" name="plan">
+                <pre class="process-content">{{ msg.plan }}</pre>
+              </n-collapse-item>
+              <n-collapse-item v-if="msg.reflect" title="🔍 反思建议" name="reflect">
+                <pre class="process-content">{{ msg.reflect }}</pre>
+              </n-collapse-item>
+            </n-collapse>
+          </div>
           <div class="msg-content">
             <template v-for="(part, i) in splitRefs(msg.content)" :key="i">
               <span v-if="part.type === 'text'">{{ part.value }}</span>
@@ -248,6 +265,13 @@ interface DisplayMessage extends ChatMessage {
   expandedCitations?: Record<number, boolean>
   /** 引用面板是否展开 */
   refPanelExpanded?: boolean
+  // ── Phase 4.10 意图路由展示 ──
+  /** 意图判定结果（simple=轻量模式 / general=完整模式） */
+  intentLabel?: 'simple' | 'general' | null
+  /** plan 工具输出（计划内容） */
+  plan?: string | null
+  /** reflect 工具输出（反思建议） */
+  reflect?: string | null
 }
 
 const route = useRoute()
@@ -440,6 +464,7 @@ async function doRequest(
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
       assistantMsg.debug = res.debug || null
+      assistantMsg.intentLabel = res.debug?.intent || null
     } catch (e) {
       const err = e as Error & { suggestion?: ChatSuggestion | null }
       handleChatError(assistantMsg, err.message, err.suggestion, text, conversationId)
@@ -464,6 +489,17 @@ async function doRequest(
             currentStage.value = 'generating'
           }
           assistantMsg.content += event.content
+          scrollBottom()
+        } else if (event.type === 'intent') {
+          // Phase 4.10：意图判定结果展示
+          assistantMsg.intentLabel = event.intent
+        } else if (event.type === 'plan') {
+          // Phase 4.10：规划过程展示
+          assistantMsg.plan = event.plan
+          scrollBottom()
+        } else if (event.type === 'reflect') {
+          // Phase 4.10：反思过程展示
+          assistantMsg.reflect = event.suggestions
           scrollBottom()
         } else if (event.type === 'citations') {
           // 仅保留回答中实际引用（[N]）的条目，未引用的不展示
@@ -677,6 +713,25 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
 </script>
 
 <style scoped>
+/* ── Phase 4.10：意图标签 / 规划反思过程展示 ── */
+.intent-tag-row {
+  margin-bottom: 6px;
+}
+.msg-process {
+  margin-bottom: 8px;
+}
+.process-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #666;
+  background: rgba(128, 128, 128, 0.06);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
 .chat-page {
   display: flex;
   flex-direction: column;
