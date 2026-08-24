@@ -29,6 +29,54 @@ class ToolRegistry:
     TOOLS: dict[str, type] = BaseTool._registry
 
     # ═══════════════════════════════════════════════
+    # 目录同步（tool-defs 每次请求前调用：磁盘为真实状态，不依赖 reload）
+    # ═══════════════════════════════════════════════
+
+    @staticmethod
+    def sync_from_disk() -> None:
+        """重新扫描 tools/agent/ 目录，同步注册表：
+
+        - 磁盘上有新模块（新增工具文件）→ import 注册
+        - 磁盘上已删除的模块（工具文件被删）→ 注销其工具并从 sys.modules 移除
+          （允许同名重建后重新加载）
+
+        解决：运行时增删工具文件后，前端刷新 tool-defs 能即时反映，无需重启后端。
+        """
+        import importlib
+        import logging
+        import pkgutil
+        import sys
+
+        from backend.tools import agent as agent_pkg
+
+        logger = logging.getLogger(__name__)
+
+        # 1. 磁盘上当前的模块名
+        disk_modules = {m.name for m in pkgutil.iter_modules(agent_pkg.__path__)}
+        # 2. 新增模块 → import（触发 __init_subclass__ 自动注册）
+        for name in sorted(disk_modules):
+            full = f"{agent_pkg.__name__}.{name}"
+            if full not in sys.modules:
+                try:
+                    importlib.import_module(full)
+                except Exception:
+                    logger.exception("工具模块 %s 导入失败，已跳过", name)
+        # 3. 已删除模块 → 注销其注册的工具 + 清理 sys.modules
+        removed_modules: set[str] = set()
+        for tool_type, cls in list(ToolRegistry.TOOLS.items()):
+            mod_name = getattr(cls, "__module__", "")
+            if not mod_name.startswith(f"{agent_pkg.__name__}."):
+                continue  # 非 tools/agent 包内的工具（理论不存在）
+            short = mod_name.rsplit(".", 1)[-1]
+            if short not in disk_modules:
+                logger.warning(
+                    "工具 %s（来源 %s 已被删除）已注销", tool_type, short)
+                del ToolRegistry.TOOLS[tool_type]
+                removed_modules.add(mod_name)
+        for mod in removed_modules:
+            sys.modules.pop(mod, None)
+
+    # ═══════════════════════════════════════════════
     # 内部
     # ═══════════════════════════════════════════════
 
@@ -49,9 +97,13 @@ class ToolRegistry:
         """
         收集全部可配置工具定义（过滤 builtin），供前端动态表单渲染
 
+        每次请求前先 sync_from_disk：磁盘目录为真实状态，
+        新增/删除工具文件即时反映（前端刷新即可），无需重启后端。
+
         每个工具：{type, description, params}；
         select 参数调用工具类自身 fetch_options 填充选项（未知 source 返回空列表）。
         """
+        ToolRegistry.sync_from_disk()
         result = []
         for tool_type, cls in sorted(ToolRegistry.TOOLS.items()):
             if getattr(cls, "builtin", False):
