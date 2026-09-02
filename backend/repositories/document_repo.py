@@ -8,8 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Chunks, Documents, Embeddings
-from backend.models import Documents
+from backend.models import Chunks, Documents, Embeddings, KnowledgeBases
 
 
 class DocumentRepo:
@@ -246,3 +245,48 @@ class DocumentRepo:
         ).values(is_parsed=0, is_chunked=0, is_vectorized=0))
         await db.flush()
         return result.rowcount
+
+    @staticmethod
+    async def list_processing_tasks(db: AsyncSession, user_id: UUID) -> list[dict]:
+        """
+        全局处理任务列表（处理浮窗用）
+
+        查询当前用户所有"处理中/排队"（任一状态字段为 2）且未删除的文档，
+        附带知识库名称；按更新时间倒序。返回 dict 列表，不含 SQL 对象。
+        """
+        from sqlalchemy import or_
+
+        q = (
+            select(
+                Documents.id.label("doc_id"),
+                Documents.filename,
+                Documents.is_parsed,
+                Documents.is_chunked,
+                Documents.is_vectorized,
+                KnowledgeBases.id.label("kb_id"),
+                KnowledgeBases.name.label("kb_name"),
+            )
+            .join(KnowledgeBases, KnowledgeBases.id == Documents.knowledge_base_id)
+            .where(
+                Documents.user_id == user_id,
+                Documents.status != 9,
+                KnowledgeBases.status != 9,
+                or_(Documents.is_parsed == 2,
+                    Documents.is_chunked == 2,
+                    Documents.is_vectorized == 2),
+            )
+            .order_by(Documents.updated_at.desc())
+        )
+        rows = (await db.execute(q)).all()
+        return [
+            {
+                "doc_id": str(r.doc_id),
+                "filename": r.filename,
+                "kb_id": str(r.kb_id),
+                "kb_name": r.kb_name,
+                "is_parsed": r.is_parsed,
+                "is_chunked": r.is_chunked,
+                "is_vectorized": r.is_vectorized,
+            }
+            for r in rows
+        ]

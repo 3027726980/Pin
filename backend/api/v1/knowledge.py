@@ -40,6 +40,15 @@ router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["知识库"])
 
 # ── 知识库 CRUD ────────────────────────
 
+@router.get("/processing-tasks", response_model=SuccessResponse[list[dict]], summary="全局处理任务列表", description="处理中/排队中的文档任务（含知识库名与阶段），处理浮窗轮询用；注意：必须注册在 /{kb_id} 动态路由之前")
+async def processing_tasks(
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    result = await KnowledgeBaseService.list_processing_tasks(db, user)
+    return SuccessResponse(result=result)
+
+
 @router.get("", response_model=SuccessResponse[PaginatedResponse], summary="获取当前用户的知识库列表", description="自动过滤已删除(status=9)的记录，按创建时间倒序")
 async def list_kb(
     page: str = Query("", description="页码，默认 1"),

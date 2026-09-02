@@ -206,6 +206,32 @@ class KnowledgeBaseService:
         await db.commit()
 
     @staticmethod
+    async def list_processing_tasks(
+        db: AsyncSession,
+        user: Users,
+    ) -> list[dict]:
+        """
+        全局处理任务列表（处理浮窗轮询用）
+
+        由文档三状态推断阶段：
+        - (2,2,2) → queued（上传预置的入队标记，等待处理槽位）
+        - is_parsed=2 → parsing；is_chunked=2 → chunking；is_vectorized=2 → vectorizing
+        """
+        rows = await DocumentRepo.list_processing_tasks(db, user.id)
+        for r in rows:
+            if r["is_parsed"] == 2 and r["is_chunked"] == 2 and r["is_vectorized"] == 2:
+                r["stage"] = "queued"
+            elif r["is_parsed"] == 2:
+                r["stage"] = "parsing"
+            elif r["is_chunked"] == 2:
+                r["stage"] = "chunking"
+            elif r["is_vectorized"] == 2:
+                r["stage"] = "vectorizing"
+            else:
+                r["stage"] = "processing"
+        return rows
+
+    @staticmethod
     async def upload_file(
         db: AsyncSession,
         user: Users,
