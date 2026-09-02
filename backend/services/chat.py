@@ -28,6 +28,7 @@ from backend.schemas.agent import ChatRequest, ChatResponse, Citation
 from backend.services.conversation import ConversationService
 from backend.services.middleware import build_middlewares
 from backend.tools import RAGTool, ToolRegistry
+from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 _llm_logger = logging.getLogger("backend.llm")  # 链路日志：LLM 调用（写 llm.log）
