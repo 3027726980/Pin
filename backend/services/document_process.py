@@ -1,6 +1,7 @@
 """
-文档处理服务：解析 → 分块 → 向量化
+文档处理服务：解析 → 分块 → 向量化 + 上传自动处理后台任务
 """
+import asyncio
 import logging
 from pathlib import Path
 from uuid import UUID
@@ -11,11 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.core.config import settings
+from backend.core.constants import UPLOAD_ROOT
+from backend.core.database import async_session_local
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, UserModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo
-from backend.core.constants import UPLOAD_ROOT
-from backend.services.parsers import get_parser
 from backend.services.embedding import EmbeddingService
+from backend.services.parsers import get_parser
+from backend.services.system_settings import SystemSettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +46,11 @@ class DocumentProcessService:
             doc = await DocumentRepo.get_by_id(db, doc_id)
             if doc is None or doc.status == 9:
                 continue
+            if doc.is_parsed == 2:  # 处理中保护：自动/手动并发时跳过重复触发
+                continue
 
             doc.is_parsed = 2
+            doc.last_error = None  # 重新处理开始，清空上次失败原因
             try:
                 parser = get_parser(doc.file_type or "")
                 file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
@@ -54,6 +60,7 @@ class DocumentProcessService:
             except Exception as e:
                 logger.error(f"解析文档 {doc.filename} 失败: {e}")
                 doc.is_parsed = -1
+                doc.last_error = f"解析失败: {e}"
                 continue
 
         await db.flush()
@@ -90,12 +97,15 @@ class DocumentProcessService:
             doc = await DocumentRepo.get_by_id(db, doc_id)
             if doc is None or doc.status == 9:
                 continue
+            if doc.is_chunked == 2:  # 处理中保护：自动/手动并发时跳过重复触发
+                continue
 
             # 取完整文本
             if not doc.content:
                 continue
 
             doc.is_chunked = 2
+            doc.last_error = None  # 重新处理开始，清空上次失败原因
             try:
                 texts = splitter.split_text(doc.content)
 
@@ -126,6 +136,7 @@ class DocumentProcessService:
             except Exception as e:
                 logger.error(f"文档 {doc.filename} 分块失败: {e}")
                 doc.is_chunked = -1
+                doc.last_error = f"分块失败: {e}"
                 continue
 
         await db.flush()
@@ -218,6 +229,7 @@ class DocumentProcessService:
                 for c in batch:
                     c.is_vectorized = -1
                     c.document.is_vectorized = -1
+                    c.document.last_error = f"向量化失败: {e}"
                 await db.flush()
                 continue
 
@@ -237,5 +249,60 @@ class DocumentProcessService:
                 chunk.document.is_vectorized = 1
                 count += 1
 
+        # 全部成功才清空失败原因（部分失败保留错误信息便于排查）
+        if all(c.is_vectorized == 1 for c in chunks):
+            for c in chunks:
+                c.document.last_error = None
         await db.flush()
         return count
+
+    # ═══════════════════════════════════════════════
+    # 上传自动处理（后台任务）
+    # ═══════════════════════════════════════════════
+
+    _auto_process_slots: set[str] = set()  # 正在自动处理的 doc_id（进程内并发上限管理）
+    _auto_process_lock = asyncio.Lock()
+
+    @staticmethod
+    async def auto_process_document(kb_id: str | UUID, doc_id: str | UUID) -> None:
+        """
+        上传后自动处理后台任务：解析 → 分块 → 向量化 全链路
+
+        - 独立 session（BackgroundTasks 执行时请求的 session 已关闭，必须自开）
+        - 并发上限动态读 system_settings.document.max_concurrent（排队等待而非丢弃）
+        - 每步失败短路后续（解析失败不分块、分块失败不向量化）
+        - 知识库/文档已软删除时直接返回
+        """
+        kb_id = UUID(str(kb_id))
+        doc_id = UUID(str(doc_id))
+
+        # 等待可用槽位（动态读 max_concurrent，支持运行期调小后新任务按新值排队）
+        while True:
+            cfg = SystemSettingsService.get("document") or {}
+            max_concurrent = int(cfg.get("max_concurrent", 2) or 2)
+            async with DocumentProcessService._auto_process_lock:
+                if len(DocumentProcessService._auto_process_slots) < max_concurrent:
+                    DocumentProcessService._auto_process_slots.add(str(doc_id))
+                    break
+            await asyncio.sleep(0.5)
+
+        try:
+            async with async_session_local() as db:
+                kb = await db.get(KnowledgeBases, kb_id)
+                doc = await DocumentRepo.get_by_id(db, doc_id)
+                # 任务排队期间知识库/文档可能已被删除（软删）→ 不处理
+                if kb is None or doc is None or kb.status == 9 or doc.status == 9:
+                    return
+
+                # 全链路：解析 → 分块 → 向量化（每步失败短路后续）
+                await DocumentProcessService.parse_documents(db, kb, [doc_id])
+                if doc.is_parsed == 1:
+                    await DocumentProcessService.chunk_documents(db, kb, [doc_id])
+                if doc.is_chunked == 1:
+                    await DocumentProcessService.vectorize_documents(db, kb, [doc_id])
+                await db.commit()
+        except Exception as e:  # 兜底：未预期异常不冒泡（BackgroundTasks 已返回响应）
+            logger.error(f"自动处理文档 {doc_id} 未预期异常: {e}")
+        finally:
+            async with DocumentProcessService._auto_process_lock:
+                DocumentProcessService._auto_process_slots.discard(str(doc_id))
