@@ -25,6 +25,11 @@ export function listSettings(): Promise<SystemSetting[]> {
   return request.get('/v1/settings')
 }
 
+/** 读取单项设置（按 key） */
+export function getSetting(key: string): Promise<{ key: string; value: Record<string, unknown> }> {
+  return request.get(`/v1/settings/${key}`)
+}
+
 export function updateSetting(
   key: string,
   value: Record<string, unknown>,

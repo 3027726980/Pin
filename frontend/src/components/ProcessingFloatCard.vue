@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import {
   CheckmarkCircleOutline,
@@ -80,6 +80,11 @@ import { useProcessingStore } from '@/stores/processing'
 
 const store = useProcessingStore()
 const message = useMessage()
+
+// 挂载时加载功能开关（系统设置 → 处理进度浮窗，可关闭）
+onMounted(() => {
+  store.loadEnabled()
+})
 
 const MAX_SHOW = 4
 const visibleTasks = computed(() => store.tasks.slice(0, MAX_SHOW))

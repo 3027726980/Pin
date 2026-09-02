@@ -33,6 +33,10 @@ DEFAULT_SETTINGS: dict[str, dict] = {
         "max_concurrent": int(getattr(getattr(settings, "document", None),
                                        "max_concurrent", 2)),
     },
+    # 处理进度浮窗（消息小气泡，测试中功能，可在系统设置关闭）
+    "processing_float": {
+        "enabled": True,
+    },
 }
 
 # 内存缓存（进程内；多 worker 部署时各自缓存，可接受）

@@ -89,6 +89,21 @@
         </div>
       </n-card>
 
+      <!-- 处理进度浮窗（测试中）：结构化开关 -->
+      <n-card v-if="floatConfig" title="处理进度浮窗（测试中）" size="small" class="item-card">
+        <n-form label-placement="left" label-width="160">
+          <n-form-item label="启用消息小气泡">
+            <n-switch v-model:value="floatConfig.enabled" />
+          </n-form-item>
+        </n-form>
+        <div class="save-row">
+          <span class="hint" style="margin-right: auto">
+            ⚠️ 功能测试中：上传/处理文档时右下角显示处理进度小气泡（跨页面跟踪：知识库名 / 文件名 / 处理阶段），可随时关闭
+          </span>
+          <n-button type="primary" :loading="savingFloat" @click="saveFloatConfig">保存</n-button>
+        </div>
+      </n-card>
+
       <!-- 其他设置项：JSON 文本编辑 -->
       <n-card
         v-for="item in otherSettings"
@@ -268,8 +283,13 @@ const redactKey = 'logging.redact_rules'
 const docKey = 'document'
 const docConfig = ref<{ auto_process: boolean; max_concurrent: number } | null>(null)
 
+/** 处理进度浮窗（测试中：可关闭） */
+const floatKey = 'processing_float'
+const floatConfig = ref<{ enabled: boolean } | null>(null)
+const savingFloat = ref(false)
+
 const otherSettings = computed(() =>
-  settings.value.filter((s) => s.key !== redactKey && s.key !== docKey),
+  settings.value.filter((s) => s.key !== redactKey && s.key !== docKey && s.key !== floatKey),
 )
 
 onMounted(async () => {
@@ -301,6 +321,11 @@ async function load() {
         auto_process: Boolean(v.auto_process),
         max_concurrent: Number(v.max_concurrent ?? 2),
       }
+    }
+    const fs = settings.value.find((s) => s.key === floatKey)
+    if (fs) {
+      const v = fs.value as Record<string, unknown>
+      floatConfig.value = { enabled: v?.enabled !== false }
     }
   } catch (e) {
     message.error((e as Error).message || '设置加载失败')
@@ -335,6 +360,22 @@ async function saveDocConfig() {
     message.error((e as Error).message || '保存失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function saveFloatConfig() {
+  if (!floatConfig.value) return
+  savingFloat.value = true
+  try {
+    await updateSetting(floatKey, { enabled: floatConfig.value.enabled })
+    // 同步浮窗 store：立即生效（无需刷新页面）
+    const { useProcessingStore } = await import('@/stores/processing')
+    useProcessingStore().applyEnabled(floatConfig.value.enabled)
+    message.success('处理进度浮窗设置已保存并立即生效')
+  } catch (e) {
+    message.error((e as Error).message || '保存失败')
+  } finally {
+    savingFloat.value = false
   }
 }
 
