@@ -5,7 +5,7 @@
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import get_current_user
@@ -14,6 +14,8 @@ from backend.core.database import get_db
 from backend.core.utils import parse_page, parse_page_size
 from backend.models import Users
 from backend.schemas.common import SuccessResponse
+from backend.services.document_process import DocumentProcessService
+from backend.services.system_settings import SystemSettingsService
 from backend.schemas.knowledge import (
     BatchFileAction,
     BatchKnowledgeBaseAction,
@@ -184,10 +186,20 @@ async def batch_kb(
 async def upload_file(
     kb_id: UUID,
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
     user: Users = Depends(get_current_user),
 ):
     result = await KnowledgeBaseService.upload_file(db, user, kb_id, file)
+    # 上传后自动处理全链路（解析→分块→向量化）；
+    # 开关在系统设置 → 文档处理（system_settings.document.auto_process），动态可改
+    cfg = SystemSettingsService.get("document") or {}
+    if cfg.get("auto_process", True):
+        background_tasks.add_task(
+            DocumentProcessService.auto_process_document,
+            str(kb_id),
+            str(result.id),
+        )
     return SuccessResponse(result=result)
 
 

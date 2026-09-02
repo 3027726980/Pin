@@ -161,6 +161,13 @@ async def lifespan(app: FastAPI):
     setup_logging()
     async with async_session_local() as session:
         await SystemSettingsService.init(session)
+
+    # 启动恢复：重置上次进程中断遗留的"处理中"文档（后台任务进程内执行，重启即丢失）
+    from backend.repositories import DocumentRepo
+
+    async with async_session_local() as session:
+        await DocumentRepo.reset_stuck_processing(session)
+        await session.commit()
     global _redact_filter
     _redact_filter = RedactFilter(SystemSettingsService.get("logging.redact_rules"))
     # 挂载到全部 handler（root + 分文件 handler：llm/http/sql 同样脱敏）

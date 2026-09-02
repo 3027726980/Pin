@@ -179,6 +179,7 @@ class KnowledgeBaseService:
         """
         kb = await _get_kb_for_user(db, user, kb_id)
         await DocumentRepo.soft_delete_by_kb(db, kb_id)
+        await DocumentRepo.soft_delete_chunks_by_kb(db, kb_id)  # 级联软删切片/向量
         await KnowledgeBaseRepo.soft_delete(db, kb)
         await db.commit()
 
@@ -293,6 +294,7 @@ class KnowledgeBaseService:
             raise HTTPException(status_code=404, detail="文件已被删除")
 
         await DocumentRepo.soft_delete(db, doc)
+        await DocumentRepo.soft_delete_chunks(db, [doc_id])  # 级联软删切片/向量
         await db.commit()
 
     # ═══════════════════════════════════════════════
@@ -348,6 +350,7 @@ class KnowledgeBaseService:
 
         if action == "delete":
             affected = await DocumentRepo.batch_soft_delete(db, kb_id, user.id, ids)
+            await DocumentRepo.soft_delete_chunks(db, ids)  # 级联软删切片/向量
         else:
             raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
 

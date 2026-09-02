@@ -183,3 +183,66 @@ class DocumentRepo:
             }
             for r in rows
         ]
+
+    # ═══════════════════════════════════════════════
+    # 级联清理（删除知识库/文档时）
+    # ═══════════════════════════════════════════════
+
+    @staticmethod
+    async def soft_delete_chunks(db: AsyncSession, doc_ids: list[UUID]) -> None:
+        """
+        级联软删除文档的切片与向量（status → 9）
+
+        先软删 embeddings（FK 依赖），再软删 chunks
+        """
+        from sqlalchemy import update as _update
+
+        chunk_ids = (await db.execute(
+            select(Chunks.id).where(
+                Chunks.document_id.in_(doc_ids), Chunks.status != 9)
+        )).scalars().all()
+        if chunk_ids:
+            await db.execute(_update(Embeddings).where(
+                Embeddings.chunk_id.in_(chunk_ids), Embeddings.status != 9
+            ).values(status=9))
+        await db.execute(_update(Chunks).where(
+            Chunks.document_id.in_(doc_ids), Chunks.status != 9
+        ).values(status=9))
+        await db.flush()
+
+    @staticmethod
+    async def soft_delete_chunks_by_kb(db: AsyncSession, kb_id: UUID) -> None:
+        """
+        级联软删除知识库下所有切片与向量（status → 9）
+        """
+        from sqlalchemy import update as _update
+
+        chunk_ids = (await db.execute(
+            select(Chunks.id).where(Chunks.kb_id == kb_id, Chunks.status != 9)
+        )).scalars().all()
+        if chunk_ids:
+            await db.execute(_update(Embeddings).where(
+                Embeddings.chunk_id.in_(chunk_ids), Embeddings.status != 9
+            ).values(status=9))
+        await db.execute(_update(Chunks).where(
+            Chunks.kb_id == kb_id, Chunks.status != 9
+        ).values(status=9))
+        await db.flush()
+
+    @staticmethod
+    async def reset_stuck_processing(db: AsyncSession) -> int:
+        """
+        启动恢复：将卡在"处理中"（状态 2）的文档重置为 0（未处理）
+
+        后台任务进程内执行、重启即丢失，防止状态永远卡死；返回重置行数
+        """
+        from sqlalchemy import or_, update as _update
+
+        result = await db.execute(_update(Documents).where(
+            or_(Documents.is_parsed == 2,
+                Documents.is_chunked == 2,
+                Documents.is_vectorized == 2),
+            Documents.status != 9,
+        ).values(is_parsed=0, is_chunked=0, is_vectorized=0))
+        await db.flush()
+        return result.rowcount
