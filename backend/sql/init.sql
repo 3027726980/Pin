@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS documents (
     is_parsed           SMALLINT    NOT NULL DEFAULT 0,
     is_chunked          SMALLINT    NOT NULL DEFAULT 0,
     is_vectorized       SMALLINT    NOT NULL DEFAULT 0,
+    last_error          TEXT,                    -- 最近一次处理失败原因（重新处理时清空）
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

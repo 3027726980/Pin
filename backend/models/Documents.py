@@ -44,6 +44,9 @@ class Documents(Base):
     is_vectorized: Mapped[int] = mapped_column(
         SmallInteger, default=0, nullable=False, comment="向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )
+    last_error: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="最近一次处理失败原因（解析/分块/向量化），重新处理时清空"
+    )
 
     knowledge_base = relationship("KnowledgeBases", back_populates="documents")
     chunks = relationship("Chunks", back_populates="document", lazy="selectin")

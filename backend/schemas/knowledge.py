@@ -94,6 +94,7 @@ class DocumentResponse(BaseModel):
     is_parsed: int
     is_chunked: int
     is_vectorized: int
+    last_error: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -110,6 +111,7 @@ class DocumentListItem(BaseModel):
     is_parsed: int
     is_chunked: int
     is_vectorized: int
+    last_error: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
