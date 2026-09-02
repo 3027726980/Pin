@@ -46,6 +46,9 @@
         <router-view />
       </n-layout-content>
     </n-layout>
+
+    <!-- 全局文档处理浮窗（跨页面） -->
+    <ProcessingFloatCard />
   </n-layout>
 </template>
 
@@ -65,6 +68,7 @@ import {
   LogOutOutline,
 } from '@vicons/ionicons5'
 import { useUserStore } from '@/stores/user'
+import ProcessingFloatCard from '@/components/ProcessingFloatCard.vue'
 
 const router = useRouter()
 const route = useRoute()

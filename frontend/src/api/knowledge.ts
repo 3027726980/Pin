@@ -189,3 +189,18 @@ export function vectorizeChunks(kbId: string, chunkIds: string[]): Promise<Proce
 export function vectorizeDocuments(kbId: string, docIds: string[]): Promise<ProcessResult> {
   return request.post(`/v1/knowledge-bases/${kbId}/vectorize-docs`, { doc_ids: docIds })
 }
+
+// ── 全局处理任务（处理浮窗轮询） ────────
+
+export interface ProcessingTask {
+  doc_id: string
+  filename: string
+  kb_id: string
+  kb_name: string
+  stage: 'queued' | 'parsing' | 'chunking' | 'vectorizing' | 'processing'
+}
+
+/** 全局处理中/排队任务列表（所有知识库） */
+export function getProcessingTasks(): Promise<ProcessingTask[]> {
+  return request.get('/v1/knowledge-bases/processing-tasks')
+}

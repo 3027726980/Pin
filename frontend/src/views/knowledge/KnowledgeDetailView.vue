@@ -113,9 +113,11 @@ import {
 import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
 import { storage } from '@/utils/storage'
 import { TOKEN_KEY } from '@/api/request'
+import { useProcessingStore } from '@/stores/processing'
 
 const route = useRoute()
 const message = useMessage()
+const procStore = useProcessingStore()
 const kbId = computed(() => route.params.id as string)
 
 // ── 知识库信息 ──────────────────────────
@@ -161,6 +163,27 @@ const acceptExtensions = computed(() => {
 const fileColumns: DataTableColumns<DocumentListItem> = [
   { type: 'selection' },
   { title: '文件名', key: 'filename', ellipsis: { tooltip: true } },
+  {
+    title: '状态',
+    key: 'status_summary',
+    width: 90,
+    render(row) {
+      const { is_parsed: p, is_chunked: c, is_vectorized: v } = row
+      if (p === -1 || c === -1 || v === -1) {
+        return h(NTag, { type: 'error', size: 'small' }, { default: () => '失败' })
+      }
+      if (p === 2 && c === 2 && v === 2) {
+        return h(NTag, { type: 'default', size: 'small' }, { default: () => '排队中' })
+      }
+      if (p === 2 || c === 2 || v === 2) {
+        return h(NTag, { type: 'info', size: 'small' }, { default: () => '处理中' })
+      }
+      if (p === 1 && c === 1 && v === 1) {
+        return h(NTag, { type: 'success', size: 'small' }, { default: () => '已完成' })
+      }
+      return h(NTag, { size: 'small', bordered: false }, { default: () => '未处理' })
+    },
+  },
   {
     title: '大小',
     key: 'file_size',
@@ -329,6 +352,7 @@ function onUploadFinish() {
   message.success('上传成功，后台自动处理中…')
   filePage.value = 1
   fetchFiles()
+  procStore.startPolling() // 启动全局处理浮窗（跨页面跟踪所有知识库任务）
   startAutoPoll()
 }
 
