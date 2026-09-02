@@ -139,6 +139,8 @@ const processing = ref(false)
 
 // fetch 竞态守卫：只有最新一次请求的结果能更新列表（旧响应到达时丢弃）
 let fileFetchSeq = 0
+// loading 控制：仅非静默请求参与（静默轮询不得抢 loading 控制权，也不得使非静默请求的复位失效）
+let visibleFetchSeq = 0
 
 // ── 上传配置 ────────────────────────────
 const uploadUrl = computed(() => `/api/v1/knowledge-bases/${kbId.value}/files`)
@@ -271,7 +273,10 @@ async function fetchKnowledgeBase() {
 
 async function fetchFiles(silent = false) {
   const seq = ++fileFetchSeq
-  if (!silent) fileLoading.value = true
+  if (!silent) {
+    visibleFetchSeq = seq
+    fileLoading.value = true
+  }
   try {
     const res = await listFiles(kbId.value, filePage.value, filePageSize.value)
     if (seq !== fileFetchSeq) return  // 过期响应丢弃（如上传后立即刷新 vs 轮询刷新 的竞态）
@@ -280,7 +285,8 @@ async function fetchFiles(silent = false) {
   } catch (e) {
     if (seq === fileFetchSeq && !silent) message.error((e as Error).message || '获取文件列表失败')
   } finally {
-    if (seq === fileFetchSeq && !silent) fileLoading.value = false
+    // 非静默请求负责关闭 loading；仅当没有更新的非静默请求时（旧的非静默响应不得关掉新请求的 loading）
+    if (!silent && seq === visibleFetchSeq) fileLoading.value = false
   }
 }
 
