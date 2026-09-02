@@ -26,6 +26,13 @@ DEFAULT_SETTINGS: dict[str, dict] = {
             {"type": "value_pattern", "pattern": r"Bearer [A-Za-z0-9._-]+", "mask": "keep_3_3"},
         ],
     },
+    # 文档处理：上传后自动处理（解析→分块→向量化）
+    "document": {
+        "auto_process": bool(getattr(getattr(settings, "document", None),
+                                      "auto_process", True)),
+        "max_concurrent": int(getattr(getattr(settings, "document", None),
+                                       "max_concurrent", 2)),
+    },
 }
 
 # 内存缓存（进程内；多 worker 部署时各自缓存，可接受）

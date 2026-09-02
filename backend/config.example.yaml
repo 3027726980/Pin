@@ -61,6 +61,14 @@ intent:
   simple_context_max_chars: 1500 # 最近一轮检索残留注入的最大字符数（0 = 不注入）
   classify_temperature: 0.2      # LLM 兜底分类 / plan / reflect 的采样温度
 
+# ── 文档处理（上传自动处理）──
+# 仅作启动默认值；运行时可动态修改（系统设置 → 文档处理，立即生效）
+document:
+  # 上传文件后是否自动跑完 解析→分块→向量化 全链路
+  auto_process: true
+  # 同时处理的最大文件数（防止本地 embedding 模型并发跑爆内存）
+  max_concurrent: 2
+
 # 对话记忆 Checkpoint（基于 LangGraph + PostgreSQL）
 checkpoint:
   # psycopg 异步连接串（注意与 database.url 的 asyncpg 格式不同）
