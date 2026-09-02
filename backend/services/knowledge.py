@@ -188,6 +188,24 @@ class KnowledgeBaseService:
     # ═══════════════════════════════════════════════
 
     @staticmethod
+    async def mark_processing(db: AsyncSession, doc_id: UUID) -> None:
+        """
+        标记文档为"处理中"（任务已入队，状态 2 落库）
+
+        上传接口返回前调用：前端拉列表即可看到 解析/切片/向量化 均为"进行中"，
+        避免后台任务尚未启动（BackgroundTasks 在响应后才执行）导致的"无反馈"空白期。
+        任务正式启动时会重置状态走标准链路。
+        """
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if doc is None or doc.status == 9:
+            return
+        doc.is_parsed = 2
+        doc.is_chunked = 2
+        doc.is_vectorized = 2
+        doc.last_error = None
+        await db.commit()
+
+    @staticmethod
     async def upload_file(
         db: AsyncSession,
         user: Users,

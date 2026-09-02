@@ -195,6 +195,8 @@ async def upload_file(
     # 开关在系统设置 → 文档处理（system_settings.document.auto_process），动态可改
     cfg = SystemSettingsService.get("document") or {}
     if cfg.get("auto_process", True):
+        # 响应返回前预置"处理中"状态（任务入队标记），前端立即可见进行中标签
+        await KnowledgeBaseService.mark_processing(db, result.id)
         background_tasks.add_task(
             DocumentProcessService.auto_process_document,
             str(kb_id),

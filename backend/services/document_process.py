@@ -294,6 +294,15 @@ class DocumentProcessService:
                 if kb is None or doc is None or kb.status == 9 or doc.status == 9:
                     return
 
+                # 任务正式启动：清除上传时的"入队"标记（状态 2）后走标准链路。
+                # 原因：parse/chunk/vectorize 对状态 2 有防重复触发保护（自动+手动并发），
+                # 不重置会跳过自己；失败原因也在此清空（重新处理开始）
+                doc.is_parsed = 0
+                doc.is_chunked = 0
+                doc.is_vectorized = 0
+                doc.last_error = None
+                await db.flush()
+
                 # 全链路：解析 → 分块 → 向量化（每步失败短路后续）
                 await DocumentProcessService.parse_documents(db, kb, [doc_id])
                 if doc.is_parsed == 1:

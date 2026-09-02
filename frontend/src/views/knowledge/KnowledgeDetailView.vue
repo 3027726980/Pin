@@ -137,6 +137,9 @@ const fileTotal = ref(0)
 const checkedFileKeys = ref<any[]>([])
 const processing = ref(false)
 
+// fetch 竞态守卫：只有最新一次请求的结果能更新列表（旧响应到达时丢弃）
+let fileFetchSeq = 0
+
 // ── 上传配置 ────────────────────────────
 const uploadUrl = computed(() => `/api/v1/knowledge-bases/${kbId.value}/files`)
 const uploadHeaders = computed(() => {
@@ -267,15 +270,17 @@ async function fetchKnowledgeBase() {
 }
 
 async function fetchFiles(silent = false) {
+  const seq = ++fileFetchSeq
   if (!silent) fileLoading.value = true
   try {
     const res = await listFiles(kbId.value, filePage.value, filePageSize.value)
+    if (seq !== fileFetchSeq) return  // 过期响应丢弃（如上传后立即刷新 vs 轮询刷新 的竞态）
     fileList.value = res.items
     fileTotal.value = res.total
   } catch (e) {
-    if (!silent) message.error((e as Error).message || '获取文件列表失败')
+    if (seq === fileFetchSeq && !silent) message.error((e as Error).message || '获取文件列表失败')
   } finally {
-    if (!silent) fileLoading.value = false
+    if (seq === fileFetchSeq && !silent) fileLoading.value = false
   }
 }
 
@@ -310,7 +315,7 @@ function startAutoPoll() {
     if (!hasProcessingFile()) {
       stopAutoPoll()
     }
-  }, 3000)
+  }, 2000)
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
