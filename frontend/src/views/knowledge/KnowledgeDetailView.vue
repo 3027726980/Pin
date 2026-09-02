@@ -86,7 +86,7 @@
           :item-count="fileTotal"
           :page-sizes="[10, 20, 50]"
           show-size-picker
-          @update:page="fetchFiles"
+          @update:page="() => fetchFiles()"
           @update:page-size="onFilePageSizeChange"
         />
       </div>
@@ -95,7 +95,7 @@
 </template>
 
 <script setup lang="ts">
-import { h, ref, computed, onMounted } from 'vue'
+import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { NButton, NTag, NPopconfirm, NSpace, NIcon, NUpload } from 'naive-ui'
 import { ArrowBackOutline, CloudUploadOutline, TrashOutline } from '@vicons/ionicons5'
@@ -218,6 +218,16 @@ const fileColumns: DataTableColumns<DocumentListItem> = [
     },
   },
   {
+    title: '错误信息',
+    key: 'last_error',
+    width: 200,
+    ellipsis: { tooltip: true },
+    render(row) {
+      if (!row.last_error) return '-'
+      return h('span', { style: 'color: #d03050; font-size: 12px;' }, row.last_error)
+    },
+  },
+  {
     title: '上传时间',
     key: 'created_at',
     width: 180,
@@ -256,16 +266,16 @@ async function fetchKnowledgeBase() {
   }
 }
 
-async function fetchFiles() {
-  fileLoading.value = true
+async function fetchFiles(silent = false) {
+  if (!silent) fileLoading.value = true
   try {
     const res = await listFiles(kbId.value, filePage.value, filePageSize.value)
     fileList.value = res.items
     fileTotal.value = res.total
   } catch (e) {
-    message.error((e as Error).message || '获取文件列表失败')
+    if (!silent) message.error((e as Error).message || '获取文件列表失败')
   } finally {
-    fileLoading.value = false
+    if (!silent) fileLoading.value = false
   }
 }
 
@@ -276,11 +286,39 @@ function onFilePageSizeChange(size: number) {
 }
 
 // ── 上传回调 ────────────────────────────
+
+// 上传后自动处理轮询（后台任务执行中，轮询文件列表直到全部终态）
+let autoPollTimer: ReturnType<typeof setInterval> | null = null
+
+function hasProcessingFile(): boolean {
+  return fileList.value.some(
+    f => f.is_parsed === 2 || f.is_chunked === 2 || f.is_vectorized === 2
+  )
+}
+
+function stopAutoPoll() {
+  if (autoPollTimer) {
+    clearInterval(autoPollTimer)
+    autoPollTimer = null
+  }
+}
+
+function startAutoPoll() {
+  stopAutoPoll()
+  autoPollTimer = setInterval(async () => {
+    await fetchFiles(true)  // 静默刷新，不闪 loading
+    if (!hasProcessingFile()) {
+      stopAutoPoll()
+    }
+  }, 3000)
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function onUploadFinish() {
-  message.success('上传成功')
+  message.success('上传成功，后台自动处理中…')
   filePage.value = 1
   fetchFiles()
+  startAutoPoll()
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -399,6 +437,10 @@ onMounted(() => {
   fetchKnowledgeBase()
   fetchFiles()
   listMyConfigs().then(list => { modelConfigs.value = list }).catch(() => {})
+})
+
+onUnmounted(() => {
+  stopAutoPoll()
 })
 </script>
 

@@ -63,6 +63,7 @@ export interface DocumentListItem {
   is_parsed: number
   is_chunked: number
   is_vectorized: number
+  last_error?: string | null
   created_at: string
 }
 
