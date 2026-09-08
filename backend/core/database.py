@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from backend.models import Base
 from backend.core.config import settings
@@ -32,5 +33,14 @@ async def get_db():
 
 # 初始化
 async def init_db():
+    """建表初始化（幂等，应用启动与测试环境共用）
+
+    顺序：先幂等创建 pgvector 扩展（容器/全新库首次启动必需，
+    chunks.embedding 的 vector 类型依赖它；本地已建扩展时为 no-op），
+    再 create_all 同步全部 ORM 表结构。
+    权限不足时此处直接报错（fail fast），避免后续建表时出现
+    "type vector does not exist" 的迷惑性错误。
+    """
     async with async_engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
