@@ -42,6 +42,8 @@ def _apply_env_overrides(cfg) -> None:
             print(f"[WARNING] CHECKPOINT_KEEP_ROUNDS 非法值: {env_keep_rounds}，忽略")
     if (env_log_dir := os.getenv("LOG_DIR")):
         cfg.logging.dir = env_log_dir
+    if (env_db_url := os.getenv("DATABASE_URL")):
+        cfg.database.url = env_db_url
 
 
 _apply_env_overrides(settings)
