@@ -1,0 +1,43 @@
+# ── 版本控制与 IDE ──
+.git
+.idea
+.vscode
+.pytest_cache
+
+# ── Python 本地环境（镜像内现场构建，绝不带走）──
+.venv
+**/__pycache__
+*.pyc
+
+# ── 本地资产与运行时数据（运行时挂载 volume，或镜像内自行生成）──
+uploads/
+logs/
+backend/local_models/
+backend/embedding_models/
+backend/scripts-dev/
+backend/config-dev.yaml
+backend/config.yaml
+backend/static/
+
+# ── 前端本地产物（镜像内现场 npm ci + build）──
+frontend/node_modules/
+frontend/dist/
+frontend/auto-imports.d.ts
+frontend/components.d.ts
+frontend/public/test.html
+frontend/public/fullscreen-demo.html
+frontend/public/fullscreen-test.html
+
+# ── 本地个人文件与文档（不入镜像）──
+dev-docs/
+tests/
+AGENTS.md
+README.md
+LICENSE
+nul
+
+# ── 编排与密钥（指挥构建的东西，不是镜像内容）──
+docker-compose.yml
+docker-compose.override.yml
+.env
+.env.*
