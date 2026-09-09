@@ -16,6 +16,8 @@ dependencies = [
     "pgvector>=0.4.0",
     "PyMuPDF>=1.24.0",
     "sentence-transformers>=3.0.0",
+    # 直接依赖声明：本地 embedding/rerank 推理需要 torch CUDA 能力（源钉定见文件尾部 tool.uv.sources）
+    "torch>=2.11.0",
     "python-multipart>=0.0.12",
     "pydantic>=2.13.4",
     "python-jose[cryptography]>=3.3.0",
@@ -43,3 +45,18 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+
+# ── PyTorch CUDA 源（本地 RTX 5060 + GPU 服务器容器共用）──
+# 钉 cu128：本地/容器统一 CUDA 构建；无 GPU 环境 torch.cuda.is_available()=False，
+# 设备选择走 core/utils.resolve_local_device（auto → cpu 降级），行为不受影响
+# 注意：cu128 index 最新 torch 为 2.11.0（2.12+ 仅发 cu129/cu130），版本较 PyPI 略旧但 API 全覆盖
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+# marker 兼底：macOS 无 cu128 wheel，回退 PyPI 默认（CPU build）；Windows/Linux 钉 cu128
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
