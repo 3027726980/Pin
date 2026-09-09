@@ -1,7 +1,7 @@
 """
 Rerank 服务 — 按 provider 分发（local / aliyun）
 
-- local：本地 CrossEncoder（sentence-transformers），local_files_only，CPU 推理走 asyncio.to_thread 防阻塞事件循环
+- local：本地 CrossEncoder（sentence-transformers），local_files_only，推理设备走 local_models.rerank.device（auto/cpu/cuda），同步推理走 asyncio.to_thread 防阻塞事件循环
 - aliyun：DashScope Rerank API（httpx 异步直连）
 
 新增厂商 = 实现一个类（rerank 静态方法）+ 注册到 RERANK_IMPLEMENTATIONS，调用方零改动。
@@ -11,6 +11,7 @@ import logging
 from types import SimpleNamespace
 
 from backend.core.config import settings
+from backend.core.utils import resolve_local_device
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +77,15 @@ class LocalRerank:
                 f"本地 rerank 模型不存在: {model_dir}，请先下载模型到该目录"
             )
 
-        key = f"{cfg.model_name}|{settings.local_models.rerank.device}"
+        # 设备解析：auto/cpu/cuda → 实际设备（无 GPU 时 cuda 降级 cpu）；单例 key 含设备，天然区分实例
+        device = resolve_local_device(settings.local_models.rerank.device, what="rerank")
+        key = f"{cfg.model_name}|{device}"
         if LocalRerank._model is None or LocalRerank._model_key != key:
             from sentence_transformers import CrossEncoder
 
             LocalRerank._model = CrossEncoder(
                 str(model_dir),
-                device=settings.local_models.rerank.device,
+                device=device,
                 local_files_only=True,
             )
             LocalRerank._model_key = key
@@ -94,7 +97,7 @@ class LocalRerank:
             scores = model.predict(pairs)
             return [float(s) for s in scores]
 
-        # CPU 推理同步阻塞，丢线程池防事件循环卡死
+        # 推理同步阻塞（CPU/GPU），丢线程池防事件循环卡死
         scores = await asyncio.to_thread(_predict)
 
         ranked = sorted(

@@ -13,6 +13,7 @@ Embedding 服务 — 协议注册表模式（provider 名分发，未知厂商�
 import logging
 
 from backend.core.config import settings
+from backend.core.utils import resolve_local_device
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,13 @@ class OpenAICompatibleEmbedding:
 
 
 class LocalEmbedding:
-    """本地 Embedding，仅从本地加载，不联网下载"""
+    """本地 Embedding：仅从本地加载（local_files_only），进程内单例缓存
+
+    设备走 local_models.embedding.device（auto/cpu/cuda），模型或设备变更时重新加载
+    """
+
+    _model = None
+    _model_key = None  # "<model_name>|<device>"，模型或设备变更时重新加载
 
     @staticmethod
     def embed(model_name: str, api_key: str | None, base_url: str | None, texts: list[str]) -> list[list[float]]:
@@ -85,11 +92,20 @@ class LocalEmbedding:
                 f"本地模型不存在: {model_dir}，请先下载模型到该目录"
             )
 
-        model = SentenceTransformer(
-            str(model_dir),
-            device="cpu",
-            local_files_only=True,
-        )
+        # 设备解析：getattr 兼容旧配置缺 device 字段（按 auto）；单例 key 含设备，天然区分实例
+        device = resolve_local_device(
+            getattr(settings.local_models.embedding, "device", None),
+            what="embedding")
+        key = f"{model_name}|{device}"
+        if LocalEmbedding._model is None or LocalEmbedding._model_key != key:
+            LocalEmbedding._model = SentenceTransformer(
+                str(model_dir),
+                device=device,
+                local_files_only=True,
+            )
+            LocalEmbedding._model_key = key
+
+        model = LocalEmbedding._model
         results = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return results.tolist()
 

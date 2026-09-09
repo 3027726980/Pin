@@ -18,10 +18,13 @@ local_models:
   embedding:
     model_name: bge-small-zh-v1.5
     dimension: 512
+    # 推理设备：auto=自动（有GPU用GPU）/ cpu=强制CPU / cuda=强制GPU（无GPU自动降级cpu）
+    device: auto
   # 本地 Rerank 模型（需预下载到 <cache_dir>/<model_name>）
   rerank:
     model_name: BAAI/bge-reranker-v2-m3
-    device: cpu
+    # 推理设备：auto=自动（有GPU用GPU）/ cpu=强制CPU / cuda=强制GPU（无GPU自动降级cpu）
+    device: auto
   # 本地 LLM 模型（预留：GGUF 等本地推理模型）
 #  llm:
 #    model_name:
