@@ -1,0 +1,92 @@
+# =============================================================================
+# Pin 全栈编排（生产形态主文件）
+#
+# 部署三步：
+#   cp backend/config.example.yaml backend/config.yaml   # 改非敏感项
+#   cp .env.example .env                                  # 填全部密码密钥
+#   docker compose up -d                                  # 建扩展+建表+种子全自动
+#
+# 本地开发差异写 docker-compose.override.yml（已 Git 忽略，up 时自动叠加）：
+#   多开 backend 8000 / db 15432 端口直连调试
+# GPU 服务器切换：.env 中 BACKEND_IMAGE=pin-backend:gpu，
+#   并在 override 中为 backend 增加 build.target: runtime-gpu
+# =============================================================================
+name: pin
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ── 数据库：PostgreSQL 17 + pgvector ─────────────────────────────────────
+  # 建库不依赖 init.sql：后端启动时 init_db() 幂等创建 vector 扩展 + 全部表
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: pin-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-pin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-pin}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    logging: *default-logging
+
+  # ── 后端：FastAPI + uvicorn ──────────────────────────────────────────────
+  # ⚠️ config.yaml 为 import 时强制读取，必须挂载（26 号文档 3.3 节约定）
+  backend:
+    image: ${BACKEND_IMAGE:-pin-backend:cpu}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      # 默认 target = Dockerfile 最后声明（runtime-cpu）；GPU 在 override 中覆盖
+    container_name: pin-backend
+    restart: unless-stopped
+    environment:
+      # 连接串由数据库环境变量拼接，指向 compose 网络内的 db 服务
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-pin}
+      CHECKPOINT_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-pin}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?请在 .env 中设置 JWT_SECRET_KEY}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?请在 .env 中设置 ADMIN_PASSWORD}
+      LOG_DIR: /app/logs
+    volumes:
+      - ./backend/config.yaml:/app/backend/config.yaml:ro
+      - pin-uploads:/app/uploads
+      - pin-logs:/app/logs
+      - pin-models:/app/backend/local_models
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *default-logging
+
+  # ── 前端：nginx 静态托管 + /api、/widget 反代（唯一入口）──────────────────
+  frontend:
+    image: ${FRONTEND_IMAGE:-pin-frontend:latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pin-frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_HOST: backend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    logging: *default-logging
+
+volumes:
+  pgdata:
+  pin-uploads:
+  pin-logs:
+  pin-models:
