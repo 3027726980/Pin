@@ -1,43 +1,57 @@
-# ── 版本控制与 IDE ──
+# =============================================================================
+# Docker build context 排除清单（后端镜像 context = 仓库根）
+# 🚨 红线：backend/config.yaml 含本地密码，绝不进镜像（运行时挂载提供）
+# =============================================================================
+
+# 版本控制 / IDE
 .git
+.gitignore
 .idea
 .vscode
+
+# AI 文档 / 规范（本地个人文件）
+AGENTS.md
+dev-docs/
+.agent/
+
+# Python 本地环境
+.venv
+venv
+**/__pycache__
+*.py[cod]
 .pytest_cache
 
-# ── Python 本地环境（镜像内现场构建，绝不带走）──
-.venv
-**/__pycache__
-*.pyc
-
-# ── 本地资产与运行时数据（运行时挂载 volume，或镜像内自行生成）──
+# 后端敏感配置（运行时挂载）与本地数据（容器运行时挂载卷提供）
+backend/config.yaml
+backend/config-dev.yaml
+backend/embedding_models/
+backend/local_models/
+backend/static/
+backend/scripts-dev/
 uploads/
 logs/
-backend/local_models/
-backend/embedding_models/
-backend/scripts-dev/
-backend/config-dev.yaml
-backend/config.yaml
-backend/static/
+storage/
 
-# ── 前端本地产物（镜像内现场 npm ci + build）──
+# 测试（含本地库连接信息）
+tests/
+
+# 前端依赖与构建产物（容器内自行构建）
 frontend/node_modules/
 frontend/dist/
 frontend/auto-imports.d.ts
 frontend/components.d.ts
+
+# 本地演示页
 frontend/public/test.html
 frontend/public/fullscreen-demo.html
 frontend/public/fullscreen-test.html
 
-# ── 本地个人文件与文档（不入镜像）──
-dev-docs/
-tests/
-AGENTS.md
+# Docker 编排（后续阶段产物）
+docker-compose*.yml
+.env
+.env.*
+
+# 杂项（README/LICENSE 不进镜像；Windows 误创建设备名文件）
 README.md
 LICENSE
 nul
-
-# ── 编排与密钥（指挥构建的东西，不是镜像内容）──
-docker-compose.yml
-docker-compose.override.yml
-.env
-.env.*

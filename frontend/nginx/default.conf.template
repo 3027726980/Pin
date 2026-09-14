@@ -1,0 +1,49 @@
+# =============================================================================
+# Pin 管理后台 nginx 配置（templates 模板，启动时 envsubst 渲染 ${BACKEND_HOST}）
+# 注意：nginx 内置变量（$uri 等）不受 envsubst 影响（官方脚本只替换已 export 的环境变量）
+# =============================================================================
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 上传文件经 /api 反代，放开请求体限制（后端允许 100MB）
+    client_max_body_size 128m;
+
+    # 基础压缩
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript image/svg+xml;
+    gzip_min_length 1k;
+
+    # SPA history 路由 fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 后端 API 反代（BACKEND_HOST 运行时可覆盖，默认 backend）
+    location /api/ {
+        proxy_pass http://${BACKEND_HOST}:8000;
+        proxy_http_version 1.1;
+        # SSE 流式：关闭缓冲 + 放长读超时，避免流式对话被缓冲/掐断
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    # widget.js 同源托管反代（后端 /widget 静态路由）
+    location /widget/ {
+        proxy_pass http://${BACKEND_HOST}:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

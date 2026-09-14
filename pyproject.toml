@@ -14,6 +14,9 @@ dependencies = [
     "markitdown[all]>=0.0.1",
     "openai>=1.0.0",
     "pgvector>=0.4.0",
+    # checkpointer.py 直接 import psycopg（langgraph-checkpoint-postgres 传递依赖为纯 Python
+    # 实现，需宿主 libpq）；显式声明 binary extra 自带 libpq，容器/本地均自包含
+    "psycopg[binary]>=3.2.1",
     "PyMuPDF>=1.24.0",
     "sentence-transformers>=3.0.0",
     # 直接依赖声明：本地 embedding/rerank 推理需要 torch CUDA 能力（源钉定见文件尾部 tool.uv.sources）

@@ -1,0 +1,17 @@
+# 前端构建 context 排除清单
+node_modules/
+dist/
+auto-imports.d.ts
+components.d.ts
+
+# 开发环境配置（生产构建走 production 模式，用不到）
+.env.development
+.env.local
+
+# 本地演示/测试页
+public/test.html
+public/fullscreen-demo.html
+public/fullscreen-test.html
+
+# 文档
+*.md
