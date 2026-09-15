@@ -120,10 +120,14 @@ class OpenAICompatible:
                 **kwargs,
             )
             content = resp.choices[0].message.content or ""
+            usage = getattr(resp, "usage", None)
             _llm_logger.info(
-                "model=%s base_url=%s stream=false total_ms=%d chars=%d error=None",
+                "model=%s base_url=%s stream=false total_ms=%d chars=%d "
+                "prompt_tokens=%s completion_tokens=%s error=None",
                 model_name, base_url or "",
-                int((time.perf_counter() - t0) * 1000), len(content))
+                int((time.perf_counter() - t0) * 1000), len(content),
+                getattr(usage, "prompt_tokens", None) if usage else None,
+                getattr(usage, "completion_tokens", None) if usage else None)
             return content
         except Exception as e:
             _llm_logger.error(
@@ -207,10 +211,13 @@ class DashScopeLLM:
                 resp.raise_for_status()
                 data = resp.json()
             content = (data.get("output") or {}).get("text") or ""
+            usage = data.get("usage") or {}
             _llm_logger.info(
-                "model=%s base_url=%s stream=false total_ms=%d chars=%d error=None",
+                "model=%s base_url=%s stream=false total_ms=%d chars=%d "
+                "prompt_tokens=%s completion_tokens=%s error=None",
                 model_name, base_url or "",
-                int((time.perf_counter() - t0) * 1000), len(content))
+                int((time.perf_counter() - t0) * 1000), len(content),
+                usage.get("input_tokens"), usage.get("output_tokens"))
             return content
         except Exception as e:
             _llm_logger.error(
