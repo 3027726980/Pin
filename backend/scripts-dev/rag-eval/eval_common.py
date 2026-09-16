@@ -283,6 +283,15 @@ def throttle_seconds() -> float:
 
 # ── RAGEVAL 资源准备 ──────────────────────
 
+# 增强开关组（与 bench_rag_enhance 同语义；D 组的 Rerank 按库中配置动态决定）
+# 改组 = 改本字典（如需“仅Rerank”组自行增加 E）
+GROUP_FLAGS: dict[str, dict] = {
+    "A": {"mqe_enabled": False, "hyde_enabled": False, "rerank_enabled": False},
+    "B": {"mqe_enabled": True, "hyde_enabled": False, "rerank_enabled": False},
+    "C": {"mqe_enabled": False, "hyde_enabled": True, "rerank_enabled": False},
+}
+
+
 def _make_upload(filename: str, text: str):
     """构造 UploadFile（走真实上传链路：写磁盘 + 建文档记录）"""
     from fastapi import UploadFile
@@ -336,11 +345,13 @@ async def ensure_eval_kb(db, user: Users):
     return kb
 
 
-async def ensure_eval_agent(db, user: Users, llm_cfg, kb) -> str:
+async def ensure_eval_agent(db, user: Users, llm_cfg, kb,
+                            **enhance_flags) -> str:
     """创建/重置 simple_rag 类型 RAGEVAL Agent（按名复用并重置配置），返回 agent_id
 
-    复跑时用 AgentUpdate 全量覆盖 llm_config_id/top_k/score_threshold，
-    保证每次评估检索参数与 eval_config.yaml 一致。
+    复跑时用 AgentUpdate 全量覆盖 llm_config_id/top_k/score_threshold 与
+    enhance_flags（mqe_enabled/hyde_enabled/rerank_enabled/rerank_config_id），
+    保证每次评估的检索参数与增强开关与传入值完全一致（组间状态不残留）。
     """
     name = _CFG["agents"]["simple_rag"]
     top_k = int(_CFG["agents"].get("top_k", 4))
@@ -354,16 +365,42 @@ async def ensure_eval_agent(db, user: Users, llm_cfg, kb) -> str:
         resp = await AgentService.create(db, user, SimpleRagAgentCreate(
             name=name, description="Ragas 指标评估 simple_rag Agent",
             kb_id=kb.id, llm_config_id=llm_cfg.id,
-            top_k=top_k, score_threshold=threshold))
+            top_k=top_k, score_threshold=threshold, **enhance_flags))
         agent_id = str(resp.id)
         print(f"[AGENT] 已创建 {name} ({agent_id})")
     else:
         agent_id = str(row.id)
         print(f"[AGENT] 复用 {name} ({agent_id})")
     await AgentService.update(db, user, agent_id, AgentUpdate(
-        llm_config_id=str(llm_cfg.id), top_k=top_k, score_threshold=threshold))
+        llm_config_id=str(llm_cfg.id), top_k=top_k, score_threshold=threshold,
+        **enhance_flags))
     await db.commit()
     return agent_id
+
+
+async def build_groups(db, user: Users) -> dict[str, dict]:
+    """构建增强开关组定义：{组字母: {"name": 组名, "flags": AgentUpdate 开关字典}}
+
+    A 基线(全关) / B 仅MQE / C 仅HyDE / D 全开（MQE+HyDE+Rerank）。
+    D 组依赖库中 Rerank 配置（model_type=3）：有 → rerank_enabled=True +
+    rerank_config_id；无 → 退化为 MQE+HyDE 并在组名注明。
+    """
+    groups: dict[str, dict] = {
+        "A": {"name": "A 基线(全关)", "flags": dict(GROUP_FLAGS["A"])},
+        "B": {"name": "B 仅MQE", "flags": dict(GROUP_FLAGS["B"])},
+        "C": {"name": "C 仅HyDE", "flags": dict(GROUP_FLAGS["C"])},
+    }
+    rerank_cfg = await get_model_config(db, user, 3, required=False)
+    if rerank_cfg is not None:
+        groups["D"] = {"name": "D 全开(MQE+HyDE+Rerank)",
+                       "flags": {"mqe_enabled": True, "hyde_enabled": True,
+                                 "rerank_enabled": True,
+                                 "rerank_config_id": str(rerank_cfg.id)}}
+    else:
+        groups["D"] = {"name": "D 全开(MQE+HyDE，无Rerank配置)",
+                       "flags": {"mqe_enabled": True, "hyde_enabled": True,
+                                 "rerank_enabled": False}}
+    return groups
 
 
 # ── 单题执行 ──────────────────────────────

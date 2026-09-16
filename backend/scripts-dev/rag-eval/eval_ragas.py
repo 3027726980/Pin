@@ -1,16 +1,22 @@
 """RAG 质量评估主脚本：按 Ragas 论文三大指标评估 simple_rag Agent
 
-流程：准备资源（KB/Agent/模型配置）→ 逐题 RAG（answer + citations）
-→ 逐题三指标 judge → 控制台汇总表 + JSON 落盘 results/ragas_eval_<时间戳>.json
+流程：准备资源（KB/Agent/模型配置）→ 逐组重置增强开关 → 组内逐题 RAG
+（answer + citations）→ 逐题三指标 judge → 组级对比矩阵 + JSON 落盘。
+
+增强开关分组（与 bench_rag_enhance 同语义，--groups 选择）：
+    A 基线(全关) / B 仅MQE / C 仅HyDE / D 全开（MQE+HyDE+Rerank，无配置时退化）
 
 用法示例：
-    # 全量评估（默认三大指标）
+    # 单组基线评估（默认 A，三大指标）
     .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py
+
+    # 增强开关分组对比（四组全跑）
+    .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py --groups A,B,C,D
 
     # 冒烟（前 3 题）/ 限题数 / 单指标
     .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py --quick
     .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py --limit 5
-    .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py --metrics faithfulness
+    .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py --groups A,B --metrics faithfulness
 
     # 换被测模型 / 换评审模型 / 低 RPM 厂商节流
     .venv/Scripts/python backend/scripts-dev/rag-eval/eval_ragas.py --model glm --judge-model kimi --throttle 21
@@ -40,12 +46,15 @@ def parse_args() -> argparse.Namespace:
                         help="评审 LLM 按 model_name 子串切换（覆盖 judge.model_filter）")
     parser.add_argument("--metrics", default=None,
                         help=f"逗号分隔指标子集（默认全部）：{','.join(METRIC_NAMES)}")
-    parser.add_argument("--quick", action="store_true", help="只跑前 3 题（冒烟验证）")
-    parser.add_argument("--limit", type=int, default=None, help="只跑前 N 题")
+    parser.add_argument("--groups", default="A",
+                        help="增强开关组（逗号分隔，默认 A 单组基线）："
+                             "A 基线 / B 仅MQE / C 仅HyDE / D 全开(MQE+HyDE+Rerank)")
+    parser.add_argument("--quick", action="store_true", help="每组只跑前 3 题（冒烟验证）")
+    parser.add_argument("--limit", type=int, default=None, help="每组只跑前 N 题")
     parser.add_argument("--reuse", default=None,
                         help="复用历史结果 JSON 的 RAG 产物仅重新评分（不调被测 Agent）")
     parser.add_argument("--throttle", type=float, default=None,
-                        help="全局 HTTP 请求最小间隔秒数（覆盖 --throttle 默认逻辑，低 RPM 厂商用）")
+                        help="全局 HTTP 请求最小间隔秒数（低 RPM 厂商用）")
     return parser.parse_args()
 
 
@@ -60,8 +69,17 @@ def resolve_metrics(arg: str | None) -> list[str]:
     return [n for n in METRIC_NAMES if n in names]  # 保持论文顺序
 
 
+def resolve_groups(arg: str, all_groups: dict) -> dict:
+    """解析 --groups 参数为组定义子集（保持 A/B/C/D 顺序，非法组报错）"""
+    keys = [s.strip().upper() for s in arg.split(",") if s.strip()]
+    bad = [k for k in keys if k not in all_groups]
+    if bad:
+        raise SystemExit(f"未知组: {bad}，可选: {list(all_groups)}")
+    return {k: all_groups[k] for k in all_groups if k in keys}
+
+
 def load_reuse_samples(path: str) -> tuple[list[dict], dict]:
-    """加载 --reuse 的历史结果 JSON，提取每题 RAG 产物（answer/citations）"""
+    """加载 --reuse 的历史结果 JSON，提取每题 RAG 产物（answer/citations/组归属）"""
     p = Path(path)
     if not p.exists():
         raise SystemExit(f"--reuse 文件不存在: {p}")
@@ -69,8 +87,11 @@ def load_reuse_samples(path: str) -> tuple[list[dict], dict]:
     detail = data.get("detail") or []
     if not detail:
         raise SystemExit(f"--reuse 文件缺少 detail 数组: {p}")
-    samples = [{"text": d["text"], "answer": d["answer"],
-                "citations": d.get("citations") or []} for d in detail]
+    samples = [{"group": d.get("group") or "A",
+                "text": d["text"], "answer": d["answer"],
+                "citations": d.get("citations") or [],
+                "tokens": d.get("tokens"),
+                "ms": d.get("ms")} for d in detail]
     return samples, data.get("meta") or {}
 
 
@@ -79,8 +100,21 @@ def fmt_score(score) -> str:
     return f"{score:.3f}" if isinstance(score, (int, float)) else "-"
 
 
+def _empty_tokens() -> dict:
+    """token 统计空结构"""
+    return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
+
+def _add_tokens(total: dict, snap: dict | None) -> None:
+    """累加一次 token 快照（snap 为 None 时跳过，如失败题）"""
+    if not snap:
+        return
+    for k in total:
+        total[k] += snap.get(k, 0)
+
+
 async def main() -> None:
-    """主流程：资源准备 → 逐题 RAG → 逐题评分 → 汇总落盘"""
+    """主流程：资源准备 → 逐组逐题 RAG → 逐题评分 → 组级汇总落盘"""
     args = parse_args()
     seconds = args.throttle if args.throttle is not None else ec.throttle_seconds()
     ec.install_throttle(seconds)
@@ -94,59 +128,92 @@ async def main() -> None:
 
     started_at: str | None = None
     questions_file: str | None = None
-    rag_total_tokens = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    rag_tokens_by_group: dict[str, dict] = {}
     reuse_meta: dict = {}
+    group_defs: dict[str, dict] = {}  # 组定义（name/flags），写进 meta
 
-    # ── 阶段一：逐题 RAG（或复用历史）──
+    # ── 阶段一：逐组逐题 RAG（或复用历史）──
     if args.reuse:
         samples, reuse_meta = load_reuse_samples(args.reuse)
+        # 按历史样本聚合各组 RAG token（评分阶段 judge token 由本次实测累计）
+        for s in samples:
+            g = s["group"]
+            rag_tokens_by_group.setdefault(g, _empty_tokens())
+            _add_tokens(rag_tokens_by_group[g], s.get("tokens"))
+        # 复用历史组定义（有则用，无则按字母生成展示名）
+        for g in dict.fromkeys(s["group"] for s in samples):
+            hist = (reuse_meta.get("groups") or {}).get(g) or {}
+            group_defs[g] = {"name": hist.get("name", g), "flags": hist.get("flags", {})}
         if args.limit or args.quick:
-            samples = samples[:args.limit or 3]
-        print(f"[REUSE] 从 {args.reuse} 载入 {len(samples)} 题 RAG 产物，仅重新评分")
+            # 限题按组各取前 N（与正常模式每组限题语义一致）
+            by_g: dict[str, list] = {}
+            for s in samples:
+                by_g.setdefault(s["group"], []).append(s)
+            n = args.limit or 3
+            samples = [s for ss in by_g.values() for s in ss[:n]]
+        print(f"[REUSE] 从 {args.reuse} 载入 {len(samples)} 条 RAG 产物，仅重新评分")
     else:
         started_at = ec.datetime.now().isoformat(timespec="seconds")
         async with ec.async_session_local() as db:
             user = await ec.get_super_user(db)
             llm_cfg = await ec.ensure_chat_llm(db, user)
+            all_groups = await ec.build_groups(db, user)
+            groups = resolve_groups(args.groups, all_groups)
+            group_defs = {k: {"name": v["name"], "flags": v["flags"]}
+                          for k, v in groups.items()}
             kb = await ec.ensure_eval_kb(db, user)
-            agent_id = await ec.ensure_eval_agent(db, user, llm_cfg, kb)
 
             qset = ec.load_question_set(args.questions)
             questions_file = qset["_file"]
             limit = args.limit or (3 if args.quick else None)
             questions = qset["questions"][:limit] if limit else qset["questions"]
-            print(f"\n[QSET] {qset.get('name', '')}（{len(questions)} 题）"
-                  f" | 指标: {','.join(metrics)} | 检索 top_k={ec._CFG['agents'].get('top_k', 4)}")
+            print(f"\n[QSET] {qset.get('name', '')}（每组 {len(questions)} 题）"
+                  f" | 指标: {','.join(metrics)} | 检索 top_k={ec._CFG['agents'].get('top_k', 4)}"
+                  f" | 组: {','.join(groups)}")
 
+            agent_id = None
             samples = []
-            for i, q in enumerate(questions, 1):
-                print(f"\n===== RAG {i}/{len(questions)}: {q['text']} =====")
-                try:
-                    r = await ec.run_rag_question(db, user, agent_id, q["text"])
-                except Exception as e:
-                    print(f"    [失败] 跳过该题: {str(e)[:200]}")
-                    r = {"text": q["text"], "answer": None,
-                         "citations": [], "ms": None, "tokens": None}
-                samples.append({**q, **r})
-                rag_total_tokens = {
-                    k: rag_total_tokens[k] + (r["tokens"] or {}).get(k, 0)
-                    for k in rag_total_tokens}
-                print(f"    answer: {(r['answer'] or '')[:120]}...")
-                print(f"    citations: {len(r['citations'])} 片段 | "
-                      f"耗时 {r['ms']}ms | tokens {r['tokens']}")
+            for gkey, ginfo in groups.items():
+                # 每组显式重置增强开关（组间状态不残留）
+                agent_id = await ec.ensure_eval_agent(db, user, llm_cfg, kb,
+                                                      **ginfo["flags"])
+                print(f"\n===== 组 {ginfo['name']}（{len(questions)} 题）=====")
+                rag_tokens_by_group.setdefault(gkey, _empty_tokens())
+                for i, q in enumerate(questions, 1):
+                    print(f"\n===== RAG {gkey} {i}/{len(questions)}: {q['text']} =====")
+                    try:
+                        r = await ec.run_rag_question(db, user, agent_id, q["text"])
+                    except Exception as e:
+                        print(f"    [失败] 跳过该题: {str(e)[:200]}")
+                        r = {"text": q["text"], "answer": None,
+                             "citations": [], "ms": None, "tokens": None}
+                    samples.append({**q, "group": gkey,
+                                    "group_name": ginfo["name"], **r})
+                    _add_tokens(rag_tokens_by_group[gkey], r.get("tokens"))
+                    print(f"    answer: {(r['answer'] or '')[:120]}...")
+                    print(f"    citations: {len(r['citations'])} 片段 | "
+                          f"耗时 {r['ms']}ms | tokens {r['tokens']}")
 
-    # ── 阶段二：逐题评分（judge 调用 token 单独累计）──
+    # ── 阶段二：逐题评分（judge token 按组实测累计）──
     async with ec.async_session_local() as db:
         user = await ec.get_super_user(db)
         judge_llm = await ec.ensure_judge_llm(db, user)
         embed_cfg = await ec.ensure_embedding(db, user)
 
     judge_capture = ec.LLMUsageCapture().attach()
+    judge_tokens_by_group: dict[str, dict] = {}
     detail = []
     print(f"\n{'=' * 60}\n开始评分（judge: {judge_llm.provider}/{judge_llm.model_name}，"
           f"embedding: {embed_cfg.provider}/{embed_cfg.model_name}）\n{'=' * 60}")
+    cur_group = None
     for i, s in enumerate(samples, 1):
-        print(f"\n----- 评分 {i}/{len(samples)}: {s['text']} -----")
+        if s["group"] != cur_group:  # 组切换：结算上一组 judge token
+            if cur_group is not None:
+                judge_tokens_by_group[cur_group] = judge_capture.snapshot()
+                judge_capture.reset()
+            cur_group = s["group"]
+            judge_tokens_by_group.setdefault(cur_group, _empty_tokens())
+        print(f"\n----- 评分 {i}/{len(samples)} [{cur_group}]: {s['text']} -----")
         if not s.get("answer"):
             scores = {m: {"score": None, "details": {"note": "RAG 生成失败/被跳过"}}
                       for m in metrics}
@@ -158,6 +225,9 @@ async def main() -> None:
         line = " | ".join(f"{m}={fmt_score(scores[m]['score'])}" for m in metrics)
         print(f"    {line}")
         detail.append({
+            "group": s["group"],
+            "group_name": (s.get("group_name")
+                           or group_defs.get(s["group"], {}).get("name", s["group"])),
             "text": s["text"],
             "expect_doc": s.get("expect_doc"),
             "reference_answer": s.get("reference_answer"),
@@ -166,33 +236,44 @@ async def main() -> None:
             "ms": s.get("ms"), "tokens": s.get("tokens"),
             "scores": scores,
         })
+    if cur_group is not None:  # 结算最后一组
+        judge_tokens_by_group[cur_group] = judge_capture.snapshot()
     judge_capture.detach()
 
-    # ── 汇总 ──
-    rows = []
-    means = {m: [] for m in metrics}
-    for d in detail:
-        rows.append([d["text"][:24]] + [fmt_score(d["scores"][m]["score"])
-                                        for m in metrics])
-        for m in metrics:
-            v = d["scores"][m]["score"]
-            if isinstance(v, (int, float)):
-                means[m].append(v)
-    mean_row = ["均值(有效题)"] + [
-        f"{sum(means[m]) / len(means[m]):.3f}" if means[m] else "-"
-        for m in metrics]
-    valid_row = ["有效题数"] + [f"{len(means[m])}/{len(detail)}" for m in metrics]
+    # ── 汇总：组级均值矩阵（核心对比）+ 逐题明细 ──
+    def _mean_of(group: str, metric: str):
+        vals = [d["scores"][metric]["score"] for d in detail
+                if d["group"] == group
+                and isinstance(d["scores"][metric]["score"], (int, float))]
+        return (sum(vals) / len(vals), len(vals)) if vals else (None, 0)
 
-    print(f"\n{'=' * 60}\n评估汇总\n{'=' * 60}")
-    ec.print_table(["问题"] + metrics, rows)
-    ec.print_table(["统计"] + metrics, [mean_row, valid_row])
-    print("\n指标说明（论文 §3，均为 [0,1] 越高越好）：")
+    group_rows = []
+    group_means = {}
+    for gkey, ginfo in group_defs.items():
+        if gkey not in {d["group"] for d in detail}:
+            continue
+        means = {m: _mean_of(gkey, m)[0] for m in metrics}
+        counts = {m: _mean_of(gkey, m)[1] for m in metrics}
+        group_means[gkey] = {"name": ginfo["name"],
+                             "means": means, "valid_counts": counts}
+        group_rows.append([ginfo["name"]]
+                          + [fmt_score(means[m]) for m in metrics])
+    print(f"\n{'=' * 60}\n组级对比矩阵（均值，[0,1] 越高越好）\n{'=' * 60}")
+    ec.print_table(["开关组"] + metrics, group_rows)
+
+    per_rows = [[f"{d['group']} {d['text'][:20]}"]
+                + [fmt_score(d["scores"][m]["score"]) for m in metrics]
+                for d in detail]
+    print(f"\n逐题分数明细：")
+    ec.print_table(["组/问题"] + metrics, per_rows)
+    print("\n指标说明（论文 §3）：")
     print("  faithfulness       答案陈述可被召回上下文推断的比例（幻觉反向指标）")
     print("  answer_relevance   从答案反生成问题与原问题的嵌入余弦均值（答非所问反向指标）")
     print("  context_relevance  召回上下文中关键句占比（越低越冗余；过低提示 top_k 过大）")
+    print("  组间对比：D 相对 A 的 faithfulness/answer_relevance 提升 = 增强对生成质量的贡献；"
+          "context_relevance 变化 = 增强对检索聚焦度的影响")
 
     # ── meta 与落盘 ──
-    judge_tokens = judge_capture.snapshot()
     meta = {
         "test": "ragas_eval",
         "started_at": started_at,
@@ -204,10 +285,13 @@ async def main() -> None:
                "chunk_overlap": ec._CFG["kb"]["chunk_overlap"]},
         "retrieval": {"top_k": ec._CFG["agents"].get("top_k", 4),
                       "score_threshold": ec._CFG["agents"].get("score_threshold", 0.3)},
+        "groups": group_defs,
         "params": {"questions_file": questions_file,
                    "quick": bool(args.quick), "limit": args.limit,
                    "throttle": seconds, "reuse_from": args.reuse},
-        "tokens": {"rag_chain": rag_total_tokens, "judge": judge_tokens},
+        "tokens": {g: {"rag": rag_tokens_by_group.get(g, _empty_tokens()),
+                       "judge": judge_tokens_by_group.get(g, _empty_tokens())}
+                   for g in {**(rag_tokens_by_group), **judge_tokens_by_group}},
     }
     if args.reuse:
         # 复用模式：被测模型信息取自历史 meta（本次未走被测 Agent）
@@ -221,8 +305,8 @@ async def main() -> None:
                          "base_url": judge_llm.base_url}
     meta["embedding"] = {"provider": embed_cfg.provider,
                          "model": embed_cfg.model_name}
-    ec.save_result("ragas_eval", {"summary": rows, "mean": mean_row,
-                                  "valid_count": valid_row, "detail": detail},
+    ec.save_result("ragas_eval", {"group_means": group_means,
+                                  "summary": per_rows, "detail": detail},
                    meta)
 
 
