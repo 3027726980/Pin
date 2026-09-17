@@ -57,9 +57,11 @@ frontend/components.d.ts
 backend/__pycache__/
 backend/**/__pycache__/
 
-# Dev scripts（仅开发用，不提交；rag-eval 评估框架除外）
+# Dev scripts（仅开发用，不提交；rag-eval / ragas-official 评估框架与报告生成器除外）
 backend/scripts-dev/*
 !backend/scripts-dev/rag-eval/
+!backend/scripts-dev/ragas-official/
+!backend/scripts-dev/gen_eval_report.py
 # rag-eval 内的本地数据与密钥不入库（框架代码与 example 模板入库）
 backend/scripts-dev/rag-eval/eval_config.yaml
 backend/scripts-dev/rag-eval/questions/
