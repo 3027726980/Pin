@@ -61,7 +61,9 @@ backend/**/__pycache__/
 backend/scripts-dev/*
 !backend/scripts-dev/rag-eval/
 !backend/scripts-dev/ragas-official/
-!backend/scripts-dev/gen_eval_report.py
+!backend/scripts-dev/eval-report/
+# eval-report 报告生成物不入库（脚本入库）
+backend/scripts-dev/eval-report/eval_report.html
 # rag-eval 内的本地数据与密钥不入库（框架代码与 example 模板入库）
 backend/scripts-dev/rag-eval/eval_config.yaml
 backend/scripts-dev/rag-eval/questions/

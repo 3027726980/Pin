@@ -8,16 +8,17 @@
 轻量裁剪：只取分数与元数据（不嵌入 citations 全文/指标中间产物，控制文件体积）。
 
 用法：
-    .venv/Scripts/python backend/scripts-dev/gen_eval_report.py [--out eval_report.html] [--keep 5]
+    .venv/Scripts/python backend/scripts-dev/eval-report/gen_eval_report.py [--out 路径] [--keep 5]
 
-产物默认 backend/scripts-dev/eval_report.html（Git 忽略），双击浏览器打开。
+产物默认 backend/scripts-dev/eval-report/eval_report.html（Git 忽略），双击浏览器打开。
 """
 import argparse
 import json
 from datetime import datetime
 from pathlib import Path
 
-SCRIPTS_DEV = Path(__file__).parent
+SCRIPTS_DEV = Path(__file__).parent.parent   # backend/scripts-dev（三套体系 results 的共同父目录）
+REPORT_PATH = Path(__file__).parent / "eval_report.html"  # 默认产物路径（与脚本同目录）
 SOURCES = {
     "bench": SCRIPTS_DEV / "bench" / "results",
     "rag_eval": SCRIPTS_DEV / "rag-eval" / "results",
@@ -337,8 +338,8 @@ def build_data(keep: int) -> dict:
 def main() -> None:
     """扫描结果 → 注入 HTML 模板 → 落盘"""
     parser = argparse.ArgumentParser(description="三套评估体系结果 HTML 报告生成")
-    parser.add_argument("--out", default=str(SCRIPTS_DEV / "eval_report.html"),
-                        help="报告输出路径（默认 backend/scripts-dev/eval_report.html）")
+    parser.add_argument("--out", default=str(REPORT_PATH),
+                        help="报告输出路径（默认 eval-report/eval_report.html，与脚本同目录）")
     parser.add_argument("--keep", type=int, default=5, help="每套体系保留最近 N 次运行")
     args = parser.parse_args()
 
