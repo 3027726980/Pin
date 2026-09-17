@@ -57,23 +57,8 @@ frontend/components.d.ts
 backend/__pycache__/
 backend/**/__pycache__/
 
-# Dev scripts（仅开发用，不提交；rag-eval / ragas-official 评估框架与报告生成器除外）
-backend/scripts-dev/*
-!backend/scripts-dev/rag-eval/
-!backend/scripts-dev/ragas-official/
-!backend/scripts-dev/eval-report/
-# eval-report 报告生成物不入库（脚本入库）
-backend/scripts-dev/eval-report/eval_report.html
-# rag-eval 内的本地数据与密钥不入库（框架代码与 example 模板入库）
-backend/scripts-dev/rag-eval/eval_config.yaml
-backend/scripts-dev/rag-eval/questions/
-backend/scripts-dev/rag-eval/results/
-# ragas-official：框架代码入库，密钥配置/测试集/结果/tiktoken 离线缓存不入库
-!backend/scripts-dev/ragas-official/
-backend/scripts-dev/ragas-official/official_config.yaml
-backend/scripts-dev/ragas-official/testsets/
-backend/scripts-dev/ragas-official/results/
-backend/scripts-dev/ragas-official/tiktoken_cache/
+# Dev scripts（仅开发阶段使用，全部不入库）
+backend/scripts-dev/
 
 # 本地代码扫描工具目录
 .sonar/
