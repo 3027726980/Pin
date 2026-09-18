@@ -19,6 +19,8 @@ Rerank（rerank_enabled）：粗召回 top_k*factor → RerankService 精排 →
   mqe_query_count     → tools.default_mqe_query_count
   rerank_enabled      → tools.default_rerank_enabled
 """
+import asyncio
+import functools
 import json
 import logging
 from uuid import UUID
@@ -224,13 +226,20 @@ class RAGTool(BaseTool):
             debug_store["queries"] = list(queries)
 
         # 4. 批量向量化（多 query 一次调用）
-        query_vecs = EmbeddingService.embed(
-            provider=emb_cfg.provider,
-            model_name=emb_cfg.model_name,
-            api_key=emb_cfg.api_key,
-            base_url=emb_cfg.base_url,
-            texts=queries,
-            protocol=emb_cfg.protocol,
+        # 同步 embed（本地 torch 推理 / 同步 HTTP）扔进线程池执行：
+        # 本方法是用户等待答案的热路径，同步直调会冻结事件循环
+        # （卡住期间所有请求与 SSE 流停摆；线程在等待 I/O/内核计算时释放 GIL，循环不受影响）
+        query_vecs = await asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                EmbeddingService.embed,
+                provider=emb_cfg.provider,
+                model_name=emb_cfg.model_name,
+                api_key=emb_cfg.api_key,
+                base_url=emb_cfg.base_url,
+                texts=queries,
+                protocol=emb_cfg.protocol,
+            ),
         )
         max_dim = settings.embedding.max_dimension
 

@@ -2,6 +2,7 @@
 文档处理服务：解析 → 分块 → 向量化 + 上传自动处理后台任务
 """
 import asyncio
+import functools
 import logging
 from pathlib import Path
 from uuid import UUID
@@ -216,13 +217,20 @@ class DocumentProcessService:
             texts = [c.content for c in batch]
 
             try:
-                vectors = EmbeddingService.embed(
-                    provider=provider,
-                    model_name=model_name,
-                    api_key=api_key,
-                    base_url=url,
-                    texts=texts,
-                    protocol=cfg.protocol,
+                # 同步 embed（本地 torch 推理 / 同步 HTTP）扔进线程池执行：
+                # 同步直调会冻结事件循环（卡住期间所有请求与 SSE 流停摆；
+                # 线程在等待 I/O/内核计算时释放 GIL，循环不受影响）
+                vectors = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    functools.partial(
+                        EmbeddingService.embed,
+                        provider=provider,
+                        model_name=model_name,
+                        api_key=api_key,
+                        base_url=url,
+                        texts=texts,
+                        protocol=cfg.protocol,
+                    ),
                 )
             except Exception as e:
                 logger.error(f"第 {i // batch_size + 1} 批向量化失败: {e}")

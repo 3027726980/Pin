@@ -11,6 +11,7 @@ Embedding 服务 — 协议注册表模式（provider 名分发，未知厂商�
     调用方（rag.py / document_process.py）零改动
 """
 import logging
+import threading
 
 from backend.core.config import settings
 from backend.core.utils import resolve_local_device
@@ -76,6 +77,9 @@ class LocalEmbedding:
 
     _model = None
     _model_key = None  # "<model_name>|<device>"，模型或设备变更时重新加载
+    # 模型加载锁：embed 线程池化后，多个池线程可能并发首调，
+    # 双重检查锁防止模型被重复加载（check-then-act 竞态）
+    _model_lock = threading.Lock()
 
     @staticmethod
     def embed(model_name: str, api_key: str | None, base_url: str | None, texts: list[str]) -> list[list[float]]:
@@ -98,12 +102,14 @@ class LocalEmbedding:
             what="embedding")
         key = f"{model_name}|{device}"
         if LocalEmbedding._model is None or LocalEmbedding._model_key != key:
-            LocalEmbedding._model = SentenceTransformer(
-                str(model_dir),
-                device=device,
-                local_files_only=True,
-            )
-            LocalEmbedding._model_key = key
+            with LocalEmbedding._model_lock:
+                if LocalEmbedding._model is None or LocalEmbedding._model_key != key:
+                    LocalEmbedding._model = SentenceTransformer(
+                        str(model_dir),
+                        device=device,
+                        local_files_only=True,
+                    )
+                    LocalEmbedding._model_key = key
 
         model = LocalEmbedding._model
         results = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
