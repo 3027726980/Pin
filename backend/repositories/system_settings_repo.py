@@ -31,4 +31,6 @@ class SystemSettingsRepo:
                     index_elements=["key"],
                     set_={"value": value, "description": description})
                 .returning(SystemSettings))
-        return (await db.execute(stmt)).scalar_one()
+        return (await db.execute(
+            stmt.execution_options(populate_existing=True)
+        )).scalar_one()

@@ -348,7 +348,7 @@ export class ChatWidget {
         await this.newConversation()
       }
     } catch (e) {
-      this.msgs = [{ role: 'assistant', content: `[错误] ${(e as Error).message}`, citations: [], rawCitations: [] }]
+      this.msgs = [{ role: 'assistant', content: `[错误] ${(e as Error).message}`, citations: [], rawCitations: [], citationBindings: [] }]
       this.renderBody()
     }
   }
@@ -392,8 +392,8 @@ export class ChatWidget {
     const text = this.inputEl.value.trim()
     if (!text || this.streaming || !this.activeConv) return
     this.inputEl.value = ''
-    this.msgs.push({ role: 'user', content: text, citations: [], rawCitations: [] })
-    const assistantMsg: Msg = { role: 'assistant', content: '', citations: [], rawCitations: [], pending: true }
+    this.msgs.push({ role: 'user', content: text, citations: [], rawCitations: [], citationBindings: [] })
+    const assistantMsg: Msg = { role: 'assistant', content: '', citations: [], rawCitations: [], citationBindings: [], pending: true }
     this.msgs.push(assistantMsg)
     this.renderBody()
     this.scrollBottom()
@@ -417,6 +417,7 @@ export class ChatWidget {
             assistantMsg.citations = e.citations || []
             // 完整列表优先（保留原始编号供引用面板渲染）；兼容无 rawCitations 的旧事件
             assistantMsg.rawCitations = e.rawCitations || assistantMsg.citations
+            assistantMsg.citationBindings = e.bindings || []
             assistantMsg.pending = false
             this.updateLastAssistant()
             // 首轮命名同步（后端一致：前 10 字 + 省略号）
@@ -532,12 +533,31 @@ export class ChatWidget {
     }
     const parts = splitRefs(m.content)
       .map(p => p.type === 'ref'
-        ? `<span class="pin-ref" data-action="cite" data-msg="${idx}" data-idx="${p.index}">[${p.index}]</span>`
+        ? `<span class="pin-ref" data-action="cite" data-msg="${idx}" data-idx="${escapeHtml(p.sourceId || String(p.index))}">${escapeHtml(p.value)}</span>`
         : escapeHtml(p.value))
       .join('')
     // 引用来源：仅渲染回答中实际引用的条目（与主站逻辑一致——无 [N] 标注不显示引用面板）
     // 用 rawCitations（完整列表）保留原始编号，避免过滤后编号错位
     const cites = (() => {
+      if (m.citationBindings.length > 0) {
+        return `<div class="pin-cites" data-msg="${idx}">
+          <div class="pin-cites-bar" data-action="toggle-cites" data-msg="${idx}">
+            <span>引用来源（${m.citationBindings.length} 条）</span><span class="pin-cites-arrow">▾</span>
+          </div>
+          <div class="pin-cites-body">
+            ${m.citationBindings.map(binding => {
+              const sourceId = escapeHtml(binding.source_id)
+              const long = binding.quote.length > 100
+              return `<div class="pin-cite-item" data-cite="${idx}-${sourceId}">
+                <div class="doc"><span>[${sourceId}] 《${escapeHtml(binding.document_name)}》</span><span class="score">相似度 ${binding.score.toFixed(2)}</span></div>
+                <div class="claim">依据：${escapeHtml(binding.claim)}</div>
+                <div class="txt">${escapeHtml(binding.quote)}</div>
+                ${long ? `<div class="cite-toggle" data-action="toggle-cite-content" data-msg="${idx}" data-idx="${sourceId}">展开 ▼</div>` : ''}
+              </div>`
+            }).join('')}
+          </div>
+        </div>`
+      }
       const raw = m.rawCitations && m.rawCitations.length > 0 ? m.rawCitations : (m.citations || [])
       if (raw.length === 0) return ''
       const used = extractRefIndexes(m.content)

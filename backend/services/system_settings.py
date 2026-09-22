@@ -26,10 +26,10 @@ DEFAULT_SETTINGS: dict[str, dict] = {
             {"type": "value_pattern", "pattern": r"Bearer [A-Za-z0-9._-]+", "mask": "keep_3_3"},
         ],
     },
-    # 文档处理：上传后自动处理（解析→分块→向量化）
+    # 文档处理：仅作为新建知识库的自动处理默认值。
     "document": {
-        "auto_process": bool(getattr(getattr(settings, "document", None),
-                                      "auto_process", True)),
+        "default_auto_process": bool(getattr(getattr(settings, "document", None),
+                                              "default_auto_process", False)),
         "max_concurrent": int(getattr(getattr(settings, "document", None),
                                        "max_concurrent", 2)),
     },
@@ -60,6 +60,15 @@ class SystemSettingsService:
             if row is None:
                 await SystemSettingsRepo.upsert(db, key, default)
                 await db.commit()
+        document_row = await SystemSettingsRepo.get_by_key(db, "document")
+        if document_row is not None and "default_auto_process" not in document_row.value:
+            legacy_value = dict(document_row.value)
+            migrated_value = {
+                "default_auto_process": bool(legacy_value.pop("auto_process", False)),
+                "max_concurrent": int(legacy_value.get("max_concurrent", 2)),
+            }
+            await SystemSettingsRepo.upsert(db, "document", migrated_value)
+            await db.commit()
         _cache.clear()
         for row in await SystemSettingsRepo.list_all(db):
             _cache[row.key] = row.value

@@ -104,9 +104,11 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     allowed_extensions    VARCHAR(500),
     max_file_size         BIGINT      NOT NULL DEFAULT 104857600,
     allow_multiple        BOOLEAN     NOT NULL DEFAULT TRUE,
+    auto_process          BOOLEAN     NOT NULL DEFAULT FALSE,
     chunk_size            INT         NOT NULL DEFAULT 800,
     chunk_overlap         INT         NOT NULL DEFAULT 150,
     chunk_separators      VARCHAR(300) NOT NULL DEFAULT E'\n##,\n###,\n,。,., ',
+    cleaning_config       JSONB       NOT NULL DEFAULT '{"rules": []}'::jsonb,
     embedding_model       VARCHAR(100) NOT NULL DEFAULT 'bge-small-zh-v1.5',
     embedding_dimension   INT         NOT NULL DEFAULT 4096,
     user_model_config_id  UUID,       -- 外键在 user_model_config 建表后补充（第 11 节末尾，避免前向引用）
@@ -126,9 +128,11 @@ COMMENT ON COLUMN knowledge_bases.description IS '描述';
 COMMENT ON COLUMN knowledge_bases.allowed_extensions IS '允许的文件后缀，逗号分隔如 .pdf,.txt,.md；为空则允许所有类型';
 COMMENT ON COLUMN knowledge_bases.max_file_size IS '单文件大小上限（字节），默认 104857600 = 100MB';
 COMMENT ON COLUMN knowledge_bases.allow_multiple IS '是否允许多文件上传';
+COMMENT ON COLUMN knowledge_bases.auto_process IS '上传后是否自动执行到向量化；新建时复制系统默认值';
 COMMENT ON COLUMN knowledge_bases.chunk_size IS '分块大小（字符数），默认 800';
 COMMENT ON COLUMN knowledge_bases.chunk_overlap IS '相邻块重叠字符数，默认 150';
 COMMENT ON COLUMN knowledge_bases.chunk_separators IS '递归分隔符（逗号分隔），优先级从高到低';
+COMMENT ON COLUMN knowledge_bases.cleaning_config IS '文档文本清洗规则（受限 JSON 配置）';
 COMMENT ON COLUMN knowledge_bases.embedding_model IS '选用的 Embedding 模型，默认 bge-small-zh-v1.5（本地，零配置）';
 COMMENT ON COLUMN knowledge_bases.embedding_dimension IS '模型输出向量维度，默认 4096（向下兼容，小维度零填充）';
 COMMENT ON COLUMN knowledge_bases.user_model_config_id IS '关联的用户模型配置，有 API Key 时优先使用';
@@ -154,6 +158,9 @@ CREATE TABLE IF NOT EXISTS documents (
     content             TEXT,
     status              SMALLINT    NOT NULL DEFAULT 1,
     is_parsed           SMALLINT    NOT NULL DEFAULT 0,
+    cleaned_content     TEXT,
+    is_cleaned          SMALLINT    NOT NULL DEFAULT 0,
+    cleaning_config_hash VARCHAR(64),
     is_chunked          SMALLINT    NOT NULL DEFAULT 0,
     is_vectorized       SMALLINT    NOT NULL DEFAULT 0,
     last_error          TEXT,                    -- 最近一次处理失败原因（重新处理时清空）
@@ -173,8 +180,11 @@ COMMENT ON COLUMN documents.file_path IS '相对路径，如 uploads/{kb_id}/{na
 COMMENT ON COLUMN documents.file_size IS '文件大小（字节）';
 COMMENT ON COLUMN documents.file_type IS '文件后缀，如 .pdf，无后缀则为 NULL';
 COMMENT ON COLUMN documents.content IS '解析后的完整纯文本';
+COMMENT ON COLUMN documents.cleaned_content IS '按知识库清洗规则处理后的完整纯文本';
 COMMENT ON COLUMN documents.status IS '0=禁用, 1=启用, 9=逻辑删除';
 COMMENT ON COLUMN documents.is_parsed IS '解析状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
+COMMENT ON COLUMN documents.is_cleaned IS '清洗状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
+COMMENT ON COLUMN documents.cleaning_config_hash IS '生成 cleaned_content 所用清洗规则的 SHA-256';
 COMMENT ON COLUMN documents.is_chunked IS '切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.is_vectorized IS '向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.created_at IS '记录创建时间';

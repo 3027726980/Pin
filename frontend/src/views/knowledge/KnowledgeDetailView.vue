@@ -47,15 +47,28 @@
       </n-descriptions>
     </n-card>
 
+    <n-card v-if="kbInfo" title="上传处理策略" size="small" class="strategy-summary-card">
+      <n-space justify="space-between" align="center">
+        <span>上传后自动处理</span>
+        <n-switch v-model:value="strategyDraft.auto_process" @update:value="() => saveStrategy()" />
+      </n-space>
+      <p class="strategy-summary-hint">
+        此开关只控制当前知识库；清洗与切片策略请点击任意文件，在预览中调整并对照效果。
+      </p>
+    </n-card>
+
     <!-- 文件列表 -->
     <n-card title="文件列表" class="file-card">
       <!-- 批量操作栏 -->
       <div v-if="checkedFileKeys.length > 0" class="batch-bar">
         <span class="batch-tip">已选 {{ checkedFileKeys.length }} 项</span>
         <n-space>
-          <n-button size="small" type="primary" :loading="processing" @click="triggerParse">解析选中</n-button>
-          <n-button size="small" type="primary" :loading="processing" @click="triggerChunk">分块选中</n-button>
-          <n-button size="small" type="primary" :loading="processing" @click="triggerVectorize">向量化选中</n-button>
+          <n-dropdown :options="processOptions" trigger="click" @select="handleProcessSelect">
+            <n-button size="small" type="primary" :loading="processing">
+              处理选中
+              <template #icon><n-icon><ChevronDownOutline /></n-icon></template>
+            </n-button>
+          </n-dropdown>
           <n-divider vertical />
           <n-popconfirm @positive-click="batchFilesAction">
             <template #trigger><n-button size="small" type="error">批量删除</n-button></template>
@@ -91,6 +104,122 @@
         />
       </div>
     </n-card>
+
+    <n-drawer v-model:show="previewVisible" :width="1120">
+      <n-drawer-content :title="preview ? `${preview.filename} · 清洗与切片预览` : '文件预览'" closable>
+        <n-spin :show="previewLoading">
+          <template v-if="preview">
+            <n-alert type="info" :show-icon="false" class="preview-notice">
+              本预览只在内存中运行，确认效果后再点击“一键处理选中”写入知识库。
+            </n-alert>
+            <n-alert v-for="warning in preview.warnings" :key="warning" type="warning" :show-icon="false" class="preview-notice">
+              {{ warning }}
+            </n-alert>
+            <div class="preview-layout">
+              <section class="preview-strategy">
+                <h3>当前知识库策略</h3>
+                <n-form label-placement="top" size="small">
+                  <n-form-item label="上传后自动处理">
+                    <n-switch v-model:value="strategyDraft.auto_process" />
+                  </n-form-item>
+                  <n-form-item label="单片长度（字符）">
+                    <n-input-number v-model:value="strategyDraft.chunk_size" :min="50" :max="10000" style="width: 100%" />
+                  </n-form-item>
+                  <n-form-item label="相邻片重叠（字符）">
+                    <n-input-number
+                      v-model:value="strategyDraft.chunk_overlap"
+                      :min="0"
+                      :max="Math.max(0, strategyDraft.chunk_size - 1)"
+                      style="width: 100%"
+                    />
+                  </n-form-item>
+                  <n-form-item label="分隔符优先级（逗号分隔）">
+                    <n-input
+                      v-model:value="strategyDraft.chunk_separators"
+                      class="separator-input"
+                      type="textarea"
+                      :autosize="false"
+                      :resizable="false"
+                      :rows="6"
+                      placeholder="例如：标题、换行、句号、空格"
+                    />
+                  </n-form-item>
+                  <n-form-item label="清洗规则">
+                    <div class="cleaning-rules">
+                      <n-space v-for="(rule, index) in strategyDraft.cleaning_config.rules" :key="index" vertical size="small" class="cleaning-rule-row">
+                        <n-space align="center">
+                          <n-select v-model:value="rule.type" :options="cleaningRuleOptions" style="width: 190px" />
+                          <n-switch v-model:value="rule.enabled" size="small" />
+                          <n-button quaternary type="error" @click="removeCleaningRule(index)">删除</n-button>
+                        </n-space>
+                        <n-input
+                          v-if="rule.type === 'replace_text' || rule.type === 'regex_remove'"
+                          v-model:value="rule.value"
+                          :placeholder="rule.type === 'regex_remove' ? '要删除的正则' : '要替换的文本'"
+                        />
+                        <n-input
+                          v-if="rule.type === 'replace_text' || rule.type === 'regex_remove'"
+                          v-model:value="rule.replacement"
+                          placeholder="替换为（留空即删除）"
+                        />
+                        <n-input-number
+                          v-if="rule.type === 'collapse_blank_lines'"
+                          v-model:value="rule.max_consecutive"
+                          :min="1"
+                          :max="5"
+                          style="width: 100%"
+                        />
+                      </n-space>
+                      <n-button dashed size="small" @click="addCleaningRule">添加清洗规则</n-button>
+                    </div>
+                  </n-form-item>
+                  <n-button type="primary" block :loading="strategySaving" @click="() => saveStrategy()">保存策略并刷新预览</n-button>
+                </n-form>
+              </section>
+              <section class="preview-results">
+                <n-tabs type="line" animated>
+                  <n-tab-pane name="comparison" tab="原文与清洗对照">
+                    <div class="text-comparison">
+                      <section class="comparison-pane">
+                        <h4>刚解析的原文</h4>
+                        <pre class="preview-content comparison-content">{{ preview.raw_content }}</pre>
+                      </section>
+                      <section class="comparison-pane">
+                        <h4>清洗后的文本</h4>
+                        <pre class="preview-content comparison-content">{{ preview.cleaned_content }}</pre>
+                      </section>
+                    </div>
+                  </n-tab-pane>
+                  <n-tab-pane name="chunks" :tab="`切片（${preview.chunks.length}）`">
+                    <n-empty v-if="preview.chunks.length === 0" description="清洗后没有可展示的切片" />
+                    <n-collapse v-else>
+                      <n-collapse-item
+                        v-for="chunk in pagedPreviewChunks"
+                        :key="chunk.index"
+                        :title="`片段 ${chunk.index + 1} · ${chunk.char_count} 字符 · ${chunk.index === 0 ? '不与前片重叠' : `与上一片重叠 ${chunk.overlap_char_count} 字符`}`"
+                        :name="String(chunk.index)"
+                      >
+                        <pre class="preview-content">{{ chunk.content }}</pre>
+                      </n-collapse-item>
+                    </n-collapse>
+                    <div v-if="preview.chunks.length > chunkPreviewPageSize" class="chunk-pagination-wrap">
+                      <n-pagination
+                        v-model:page="chunkPreviewPage"
+                        :page-size="chunkPreviewPageSize"
+                        :item-count="preview.chunks.length"
+                        :page-sizes="[5, 10, 20]"
+                        show-size-picker
+                        @update:page-size="onChunkPreviewPageSizeChange"
+                      />
+                    </div>
+                  </n-tab-pane>
+                </n-tabs>
+              </section>
+            </div>
+          </template>
+        </n-spin>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
@@ -98,17 +227,22 @@
 import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { NButton, NTag, NPopconfirm, NSpace, NIcon, NUpload } from 'naive-ui'
-import { ArrowBackOutline, CloudUploadOutline, TrashOutline } from '@vicons/ionicons5'
+import { ArrowBackOutline, ChevronDownOutline, CloudUploadOutline, TrashOutline } from '@vicons/ionicons5'
 import type { DataTableColumns } from 'naive-ui'
 import {
   getKnowledgeBase,
   listFiles,
   batchFiles,
-  parseDocuments,
-  chunkDocuments,
-  vectorizeDocuments,
+  previewDocument,
+  processDocuments,
+  updateKnowledgeBase,
+  type CleaningConfig,
+  type CleaningRule,
+  type CleaningRuleType,
   type KnowledgeBaseDetail,
   type DocumentListItem,
+  type DocumentPreview,
+  type ProcessTarget,
 } from '@/api/knowledge'
 import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
 import { storage } from '@/utils/storage'
@@ -123,6 +257,14 @@ const kbId = computed(() => route.params.id as string)
 // ── 知识库信息 ──────────────────────────
 const kbInfo = ref<KnowledgeBaseDetail | null>(null)
 const kbName = computed(() => kbInfo.value?.name || '知识库详情')
+const strategySaving = ref(false)
+const strategyDraft = ref({
+  auto_process: false,
+  chunk_size: 800,
+  chunk_overlap: 150,
+  chunk_separators: '',
+  cleaning_config: { rules: [] } as CleaningConfig,
+})
 const modelConfigs = ref<UserModelConfigItem[]>([])
 const embeddingLabel = computed(() => {
   if (!kbInfo.value?.user_model_config_id) return ''
@@ -138,6 +280,53 @@ const filePageSize = ref(20)
 const fileTotal = ref(0)
 const checkedFileKeys = ref<any[]>([])
 const processing = ref(false)
+const previewVisible = ref(false)
+const previewLoading = ref(false)
+const preview = ref<DocumentPreview | null>(null)
+const previewDocumentId = ref<string | null>(null)
+let previewLoadSeq = 0
+const chunkPreviewPage = ref(1)
+const chunkPreviewPageSize = ref(10)
+const pagedPreviewChunks = computed(() => {
+  const chunks = preview.value?.chunks || []
+  const start = (chunkPreviewPage.value - 1) * chunkPreviewPageSize.value
+  return chunks.slice(start, start + chunkPreviewPageSize.value)
+})
+
+function cloneCleaningConfig(config: CleaningConfig): CleaningConfig {
+  // Vue 的响应式 Proxy 不能直接 structuredClone；清洗规则本身是受限 JSON 数据。
+  return JSON.parse(JSON.stringify(config)) as CleaningConfig
+}
+
+function buildSavedStrategyKey() {
+  return {
+    chunk_size: strategyDraft.value.chunk_size,
+    chunk_overlap: strategyDraft.value.chunk_overlap,
+    chunk_separators: strategyDraft.value.chunk_separators,
+    cleaning_config: strategyDraft.value.cleaning_config,
+  }
+}
+
+function buildSavedStrategyFingerprint() {
+  return JSON.stringify(buildSavedStrategyKey())
+}
+
+const cleaningRuleOptions: Array<{ label: string; value: CleaningRuleType }> = [
+  { label: 'Unicode 规范化', value: 'normalize_unicode' },
+  { label: '移除控制字符', value: 'remove_control_chars' },
+  { label: '折叠连续空行', value: 'collapse_blank_lines' },
+  { label: '去除行首尾空白', value: 'trim_lines' },
+  { label: '折叠重复标点', value: 'collapse_punctuation' },
+  { label: '文本替换', value: 'replace_text' },
+  { label: '正则删除', value: 'regex_remove' },
+]
+
+const processOptions: Array<{ label: string; key: ProcessTarget }> = [
+  { label: '完整处理（至向量化）', key: 'vectorize' },
+  { label: '处理至切片（自动先解析、清洗）', key: 'chunk' },
+  { label: '处理至清洗（自动先解析）', key: 'clean' },
+  { label: '仅解析', key: 'parse' },
+]
 
 // fetch 竞态守卫：只有最新一次请求的结果能更新列表（旧响应到达时丢弃）
 let fileFetchSeq = 0
@@ -162,23 +351,34 @@ const acceptExtensions = computed(() => {
 // ── 表格列 ──────────────────────────────
 const fileColumns: DataTableColumns<DocumentListItem> = [
   { type: 'selection' },
-  { title: '文件名', key: 'filename', ellipsis: { tooltip: true } },
+  {
+    title: '文件名',
+    key: 'filename',
+    ellipsis: { tooltip: true },
+    render(row) {
+      return h(NButton, {
+        text: true,
+        type: 'primary',
+        onClick: () => openPreview(row),
+      }, { default: () => row.filename })
+    },
+  },
   {
     title: '状态',
     key: 'status_summary',
     width: 90,
     render(row) {
-      const { is_parsed: p, is_chunked: c, is_vectorized: v } = row
-      if (p === -1 || c === -1 || v === -1) {
+      const { is_parsed: p, is_cleaned: clean, is_chunked: c, is_vectorized: v } = row
+      if (p === -1 || clean === -1 || c === -1 || v === -1) {
         return h(NTag, { type: 'error', size: 'small' }, { default: () => '失败' })
       }
-      if (p === 2 && c === 2 && v === 2) {
+      if (p === 2 && clean === 2 && c === 2 && v === 2) {
         return h(NTag, { type: 'default', size: 'small' }, { default: () => '排队中' })
       }
-      if (p === 2 || c === 2 || v === 2) {
+      if (p === 2 || clean === 2 || c === 2 || v === 2) {
         return h(NTag, { type: 'info', size: 'small' }, { default: () => '处理中' })
       }
-      if (p === 1 && c === 1 && v === 1) {
+      if (p === 1 && clean === 1 && c === 1 && v === 1) {
         return h(NTag, { type: 'success', size: 'small' }, { default: () => '已完成' })
       }
       return h(NTag, { size: 'small', bordered: false }, { default: () => '未处理' })
@@ -216,18 +416,19 @@ const fileColumns: DataTableColumns<DocumentListItem> = [
     },
   },
   {
+    title: '清洗',
+    key: 'is_cleaned',
+    width: 90,
+    render(row) {
+      return renderProcessState(row.is_cleaned)
+    },
+  },
+  {
     title: '切片',
     key: 'is_chunked',
     width: 90,
     render(row) {
-      const map: Record<number, { type: 'default' | 'info' | 'success' | 'warning' | 'error'; label: string }> = {
-        [-1]: { type: 'error', label: '失败' },
-        0: { type: 'default', label: '未完成' },
-        1: { type: 'success', label: '已完成' },
-        2: { type: 'info', label: '进行中' },
-      }
-      const s = map[row.is_chunked] || { type: 'default' as const, label: '未知' }
-      return h(NTag, { type: s.type, size: 'small' }, { default: () => s.label })
+      return renderProcessState(row.is_chunked)
     },
   },
   {
@@ -235,14 +436,7 @@ const fileColumns: DataTableColumns<DocumentListItem> = [
     key: 'is_vectorized',
     width: 90,
     render(row) {
-      const map: Record<number, { type: 'default' | 'info' | 'success' | 'warning' | 'error'; label: string }> = {
-        [-1]: { type: 'error', label: '失败' },
-        0: { type: 'default', label: '未完成' },
-        1: { type: 'success', label: '已完成' },
-        2: { type: 'info', label: '进行中' },
-      }
-      const s = map[row.is_vectorized] || { type: 'default' as const, label: '未知' }
-      return h(NTag, { type: s.type, size: 'small' }, { default: () => s.label })
+      return renderProcessState(row.is_vectorized)
     },
   },
   {
@@ -288,10 +482,69 @@ const fileColumns: DataTableColumns<DocumentListItem> = [
 // ── 数据获取 ────────────────────────────
 async function fetchKnowledgeBase() {
   try {
-    kbInfo.value = await getKnowledgeBase(kbId.value)
+    const detail = await getKnowledgeBase(kbId.value)
+    kbInfo.value = detail
+    strategyDraft.value = {
+      auto_process: detail.auto_process,
+      chunk_size: detail.chunk_size,
+      chunk_overlap: detail.chunk_overlap,
+      chunk_separators: detail.chunk_separators,
+      cleaning_config: structuredClone(detail.cleaning_config || { rules: [] }),
+    }
   } catch (e) {
     message.error((e as Error).message || '获取知识库信息失败')
   }
+}
+
+function createCleaningRule(type: CleaningRuleType = 'trim_lines'): CleaningRule {
+  return { type, enabled: true, replacement: '', max_consecutive: 1 }
+}
+
+function addCleaningRule() {
+  strategyDraft.value.cleaning_config.rules.push(createCleaningRule())
+}
+
+function removeCleaningRule(index: number) {
+  strategyDraft.value.cleaning_config.rules.splice(index, 1)
+}
+
+async function saveStrategy() {
+  if (strategyDraft.value.chunk_overlap >= strategyDraft.value.chunk_size) {
+    message.warning('切片重叠必须小于单片长度')
+    return
+  }
+  const requestedStrategyKey = buildSavedStrategyFingerprint()
+  const payload = {
+    auto_process: strategyDraft.value.auto_process,
+    ...buildSavedStrategyKey(),
+    cleaning_config: cloneCleaningConfig(strategyDraft.value.cleaning_config),
+  }
+  strategySaving.value = true
+  try {
+    const updated = await updateKnowledgeBase(kbId.value, payload)
+    kbInfo.value = updated
+    const draftChangedDuringSave = buildSavedStrategyFingerprint() !== requestedStrategyKey
+    if (!draftChangedDuringSave) {
+      strategyDraft.value = {
+        auto_process: updated.auto_process,
+        chunk_size: updated.chunk_size,
+        chunk_overlap: updated.chunk_overlap,
+        chunk_separators: updated.chunk_separators,
+        cleaning_config: structuredClone(updated.cleaning_config || { rules: [] }),
+      }
+    }
+    message.success('处理策略已保存')
+    if (!draftChangedDuringSave && previewDocumentId.value) await loadPreview(previewDocumentId.value)
+  } catch (e) {
+    message.error((e as Error).message || '保存处理策略失败')
+  } finally {
+    strategySaving.value = false
+  }
+}
+
+function onChunkPreviewPageSizeChange(size: number) {
+  chunkPreviewPageSize.value = size
+  chunkPreviewPage.value = 1
 }
 
 async function fetchFiles(silent = false) {
@@ -321,39 +574,45 @@ function onFilePageSizeChange(size: number) {
 
 // ── 上传回调 ────────────────────────────
 
-// 上传后自动处理轮询（后台任务执行中，轮询文件列表直到全部终态）
-let autoPollTimer: ReturnType<typeof setInterval> | null = null
+// 手动或自动入队后的本页静默轮询。
+let processPollTimer: ReturnType<typeof setInterval> | null = null
 
 function hasProcessingFile(): boolean {
   return fileList.value.some(
-    f => f.is_parsed === 2 || f.is_chunked === 2 || f.is_vectorized === 2
+    f => f.is_parsed === 2 || f.is_cleaned === 2 || f.is_chunked === 2 || f.is_vectorized === 2
   )
 }
 
-function stopAutoPoll() {
-  if (autoPollTimer) {
-    clearInterval(autoPollTimer)
-    autoPollTimer = null
+function stopProcessPoll() {
+  if (processPollTimer) {
+    clearInterval(processPollTimer)
+    processPollTimer = null
   }
 }
 
-function startAutoPoll() {
-  stopAutoPoll()
-  autoPollTimer = setInterval(async () => {
+function startProcessPoll() {
+  stopProcessPoll()
+  processPollTimer = setInterval(async () => {
     await fetchFiles(true)  // 静默刷新，不闪 loading
     if (!hasProcessingFile()) {
-      stopAutoPoll()
+      stopProcessPoll()
     }
   }, 2000)
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function onUploadFinish() {
-  message.success('上传成功，后台自动处理中…')
+  void refreshAfterUpload()
+}
+
+async function refreshAfterUpload() {
+  message.success('上传成功，点击文件可预览并调整处理策略')
   filePage.value = 1
-  fetchFiles()
-  procStore.startPolling() // 启动全局处理浮窗（跨页面跟踪所有知识库任务）
-  startAutoPoll()
+  await fetchFiles()
+  if (kbInfo.value?.auto_process) {
+    procStore.startPolling()
+    startProcessPoll()
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -393,59 +652,59 @@ async function batchFilesAction() {
   }
 }
 
-async function triggerParse() {
+async function openPreview(row: DocumentListItem) {
+  previewVisible.value = true
+  previewDocumentId.value = row.id
+  preview.value = null
+  await loadPreview(row.id)
+}
+
+async function loadPreview(docId: string) {
+  const seq = ++previewLoadSeq
+  previewLoading.value = true
+  try {
+    const result = await previewDocument(kbId.value, docId)
+    if (seq !== previewLoadSeq) return
+    preview.value = result
+    chunkPreviewPage.value = 1
+  } catch (e) {
+    if (seq === previewLoadSeq) message.error((e as Error).message || '预览生成失败')
+  } finally {
+    if (seq === previewLoadSeq) previewLoading.value = false
+  }
+}
+
+function handleProcessSelect(key: string | number) {
+  void triggerProcess(key as ProcessTarget)
+}
+
+async function triggerProcess(targetStage: ProcessTarget = 'vectorize') {
+  if (checkedFileKeys.value.length === 0) return
   processing.value = true
   try {
-    const res = await parseDocuments(kbId.value, checkedFileKeys.value)
-    message.success(`解析完成：成功 ${res.processed} / ${res.total}`)
+    const res = await processDocuments(kbId.value, checkedFileKeys.value as string[], targetStage)
+    const label = processOptions.find(option => option.key === targetStage)?.label || '处理'
+    message.success(`已加入“${label}”队列：${res.processed} 个文件`)
+    checkedFileKeys.value = []
     fetchFiles()
+    procStore.startPolling()
+    startProcessPoll()
   } catch (e) {
-    message.error((e as Error).message || '解析失败')
+    message.error((e as Error).message || '一键处理入队失败')
   } finally {
     processing.value = false
   }
 }
 
-async function triggerChunk() {
-  // 检查是否都已解析
-  const unchecked = fileList.value.filter(
-    f => checkedFileKeys.value.includes(f.id) && f.is_parsed !== 1
-  )
-  if (unchecked.length > 0) {
-    message.warning(`有 ${unchecked.length} 个文件未解析，请先点击"解析选中"`)
-    return
+function renderProcessState(value: number) {
+  const map: Record<number, { type: 'default' | 'info' | 'success' | 'warning' | 'error'; label: string }> = {
+    [-1]: { type: 'error', label: '失败' },
+    0: { type: 'default', label: '未完成' },
+    1: { type: 'success', label: '已完成' },
+    2: { type: 'info', label: '进行中' },
   }
-  processing.value = true
-  try {
-    const res = await chunkDocuments(kbId.value, checkedFileKeys.value)
-    message.success(`分块完成：成功 ${res.processed} / ${res.total}`)
-    fetchFiles()
-  } catch (e) {
-    message.error((e as Error).message || '分块失败')
-  } finally {
-    processing.value = false
-  }
-}
-
-async function triggerVectorize() {
-  // 检查是否都已解析+分块
-  const unchecked = fileList.value.filter(
-    f => checkedFileKeys.value.includes(f.id) && (f.is_parsed !== 1 || f.is_chunked !== 1)
-  )
-  if (unchecked.length > 0) {
-    message.warning(`有 ${unchecked.length} 个文件未准备就绪，请先完成"解析"和"分块"`)
-    return
-  }
-  processing.value = true
-  try {
-    const res = await vectorizeDocuments(kbId.value, checkedFileKeys.value)
-    message.success(`向量化完成：成功 ${res.processed} / ${res.total}`)
-    fetchFiles()
-  } catch (e) {
-    message.error((e as Error).message || '向量化失败')
-  } finally {
-    processing.value = false
-  }
+  const state = map[value] || { type: 'default' as const, label: '未知' }
+  return h(NTag, { type: state.type, size: 'small' }, { default: () => state.label })
 }
 
 // ── 工具 ────────────────────────────────
@@ -475,7 +734,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  stopAutoPoll()
+  stopProcessPoll()
 })
 </script>
 
@@ -497,6 +756,16 @@ onUnmounted(() => {
 
 .info-card {
   margin-bottom: 16px;
+}
+
+.strategy-summary-card {
+  margin-bottom: 16px;
+}
+
+.strategy-summary-hint {
+  margin: 10px 0 0;
+  color: var(--n-text-color-3);
+  font-size: 13px;
 }
 
 .file-card {
@@ -522,5 +791,108 @@ onUnmounted(() => {
 .batch-tip {
   font-size: 14px;
   font-weight: 500;
+}
+
+.preview-notice {
+  margin-bottom: 12px;
+}
+
+.preview-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--n-font-family-mono);
+  line-height: 1.65;
+}
+
+.preview-layout {
+  display: flex;
+  gap: 16px;
+  min-height: 560px;
+}
+
+.preview-strategy {
+  flex: 0 0 330px;
+  overflow-y: auto;
+  padding-right: 16px;
+  border-right: 1px solid var(--n-border-color);
+}
+
+.preview-strategy h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.preview-results {
+  min-width: 0;
+  flex: 1;
+}
+
+.separator-input :deep(textarea) {
+  overflow-y: auto !important;
+  resize: none;
+}
+
+.text-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.comparison-pane {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+}
+
+.comparison-pane h4 {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: var(--n-color-embedded);
+  border-bottom: 1px solid var(--n-border-color);
+}
+
+.comparison-content {
+  max-height: 560px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.chunk-pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.cleaning-rules {
+  width: 100%;
+}
+
+.cleaning-rule-row {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 8px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+}
+
+@media (max-width: 900px) {
+  .preview-layout {
+    flex-direction: column;
+  }
+
+  .preview-strategy {
+    flex-basis: auto;
+    padding-right: 0;
+    padding-bottom: 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--n-border-color);
+  }
+
+  .text-comparison {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

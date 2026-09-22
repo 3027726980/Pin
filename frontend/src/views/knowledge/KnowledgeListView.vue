@@ -100,6 +100,41 @@
             placeholder="选择向量化模型"
           />
         </n-form-item>
+        <n-form-item label="清洗规则">
+          <div class="cleaning-rules">
+            <n-alert type="info" :show-icon="false" class="cleaning-hint">
+              规则按顺序执行。新建时先读取服务端 config.yaml 默认规则；已有文件会在下次一键处理时使用新规则。
+            </n-alert>
+            <n-space v-for="(rule, index) in cleaningConfig.rules" :key="index" align="center" class="cleaning-rule-row">
+              <n-select v-model:value="rule.type" :options="cleaningRuleOptions" style="width: 180px" />
+              <n-switch v-model:value="rule.enabled" size="small">
+                <template #checked>启用</template>
+                <template #unchecked>关闭</template>
+              </n-switch>
+              <n-input
+                v-if="rule.type === 'replace_text' || rule.type === 'regex_remove'"
+                v-model:value="rule.value"
+                :placeholder="rule.type === 'regex_remove' ? '要删除的正则' : '要替换的文本'"
+                style="width: 150px"
+              />
+              <n-input
+                v-if="rule.type === 'replace_text' || rule.type === 'regex_remove'"
+                v-model:value="rule.replacement"
+                placeholder="替换为（留空即删除）"
+                style="width: 150px"
+              />
+              <n-input-number
+                v-if="rule.type === 'collapse_blank_lines'"
+                v-model:value="rule.max_consecutive"
+                :min="1"
+                :max="5"
+                style="width: 110px"
+              />
+              <n-button quaternary type="error" @click="removeCleaningRule(index)">删除</n-button>
+            </n-space>
+            <n-button dashed size="small" @click="addCleaningRule">添加规则</n-button>
+          </div>
+        </n-form-item>
       </n-form>
 
       <template #footer>
@@ -123,12 +158,16 @@ import type { FormInst, FormRules, DataTableColumns } from 'naive-ui'
 import {
   listKnowledgeBases,
   getKnowledgeBase,
+  getKnowledgeBaseDefaults,
   createKnowledgeBase,
   updateKnowledgeBase,
   batchKnowledgeBases,
   type KnowledgeBaseListItem,
   type KnowledgeBaseDetail,
   type KnowledgeBaseCreate,
+  type CleaningConfig,
+  type CleaningRule,
+  type CleaningRuleType,
   type BatchAction,
 } from '@/api/knowledge'
 import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
@@ -147,6 +186,29 @@ const embeddingOptions = computed(() => {
       value: c.id,
     }))
 })
+
+const cleaningConfig = ref<CleaningConfig>({ rules: [] })
+const cleaningRuleOptions: Array<{ label: string; value: CleaningRuleType }> = [
+  { label: 'Unicode 规范化', value: 'normalize_unicode' },
+  { label: '移除控制字符', value: 'remove_control_chars' },
+  { label: '折叠连续空行', value: 'collapse_blank_lines' },
+  { label: '去除行首尾空白', value: 'trim_lines' },
+  { label: '折叠重复标点', value: 'collapse_punctuation' },
+  { label: '文本替换', value: 'replace_text' },
+  { label: '正则删除', value: 'regex_remove' },
+]
+
+function createCleaningRule(type: CleaningRuleType = 'trim_lines'): CleaningRule {
+  return { type, enabled: true, replacement: '', max_consecutive: 1 }
+}
+
+function addCleaningRule() {
+  cleaningConfig.value.rules.push(createCleaningRule())
+}
+
+function removeCleaningRule(index: number) {
+  cleaningConfig.value.rules.splice(index, 1)
+}
 
 // ── 列表状态 ────────────────────────────
 const loading = ref(false)
@@ -298,7 +360,7 @@ function onPageSizeChange(size: number) {
 }
 
 // ── CRUD 操作 ──────────────────────────
-function openCreate() {
+async function openCreate() {
   editingId.value = null
   formData.value = {
     name: '', description: '', allowed_extensions: '',
@@ -307,6 +369,13 @@ function openCreate() {
   }
   maxFileSizeMB.value = null
   modalShow.value = true
+  try {
+    const defaults = await getKnowledgeBaseDefaults()
+    cleaningConfig.value = structuredClone(defaults.cleaning_config)
+  } catch (e) {
+    cleaningConfig.value = { rules: [] }
+    message.error((e as Error).message || '读取默认清洗规则失败')
+  }
 }
 
 async function openEdit(id: string) {
@@ -321,6 +390,7 @@ async function openEdit(id: string) {
       allow_multiple: detail.allow_multiple,
       user_model_config_id: detail.user_model_config_id,
     }
+    cleaningConfig.value = structuredClone(detail.cleaning_config || { rules: [] })
     maxFileSizeMB.value = detail.max_file_size ? +(detail.max_file_size / 1048576).toFixed(2) : null
     modalShow.value = true
   } catch (e) {
@@ -340,6 +410,7 @@ async function handleSubmit() {
     const payload = {
       ...formData.value,
       max_file_size: maxFileSizeMB.value ? Math.round(maxFileSizeMB.value * 1048576) : null,
+      cleaning_config: cleaningConfig.value,
     }
 
     if (editingId.value) {
@@ -456,5 +527,18 @@ onMounted(() => {
 .batch-tip {
   font-size: 14px;
   font-weight: 500;
+}
+
+.cleaning-rules {
+  width: 100%;
+}
+
+.cleaning-hint {
+  margin-bottom: 8px;
+}
+
+.cleaning-rule-row {
+  display: flex;
+  margin-bottom: 8px;
 }
 </style>

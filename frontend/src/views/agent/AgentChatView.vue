@@ -70,15 +70,45 @@
               <span
                 v-else
                 class="citation-ref"
-                :class="{ disabled: !msg.rawCitations || part.index! < 1 || part.index! > msg.rawCitations.length }"
-                @click="locateCitation(msg, part.index!)"
+                :class="{ disabled: !hasCitationReference(msg, part) }"
+                @click="locateCitationReference(msg, part)"
               >
-                [{{ part.index }}]
+                {{ part.value }}
               </span>
             </template>
           </div>
-          <!-- 引用来源（仅展示回答中实际引用的条目） -->
-          <div v-if="msg.role === 'assistant' && msg.citations && msg.citations.length" class="msg-citations">
+          <!-- 可靠引用：服务端已校验回答中的 [S#] 与检索候选的对应关系。 -->
+          <div v-if="msg.role === 'assistant' && msg.citationBindings?.length" class="msg-citations">
+            <n-collapse
+              :expanded-names="msg.refPanelExpanded ? ['cits'] : []"
+              @update:expanded-names="(names: string[]) => (msg.refPanelExpanded = names.includes('cits'))"
+            >
+              <n-collapse-item :title="`引用来源（${msg.citationBindings.length} 条）`" name="cits">
+                <div
+                  v-for="binding in msg.citationBindings"
+                  :key="binding.source_id"
+                  class="citation-item"
+                  :data-citation-index="`${msg.uid}-${binding.source_id}`"
+                >
+                  <div class="citation-head">
+                    <span class="citation-doc">[{{ binding.source_id }}]《{{ binding.document_name }}》</span>
+                    <n-tag size="tiny" type="info" :bordered="false">相似度 {{ binding.score.toFixed(2) }}</n-tag>
+                  </div>
+                  <div class="citation-claim">依据：{{ binding.claim }}</div>
+                  <div class="citation-content" :class="{ expanded: isCitationExpanded(msg, binding.source_id) }">{{ binding.quote }}</div>
+                  <div
+                    v-if="binding.quote && binding.quote.length > 100"
+                    class="citation-toggle"
+                    @click="toggleCitation(msg, binding.source_id)"
+                  >
+                    {{ isCitationExpanded(msg, binding.source_id) ? '收起 ▲' : '展开 ▼' }}
+                  </div>
+                </div>
+              </n-collapse-item>
+            </n-collapse>
+          </div>
+          <!-- 旧会话兼容：仍按历史 [N] 编号渲染。 -->
+          <div v-else-if="msg.role === 'assistant' && msg.citations && msg.citations.length" class="msg-citations">
             <n-collapse
               :expanded-names="msg.refPanelExpanded ? ['cits'] : []"
               @update:expanded-names="(names: string[]) => (msg.refPanelExpanded = names.includes('cits'))"
@@ -241,6 +271,7 @@ import {
   type AgentDetail,
   type ChatMessage,
   type ChatCitation,
+  type CitationBinding,
   type ChatDebug,
   type ChatSuggestion,
 } from '@/api/agent'
@@ -258,11 +289,13 @@ interface DisplayMessage extends ChatMessage {
   /** 消息唯一标识（引用定位锚点用） */
   uid: number
   citations?: ChatCitation[]
+  /** 经过服务端候选来源校验的稳定引用绑定（新会话） */
+  citationBindings?: CitationBinding[]
   /** 完整引用列表（过滤前，保留原始编号用） */
   rawCitations?: ChatCitation[]
   error?: boolean
   /** 每条引用的展开状态（原始索引 → 是否展开） */
-  expandedCitations?: Record<number, boolean>
+  expandedCitations?: Record<string, boolean>
   /** 引用面板是否展开 */
   refPanelExpanded?: boolean
   // ── Phase 4.10 意图路由展示 ──
@@ -365,13 +398,15 @@ async function openConversation(conv: ConversationItem) {
       // 引用过滤：后端存的是完整检索列表，仅展示回答中实际引用（[N] 标注）的条目，
       // 与流式逻辑/widget 的 filterUsedCitations 一致；rawCitations 保留完整列表供原始编号
       const raw = m.citations || []
+      const bindings = m.citation_bindings || []
       const used = extractRefIndexes(m.content || '')
       return {
         role: m.role,
         content: m.content,
         uid: ++msgUid,
-        citations: raw.filter((_, i) => used.has(i + 1)),
+        citations: bindings.length ? [] : raw.filter((_, i) => used.has(i + 1)),
         rawCitations: raw,
+        citationBindings: bindings,
       }
     })
   } catch (e) {
@@ -463,6 +498,7 @@ async function doRequest(
       const res = await chatAgent(agentId, { message: text, conversation_id: conversationId, debug: debugMode.value })
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
+      assistantMsg.citationBindings = res.citation_bindings || []
       assistantMsg.debug = res.debug || null
       assistantMsg.intentLabel = res.debug?.intent || null
     } catch (e) {
@@ -502,10 +538,13 @@ async function doRequest(
           assistantMsg.reflect = event.suggestions
           scrollBottom()
         } else if (event.type === 'citations') {
-          // 仅保留回答中实际引用（[N]）的条目，未引用的不展示
+          // 新协议提供服务端校验后的 [S#] 绑定；保留旧编号协议作历史兼容。
+          assistantMsg.citationBindings = event.bindings || []
           assistantMsg.rawCitations = event.citations
           const used = extractRefIndexes(assistantMsg.content)
-          assistantMsg.citations = event.citations.filter((_, i) => used.has(i + 1))
+          assistantMsg.citations = assistantMsg.citationBindings.length
+            ? []
+            : event.citations.filter((_, i) => used.has(i + 1))
         } else if (event.type === 'debug') {
           assistantMsg.debug = event.debug
         } else if (event.type === 'error') {
@@ -659,12 +698,14 @@ function formatTime(iso: string): string {
 
 // ── 引用标注解析与定位 ───────────────────
 
-/** 拆分消息内容：文本段 + [N] 引用标注段（避免 v-html，防 XSS） */
-function splitRefs(content: string): Array<{ type: 'text' | 'ref'; value: string; index?: number }> {
-  const parts = content.split(/(\[\d+\])/g)
+/** 拆分消息内容：支持可靠来源标记 [S1]，并兼容历史 [N]。 */
+function splitRefs(content: string): Array<{ type: 'text' | 'ref'; value: string; index?: number; sourceId?: string }> {
+  const parts = content.split(/(\[(?:S\d+|\d+)\])/g)
   return parts
     .filter(p => p)
     .map(p => {
+      const stable = p.match(/^\[(S\d+)\]$/)
+      if (stable) return { type: 'ref' as const, value: p, sourceId: stable[1] }
       const m = p.match(/^\[(\d+)\]$/)
       if (m) return { type: 'ref' as const, value: p, index: parseInt(m[1], 10) }
       return { type: 'text' as const, value: p }
@@ -682,7 +723,15 @@ function extractRefIndexes(content: string): Set<number> {
   return set
 }
 
-/** 点击 [N]：展开引用面板 + 展开对应条目 + 滚动定位 */
+function hasCitationReference(
+  msg: DisplayMessage,
+  part: { type: 'text' | 'ref'; value: string; index?: number; sourceId?: string },
+): boolean {
+  if (part.sourceId) return !!msg.citationBindings?.some(binding => binding.source_id === part.sourceId)
+  return !!msg.rawCitations && !!part.index && part.index >= 1 && part.index <= msg.rawCitations.length
+}
+
+/** 点击 [N]：展开历史引用面板 + 展开对应条目 + 滚动定位 */
 function locateCitation(msg: DisplayMessage, n: number) {
   if (!msg.rawCitations || n < 1 || n > msg.rawCitations.length) return
   msg.refPanelExpanded = true
@@ -699,12 +748,34 @@ function locateCitation(msg: DisplayMessage, n: number) {
   })
 }
 
+/** 点击 [S#]：仅按服务端验证过的 source_id 定位，绝不以展示顺序猜测来源。 */
+function locateCitationBinding(msg: DisplayMessage, sourceId: string) {
+  if (!msg.citationBindings?.some(binding => binding.source_id === sourceId)) return
+  msg.refPanelExpanded = true
+  if (!msg.expandedCitations) msg.expandedCitations = {}
+  msg.expandedCitations[sourceId] = true
+  nextTick(() => {
+    window.setTimeout(() => {
+      const el = document.querySelector(`[data-citation-index="${msg.uid}-${sourceId}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 300)
+  })
+}
+
+function locateCitationReference(
+  msg: DisplayMessage,
+  part: { type: 'text' | 'ref'; value: string; index?: number; sourceId?: string },
+) {
+  if (part.sourceId) locateCitationBinding(msg, part.sourceId)
+  else if (part.index) locateCitation(msg, part.index)
+}
+
 // ── 引用展开/收起 ───────────────────────
-function isCitationExpanded(msg: DisplayMessage, idx: number): boolean {
+function isCitationExpanded(msg: DisplayMessage, idx: string | number): boolean {
   return !!msg.expandedCitations?.[idx]
 }
 
-function toggleCitation(msg: DisplayMessage, idx: number) {
+function toggleCitation(msg: DisplayMessage, idx: string | number) {
   if (!msg.expandedCitations) {
     msg.expandedCitations = {}
   }
@@ -868,6 +939,13 @@ function toggleCitation(msg: DisplayMessage, idx: number) {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.citation-claim {
+  margin: 6px 0;
+  color: var(--n-text-color-2);
+  font-size: 13px;
+  line-height: 1.6;
 }
 .citation-content.expanded {
   display: block;

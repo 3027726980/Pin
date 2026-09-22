@@ -1,9 +1,10 @@
 """
-文档处理服务：解析 → 分块 → 向量化 + 上传自动处理后台任务
+文档处理服务：解析 → 清洗 → 分块 → 向量化 + 上传自动处理后台任务
 """
 import asyncio
 import functools
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
@@ -17,6 +18,8 @@ from backend.core.constants import UPLOAD_ROOT
 from backend.core.database import async_session_local
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, UserModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo
+from backend.schemas.knowledge import DocumentPreview, PreviewChunk
+from backend.services.document_cleaning import clean_text, cleaning_hash
 from backend.services.embedding import EmbeddingService
 from backend.services.parsers import get_parser
 from backend.services.system_settings import SystemSettingsService
@@ -24,8 +27,16 @@ from backend.services.system_settings import SystemSettingsService
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class TextChunk:
+    """一段最终可展示或持久化的文本切片及其与前片的真实重叠长度。"""
+
+    content: str
+    overlap_char_count: int = 0
+
+
 class DocumentProcessService:
-    """文档处理：解析 / 分块 / 向量化"""
+    """文档处理：解析 / 清洗 / 分块 / 向量化"""
 
     # ═══════════════════════════════════════════════
     # 解析
@@ -55,8 +66,16 @@ class DocumentProcessService:
             try:
                 parser = get_parser(doc.file_type or "")
                 file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
-                doc.content = parser.parse(str(file_path))
+                parsed_content = await asyncio.to_thread(parser.parse, str(file_path))
+                # PostgreSQL TEXT 无法表示 NUL；这是持久化边界的最小规范化，
+                # 其余控制字符及业务清洗仍由 clean_documents 统一处理。
+                doc.content = parsed_content.replace("\x00", "")
                 doc.is_parsed = 1
+                doc.cleaned_content = None
+                doc.is_cleaned = 0
+                doc.cleaning_config_hash = None
+                doc.is_chunked = 0
+                doc.is_vectorized = 0
                 count += 1
             except Exception as e:
                 logger.error(f"解析文档 {doc.filename} 失败: {e}")
@@ -64,6 +83,120 @@ class DocumentProcessService:
                 doc.last_error = f"解析失败: {e}"
                 continue
 
+        await db.flush()
+        return count
+
+    @staticmethod
+    def _split_text(kb: KnowledgeBases, content: str) -> list[str]:
+        """按知识库分块设置切分文本，返回最终片段内容。"""
+        return [part.content for part in DocumentProcessService._split_text_with_overlap(kb, content)]
+
+    @staticmethod
+    def _split_text_with_overlap(kb: KnowledgeBases, content: str) -> list[TextChunk]:
+        """语义切分后强制保留相邻切片的尾首重叠。"""
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        chunk_size = max(1, int(kb.chunk_size))
+        overlap = min(max(0, int(kb.chunk_overlap)), chunk_size - 1)
+        body_size = max(1, chunk_size - overlap)
+        # 不能 strip：换行符和单个空格本身是有效的语义分隔符。
+        separator_list = [s for s in kb.chunk_separators.split(",") if s != ""]
+        if "" not in separator_list:
+            separator_list.append("")
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=body_size,
+            chunk_overlap=0,
+            separators=separator_list,
+            keep_separator=True,
+        )
+        bodies = [text for text in splitter.split_text(content) if text.strip()]
+        parts: list[TextChunk] = []
+        for body in bodies:
+            if not parts or overlap == 0:
+                parts.append(TextChunk(content=body))
+                continue
+            actual_overlap = min(overlap, len(parts[-1].content))
+            parts.append(TextChunk(
+                content=parts[-1].content[-actual_overlap:] + body,
+                overlap_char_count=actual_overlap,
+            ))
+        return parts
+
+    @staticmethod
+    async def preview_document(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        doc_id: UUID,
+    ) -> DocumentPreview:
+        """在内存中按知识库已保存策略解析、清洗和分块，不写入任何处理结果。"""
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
+            raise HTTPException(status_code=404, detail="文档不存在")
+
+        try:
+            parser = get_parser(doc.file_type or "")
+            file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
+            raw = await asyncio.to_thread(parser.parse, str(file_path))
+            cleaned = clean_text(raw, kb.cleaning_config)
+            chunks = DocumentProcessService._split_text_with_overlap(kb, cleaned)
+        except Exception as exc:
+            logger.error("预览文档 %s 失败: %s", doc.filename, exc)
+            raise HTTPException(status_code=400, detail=f"预览失败: {exc}") from exc
+
+        max_chars = int(getattr(settings.document, "preview_max_chars", 30000))
+        max_chunks = int(getattr(settings.document, "preview_max_chunks", 100))
+        warnings: list[str] = []
+        if len(raw) > max_chars:
+            warnings.append(f"原文已截断为前 {max_chars} 个字符")
+        if len(cleaned) > max_chars:
+            warnings.append(f"清洗文本已截断为前 {max_chars} 个字符")
+        if len(chunks) > max_chunks:
+            warnings.append(f"切片预览已截断为前 {max_chunks} 个片段")
+        return DocumentPreview(
+            document_id=doc.id,
+            filename=doc.filename,
+            raw_content=raw[:max_chars],
+            cleaned_content=cleaned[:max_chars],
+            chunks=[
+                PreviewChunk(
+                    index=index,
+                    content=part.content,
+                    char_count=len(part.content),
+                    overlap_char_count=part.overlap_char_count,
+                )
+                for index, part in enumerate(chunks[:max_chunks])
+            ],
+            cleaning_config_hash=cleaning_hash(kb.cleaning_config),
+            warnings=warnings,
+        )
+
+    @staticmethod
+    async def clean_documents(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        doc_ids: list[UUID],
+    ) -> int:
+        """将已解析原文按知识库规则清洗，持久化到 documents.cleaned_content。"""
+        count = 0
+        config_hash = cleaning_hash(kb.cleaning_config)
+        for doc_id in doc_ids:
+            doc = await DocumentRepo.get_by_id(db, doc_id)
+            if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
+                continue
+            if doc.is_cleaned == 2 or not doc.content:
+                continue
+
+            doc.is_cleaned = 2
+            doc.last_error = None
+            try:
+                doc.cleaned_content = clean_text(doc.content, kb.cleaning_config)
+                doc.cleaning_config_hash = config_hash
+                doc.is_cleaned = 1
+                count += 1
+            except Exception as exc:
+                logger.error("清洗文档 %s 失败: %s", doc.filename, exc)
+                doc.is_cleaned = -1
+                doc.last_error = f"清洗失败: {exc}"
         await db.flush()
         return count
 
@@ -78,21 +211,11 @@ class DocumentProcessService:
         doc_ids: list[UUID],
     ) -> int:
         """
-        对已解析的文档文本进行分块
+        对已清洗的文档文本进行分块
 
-        流程：读取 doc.content 完整文本 → 递归分块 → 替换旧 chunks → 插入新行
+        流程：读取 doc.cleaned_content 完整文本 → 递归分块 → 替换旧 chunks → 插入新行
         返回成功分块的文档数
         """
-        from langchain_text_splitters import RecursiveCharacterTextSplitter  # 延迟 import（启动提速）
-
-        separator_list = [s.strip() for s in kb.chunk_separators.split(",") if s.strip()]
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=kb.chunk_size,
-            chunk_overlap=kb.chunk_overlap,
-            separators=separator_list,
-            keep_separator=True,
-        )
-
         success_count = 0
         for doc_id in doc_ids:
             doc = await DocumentRepo.get_by_id(db, doc_id)
@@ -102,13 +225,13 @@ class DocumentProcessService:
                 continue
 
             # 取完整文本
-            if not doc.content:
+            if doc.is_cleaned != 1 or not doc.cleaned_content:
                 continue
 
             doc.is_chunked = 2
             doc.last_error = None  # 重新处理开始，清空上次失败原因
             try:
-                texts = splitter.split_text(doc.content)
+                parts = DocumentProcessService._split_text_with_overlap(kb, doc.cleaned_content)
 
                 # 先删 embeddings（FK 依赖），再删旧 chunks
                 old_chunks = (await db.execute(
@@ -118,16 +241,17 @@ class DocumentProcessService:
                     await db.execute(delete(Embeddings).where(Embeddings.chunk_id.in_(old_chunks)))
                 await db.execute(delete(Chunks).where(Chunks.document_id == doc_id))
 
-                for i, text in enumerate(texts):
+                for i, part in enumerate(parts):
                     chunk = Chunks(
                         document_id=doc_id,
                         kb_id=kb.id,
                         chunk_index=i,
-                        content=text,
+                        content=part.content,
                         chunk_metadata={
                             "source": doc.filename,
                             "chunk_index": i,
-                            "total_chunks": len(texts),
+                            "total_chunks": len(parts),
+                            "overlap_char_count": part.overlap_char_count,
                         },
                         status=1,
                     )
@@ -265,16 +389,141 @@ class DocumentProcessService:
         return count
 
     # ═══════════════════════════════════════════════
-    # 上传自动处理（后台任务）
+    # 一键全链路处理 / 上传后台任务
     # ═══════════════════════════════════════════════
+
+    @staticmethod
+    async def process_document(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        doc_id: UUID,
+    ) -> bool:
+        """执行解析、清洗、分块和向量化，并在成功后原子替换旧的可检索切片。"""
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
+            return False
+
+        # 清除排队标记或此前处理的瞬态状态；原有 chunks/embeddings 保持可检索，
+        # 直到新切片和向量全部生成成功。
+        doc.is_parsed = 0
+        doc.is_cleaned = 0
+        doc.is_chunked = 0
+        doc.is_vectorized = 0
+        doc.last_error = None
+        await db.flush()
+
+        await DocumentProcessService.parse_documents(db, kb, [doc_id])
+        if doc.is_parsed != 1:
+            return False
+        await DocumentProcessService.clean_documents(db, kb, [doc_id])
+        if doc.is_cleaned != 1 or not doc.cleaned_content:
+            return False
+
+        doc.is_chunked = 2
+        try:
+            parts = DocumentProcessService._split_text_with_overlap(kb, doc.cleaned_content)
+            if not parts:
+                raise ValueError("清洗后的文本为空，无法切片")
+            staged_chunks = [
+                Chunks(
+                    document_id=doc.id,
+                    kb_id=kb.id,
+                    chunk_index=index,
+                    content=part.content,
+                    chunk_metadata={
+                        "source": doc.filename,
+                        "chunk_index": index,
+                        "total_chunks": len(parts),
+                        "overlap_char_count": part.overlap_char_count,
+                    },
+                    status=0,
+                    document=doc,
+                )
+                for index, part in enumerate(parts)
+            ]
+            db.add_all(staged_chunks)
+            await db.flush()
+        except Exception as exc:
+            logger.error("文档 %s 一键分块失败: %s", doc.filename, exc)
+            doc.is_chunked = -1
+            doc.last_error = f"分块失败: {exc}"
+            await db.flush()
+            return False
+
+        vectorized = await DocumentProcessService._do_vectorize(db, kb, staged_chunks)
+        if vectorized != len(staged_chunks) or any(
+            chunk.is_vectorized != 1 for chunk in staged_chunks
+        ):
+            staged_ids = [chunk.id for chunk in staged_chunks]
+            await db.execute(delete(Embeddings).where(Embeddings.chunk_id.in_(staged_ids)))
+            await db.execute(delete(Chunks).where(Chunks.id.in_(staged_ids)))
+            doc.is_chunked = -1
+            doc.is_vectorized = -1
+            doc.last_error = doc.last_error or "向量化失败，已保留旧切片"
+            await db.flush()
+            return False
+
+        staged_ids = [chunk.id for chunk in staged_chunks]
+        old_ids = (await db.execute(
+            select(Chunks.id).where(
+                Chunks.document_id == doc.id,
+                ~Chunks.id.in_(staged_ids),
+            )
+        )).scalars().all()
+        if old_ids:
+            await db.execute(delete(Embeddings).where(Embeddings.chunk_id.in_(old_ids)))
+            await db.execute(delete(Chunks).where(Chunks.id.in_(old_ids)))
+        for chunk in staged_chunks:
+            chunk.status = 1
+        doc.is_chunked = 1
+        doc.is_vectorized = 1
+        doc.last_error = None
+        await db.flush()
+        return True
+
+    @staticmethod
+    async def process_document_to_stage(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        doc_id: UUID,
+        target_stage: str,
+    ) -> bool:
+        """处理到指定阶段，并在服务端重跑所需的前置阶段。"""
+        if target_stage not in {"parse", "clean", "chunk", "vectorize"}:
+            raise ValueError(f"未知处理目标阶段: {target_stage}")
+        if target_stage == "vectorize":
+            return await DocumentProcessService.process_document(db, kb, doc_id)
+
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
+            return False
+        doc.is_parsed = 0
+        doc.is_cleaned = 0
+        doc.is_chunked = 0
+        doc.is_vectorized = 0
+        doc.last_error = None
+        await db.flush()
+
+        await DocumentProcessService.parse_documents(db, kb, [doc_id])
+        if doc.is_parsed != 1 or target_stage == "parse":
+            return doc.is_parsed == 1
+        await DocumentProcessService.clean_documents(db, kb, [doc_id])
+        if doc.is_cleaned != 1 or target_stage == "clean":
+            return doc.is_cleaned == 1
+        await DocumentProcessService.chunk_documents(db, kb, [doc_id])
+        return doc.is_chunked == 1
 
     _auto_process_slots: set[str] = set()  # 正在自动处理的 doc_id（进程内并发上限管理）
     _auto_process_lock = asyncio.Lock()
 
     @staticmethod
-    async def auto_process_document(kb_id: str | UUID, doc_id: str | UUID) -> None:
+    async def auto_process_document(
+        kb_id: str | UUID,
+        doc_id: str | UUID,
+        target_stage: str = "vectorize",
+    ) -> None:
         """
-        上传后自动处理后台任务：解析 → 分块 → 向量化 全链路
+        上传后自动处理后台任务：解析 → 清洗 → 分块 → 向量化 全链路
 
         - 独立 session（BackgroundTasks 执行时请求的 session 已关闭，必须自开）
         - 并发上限动态读 system_settings.document.max_concurrent（排队等待而非丢弃）
@@ -302,21 +551,10 @@ class DocumentProcessService:
                 if kb is None or doc is None or kb.status == 9 or doc.status == 9:
                     return
 
-                # 任务正式启动：清除上传时的"入队"标记（状态 2）后走标准链路。
-                # 原因：parse/chunk/vectorize 对状态 2 有防重复触发保护（自动+手动并发），
-                # 不重置会跳过自己；失败原因也在此清空（重新处理开始）
-                doc.is_parsed = 0
-                doc.is_chunked = 0
-                doc.is_vectorized = 0
-                doc.last_error = None
-                await db.flush()
-
-                # 全链路：解析 → 分块 → 向量化（每步失败短路后续）
-                await DocumentProcessService.parse_documents(db, kb, [doc_id])
-                if doc.is_parsed == 1:
-                    await DocumentProcessService.chunk_documents(db, kb, [doc_id])
-                if doc.is_chunked == 1:
-                    await DocumentProcessService.vectorize_documents(db, kb, [doc_id])
+                # 处理到目标阶段；向量化档使用暂存切片，仅在成功后替换旧可检索数据。
+                await DocumentProcessService.process_document_to_stage(
+                    db, kb, doc_id, target_stage
+                )
                 await db.commit()
         except Exception as e:  # 兜底：未预期异常不冒泡（BackgroundTasks 已返回响应）
             logger.error(f"自动处理文档 {doc_id} 未预期异常: {e}")

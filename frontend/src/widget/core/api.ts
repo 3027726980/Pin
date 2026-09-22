@@ -4,7 +4,7 @@
  * 如 'https://pin.example.com'）
  */
 
-import { getClientId, getToken } from './state'
+import { getClientId, getToken, type CitationBinding, type ConvItem, type Msg } from './state'
 import { filterUsedCitations, type Citation } from './refs'
 
 export interface ChatEvent {
@@ -13,6 +13,8 @@ export interface ChatEvent {
   citations?: Citation[]
   /** 完整引用列表（未过滤，渲染时保留原始编号用；主站同款 rawCitations 语义） */
   rawCitations?: Citation[]
+  /** 服务端验证后的来源绑定；不可由前端按数组下标推断。 */
+  bindings?: CitationBinding[]
   message?: string
   code?: number
 }
@@ -21,6 +23,32 @@ export interface ChatResult {
   conversation_id: string
   answer: string
   citations: Citation[]
+  citation_bindings: CitationBinding[]
+}
+
+function isCitationBinding(value: unknown): value is CitationBinding {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.source_id === 'string'
+    && /^S[1-9]\d*$/.test(item.source_id)
+    && typeof item.chunk_id === 'string'
+    && typeof item.document_name === 'string'
+    && typeof item.claim === 'string'
+    && typeof item.quote === 'string'
+    && typeof item.score === 'number'
+}
+
+/** 公开 SSE 同样不能直接信任 JSON；不完整 binding 不进入 Shadow DOM。 */
+function isChatEvent(value: unknown): value is ChatEvent {
+  if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') return false
+  const event = value as Record<string, unknown>
+  if (event.type === 'delta') return typeof event.content === 'string'
+  if (event.type === 'citations') {
+    return Array.isArray(event.citations)
+      && (event.bindings === undefined || (Array.isArray(event.bindings) && event.bindings.every(isCitationBinding)))
+  }
+  if (event.type === 'done') return true
+  return event.type === 'error' && typeof event.message === 'string'
 }
 
 export class PublicApi {
@@ -110,11 +138,12 @@ export class PublicApi {
     })
     const data = await resp.json()
     if (!resp.ok || data.code !== 200) throw new Error(data.message || '历史消息加载失败')
-    return data.result.items.map((m: { role: string; content: string; citations: Citation[] | null }) => ({
+    return data.result.items.map((m: { role: string; content: string; citations: Citation[] | null; citation_bindings?: CitationBinding[] | null }) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
       citations: m.citations || [],
       rawCitations: m.citations || [],
+      citationBindings: m.citation_bindings || [],
     }))
   }
 
@@ -153,16 +182,19 @@ export class PublicApi {
     let buffer = ''
     let fullContent = ''
     let rawCitations: Citation[] = []
+    let citationBindings: CitationBinding[] = []
 
     const emit = (e: ChatEvent) => {
       if (e.type === 'delta' && e.content) fullContent += e.content
       if (e.type === 'citations' && e.citations) rawCitations = e.citations
+      if (e.type === 'citations' && e.bindings) citationBindings = e.bindings
       if (e.type === 'done') {
         onEvent({
           type: 'done',
           content: fullContent,
-          citations: filterUsedCitations(rawCitations, fullContent),
+          citations: citationBindings.length ? [] : filterUsedCitations(rawCitations, fullContent),
           rawCitations,  // 完整列表：UI 渲染时按内容 [N] 过滤并保留原始编号
+          bindings: citationBindings,
         })
       } else {
         onEvent(e)
@@ -181,16 +213,18 @@ export class PublicApi {
         const payload = trimmed.slice(5).trim()
         if (!payload) continue
         try {
-          emit(JSON.parse(payload))
+          const event: unknown = JSON.parse(payload)
+          if (isChatEvent(event)) emit(event)
         } catch { /* 忽略坏帧 */ }
       }
     }
     // 兜底：流结束但没收到 done（异常断流）
-    if (rawCitations.length > 0 || fullContent) {
+    if (rawCitations.length > 0 || citationBindings.length > 0 || fullContent) {
       onEvent({
         type: 'done', content: fullContent,
-        citations: filterUsedCitations(rawCitations, fullContent),
+        citations: citationBindings.length ? [] : filterUsedCitations(rawCitations, fullContent),
         rawCitations,
+        bindings: citationBindings,
       })
     }
   }
@@ -211,9 +245,7 @@ export class PublicApi {
       conversation_id: r.conversation_id,
       answer: r.answer,
       citations: r.citations || [],
+      citation_bindings: r.citation_bindings || [],
     }
   }
 }
-
-// 引用类型占位（与 state.Msg 对齐）
-import type { ConvItem, Msg } from './state'

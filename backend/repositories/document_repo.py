@@ -239,10 +239,11 @@ class DocumentRepo:
 
         result = await db.execute(_update(Documents).where(
             or_(Documents.is_parsed == 2,
+                Documents.is_cleaned == 2,
                 Documents.is_chunked == 2,
                 Documents.is_vectorized == 2),
             Documents.status != 9,
-        ).values(is_parsed=0, is_chunked=0, is_vectorized=0))
+        ).values(is_parsed=0, is_cleaned=0, is_chunked=0, is_vectorized=0))
         await db.flush()
         return result.rowcount
 
@@ -261,6 +262,7 @@ class DocumentRepo:
                 Documents.id.label("doc_id"),
                 Documents.filename,
                 Documents.is_parsed,
+                Documents.is_cleaned,
                 Documents.is_chunked,
                 Documents.is_vectorized,
                 KnowledgeBases.id.label("kb_id"),
@@ -272,6 +274,7 @@ class DocumentRepo:
                 Documents.status != 9,
                 KnowledgeBases.status != 9,
                 or_(Documents.is_parsed == 2,
+                    Documents.is_cleaned == 2,
                     Documents.is_chunked == 2,
                     Documents.is_vectorized == 2),
             )
@@ -285,6 +288,7 @@ class DocumentRepo:
                 "kb_id": str(r.kb_id),
                 "kb_name": r.kb_name,
                 "is_parsed": r.is_parsed,
+                "is_cleaned": r.is_cleaned,
                 "is_chunked": r.is_chunked,
                 "is_vectorized": r.is_vectorized,
             }

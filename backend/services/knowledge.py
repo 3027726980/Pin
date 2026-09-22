@@ -7,6 +7,7 @@
 """
 import uuid as _uuid
 
+from copy import deepcopy
 from pathlib import Path as _Path
 from uuid import UUID
 
@@ -25,6 +26,8 @@ from backend.schemas.knowledge import (
     KnowledgeBaseUpdate,
     PaginatedResponse,
 )
+from backend.schemas.cleaning import CleaningConfig
+from backend.services.system_settings import SystemSettingsService
 
 
 async def _ensure_model_config(
@@ -63,6 +66,34 @@ class KnowledgeBaseService:
     # ═══════════════════════════════════════════════
 
     @staticmethod
+    def get_default_cleaning_config() -> dict:
+        """读取、校验并深拷贝启动配置中的知识库默认清洗规则。"""
+        default_cleaning = getattr(
+            getattr(settings.document, "cleaning", None),
+            "default_rules",
+            {"rules": []},
+        )
+        source_config = (
+            vars(default_cleaning)
+            if hasattr(default_cleaning, "__dict__")
+            else default_cleaning
+        )
+        CleaningConfig.model_validate(source_config)
+        return deepcopy(source_config)
+
+    @staticmethod
+    def get_default_auto_process() -> bool:
+        """读取当前系统设置中新建知识库的自动处理默认值。"""
+        document_config = SystemSettingsService.get("document") or {}
+        configured_default = getattr(settings.document, "default_auto_process", False)
+        return bool(
+            document_config.get(
+                "default_auto_process",
+                document_config.get("auto_process", configured_default),
+            )
+        )
+
+    @staticmethod
     async def create(
         db: AsyncSession,
         user: Users,
@@ -75,6 +106,10 @@ class KnowledgeBaseService:
         """
         model = data.embedding_model or "bge-small-zh-v1.5"
         dim = data.embedding_dimension or 4096
+        if data.cleaning_config is not None:
+            cleaning_config = data.cleaning_config.model_dump(mode="json")
+        else:
+            cleaning_config = KnowledgeBaseService.get_default_cleaning_config()
 
         # 无用户配置 → 自动创建/查找本地默认配置，确保始终有关联
         config_id = data.user_model_config_id
@@ -90,9 +125,31 @@ class KnowledgeBaseService:
             allowed_extensions=data.allowed_extensions,
             max_file_size=data.max_file_size or settings.storage.default_max_file_size,
             allow_multiple=data.allow_multiple,
-            chunk_size=data.chunk_size or 800,
-            chunk_overlap=data.chunk_overlap or 150,
-            chunk_separators=data.chunk_separators or "\n##,\n###,\n,。,., ",
+            auto_process=(
+                data.auto_process
+                if data.auto_process is not None
+                else KnowledgeBaseService.get_default_auto_process()
+            ),
+            chunk_size=(
+                data.chunk_size
+                if data.chunk_size is not None
+                else getattr(settings.document, "default_chunk_size", 800)
+            ),
+            chunk_overlap=(
+                data.chunk_overlap
+                if data.chunk_overlap is not None
+                else getattr(settings.document, "default_chunk_overlap", 150)
+            ),
+            chunk_separators=(
+                data.chunk_separators
+                if data.chunk_separators is not None
+                else getattr(
+                    settings.document,
+                    "default_chunk_separators",
+                    "\n##,\n###,\n,。,., ",
+                )
+            ),
+            cleaning_config=cleaning_config,
             embedding_model=model,
             embedding_dimension=dim,
             user_model_config_id=config_id,
@@ -144,6 +201,12 @@ class KnowledgeBaseService:
         仅更新传入的非 None 字段，未传的字段保持原值
         """
         kb = await _get_kb_for_user(db, user, kb_id)
+        next_chunk_size = data.chunk_size if data.chunk_size is not None else kb.chunk_size
+        next_chunk_overlap = (
+            data.chunk_overlap if data.chunk_overlap is not None else kb.chunk_overlap
+        )
+        if next_chunk_overlap >= next_chunk_size:
+            raise HTTPException(status_code=422, detail="chunk_overlap 必须小于 chunk_size")
         kb = await KnowledgeBaseRepo.update(
             db, kb,
             name=data.name,
@@ -151,9 +214,14 @@ class KnowledgeBaseService:
             allowed_extensions=data.allowed_extensions,
             max_file_size=data.max_file_size,
             allow_multiple=data.allow_multiple,
+            auto_process=data.auto_process,
             chunk_size=data.chunk_size,
             chunk_overlap=data.chunk_overlap,
             chunk_separators=data.chunk_separators,
+            cleaning_config=(
+                data.cleaning_config.model_dump(mode="json")
+                if data.cleaning_config is not None else None
+            ),
             embedding_model=data.embedding_model,
             embedding_dimension=data.embedding_dimension,
             status=data.status,
@@ -192,16 +260,32 @@ class KnowledgeBaseService:
         """
         标记文档为"处理中"（任务已入队，状态 2 落库）
 
-        上传接口返回前调用：前端拉列表即可看到 解析/切片/向量化 均为"进行中"，
+        上传接口返回前调用：前端拉列表即可看到 解析/清洗/切片/向量化 均为"进行中"，
         避免后台任务尚未启动（BackgroundTasks 在响应后才执行）导致的"无反馈"空白期。
         任务正式启动时会重置状态走标准链路。
         """
+        await KnowledgeBaseService.mark_processing_to_stage(db, doc_id, "vectorize")
+
+    @staticmethod
+    async def mark_processing_to_stage(
+        db: AsyncSession,
+        doc_id: UUID,
+        target_stage: str,
+    ) -> None:
+        """按目标阶段预置处理中状态，避免未参与的后续阶段显示排队。"""
+        stage_fields = {
+            "parse": ("is_parsed",),
+            "clean": ("is_parsed", "is_cleaned"),
+            "chunk": ("is_parsed", "is_cleaned", "is_chunked"),
+            "vectorize": ("is_parsed", "is_cleaned", "is_chunked", "is_vectorized"),
+        }
+        if target_stage not in stage_fields:
+            raise ValueError(f"未知处理目标阶段: {target_stage}")
         doc = await DocumentRepo.get_by_id(db, doc_id)
         if doc is None or doc.status == 9:
             return
-        doc.is_parsed = 2
-        doc.is_chunked = 2
-        doc.is_vectorized = 2
+        for field in ("is_parsed", "is_cleaned", "is_chunked", "is_vectorized"):
+            setattr(doc, field, 2 if field in stage_fields[target_stage] else 0)
         doc.last_error = None
         await db.commit()
 
@@ -213,16 +297,19 @@ class KnowledgeBaseService:
         """
         全局处理任务列表（处理浮窗轮询用）
 
-        由文档三状态推断阶段：
-        - (2,2,2) → queued（上传预置的入队标记，等待处理槽位）
-        - is_parsed=2 → parsing；is_chunked=2 → chunking；is_vectorized=2 → vectorizing
+        由文档四阶段状态推断阶段：
+        - (2,2,2,2) → queued（入队标记，等待处理槽位）
+        - is_parsed=2 → parsing；is_cleaned=2 → cleaning；is_chunked=2 → chunking；is_vectorized=2 → vectorizing
         """
         rows = await DocumentRepo.list_processing_tasks(db, user.id)
         for r in rows:
-            if r["is_parsed"] == 2 and r["is_chunked"] == 2 and r["is_vectorized"] == 2:
+            if (r["is_parsed"] == 2 and r["is_cleaned"] == 2
+                    and r["is_chunked"] == 2 and r["is_vectorized"] == 2):
                 r["stage"] = "queued"
             elif r["is_parsed"] == 2:
                 r["stage"] = "parsing"
+            elif r["is_cleaned"] == 2:
+                r["stage"] = "cleaning"
             elif r["is_chunked"] == 2:
                 r["stage"] = "chunking"
             elif r["is_vectorized"] == 2:

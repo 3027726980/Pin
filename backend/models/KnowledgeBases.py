@@ -1,4 +1,5 @@
 from sqlalchemy import BigInteger, Boolean, ForeignKey, SmallInteger, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid import UUID
 
@@ -28,6 +29,12 @@ class KnowledgeBases(Base):
     allow_multiple: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, comment="是否允许多文件上传"
     )
+    auto_process: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="上传后是否自动执行到向量化；新建时复制系统默认值",
+    )
     chunk_size: Mapped[int] = mapped_column(
         default=800, nullable=False, comment="分块大小（字符数），默认 800"
     )
@@ -39,6 +46,12 @@ class KnowledgeBases(Base):
         default="\n##,\n###,\n,。,., ",
         nullable=False,
         comment="递归分隔符（逗号分隔）",
+    )
+    cleaning_config: Mapped[dict] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+        comment="文档文本清洗规则（受限 JSON 配置）",
     )
     embedding_model: Mapped[str] = mapped_column(
         String(100),

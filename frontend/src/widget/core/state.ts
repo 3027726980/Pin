@@ -14,14 +14,26 @@ export interface Msg {
   content: string
   citations: Citation[]
   rawCitations: Citation[]
+  /** 服务端基于回答标记与检索候选校验后的稳定来源绑定。 */
+  citationBindings: CitationBinding[]
   error?: boolean
   pending?: boolean
 }
 
 export interface Citation {
+  source_id?: string | null
   chunk_id: string
   document_name: string
   content: string
+  score: number
+}
+
+export interface CitationBinding {
+  source_id: string
+  chunk_id: string
+  document_name: string
+  claim: string
+  quote: string
   score: number
 }
 

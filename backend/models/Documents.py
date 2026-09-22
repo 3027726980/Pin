@@ -38,6 +38,15 @@ class Documents(Base):
     content: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="解析后的完整纯文本"
     )
+    cleaned_content: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="按知识库清洗规则处理后的完整纯文本"
+    )
+    is_cleaned: Mapped[int] = mapped_column(
+        SmallInteger, default=0, nullable=False, comment="清洗状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
+    )
+    cleaning_config_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="生成 cleaned_content 所用清洗规则的 SHA-256"
+    )
     is_chunked: Mapped[int] = mapped_column(
         SmallInteger, default=0, nullable=False, comment="切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"
     )

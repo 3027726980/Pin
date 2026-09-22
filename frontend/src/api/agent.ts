@@ -161,9 +161,20 @@ export interface ChatMessage {
 }
 
 export interface ChatCitation {
+  source_id?: string | null
   chunk_id: string
   document_name: string
   content: string
+  score: number
+  original_score?: number | null
+}
+
+export interface CitationBinding {
+  source_id: string
+  chunk_id: string
+  document_name: string
+  claim: string
+  quote: string
   score: number
   original_score?: number | null
 }
@@ -177,6 +188,7 @@ export interface ChatDebug {
 export interface ChatResult {
   answer: string
   citations: ChatCitation[]
+  citation_bindings: CitationBinding[]
   debug?: ChatDebug | null
 }
 
@@ -187,13 +199,46 @@ export interface ChatSuggestion {
 
 export type ChatEvent =
   | { type: 'delta'; content: string }
-  | { type: 'citations'; citations: ChatCitation[] }
+  | { type: 'citations'; citations: ChatCitation[]; bindings?: CitationBinding[] }
   | { type: 'debug'; debug: ChatDebug }
   | { type: 'intent'; intent: 'simple' | 'general' }
   | { type: 'plan'; plan: string }
   | { type: 'reflect'; suggestions: string }
   | { type: 'done' }
   | { type: 'error'; code: number; message: string; suggestion?: ChatSuggestion | null }
+
+export function isCitationBinding(value: unknown): value is CitationBinding {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.source_id === 'string'
+    && /^S[1-9]\d*$/.test(item.source_id)
+    && typeof item.chunk_id === 'string'
+    && typeof item.document_name === 'string'
+    && typeof item.claim === 'string'
+    && typeof item.quote === 'string'
+    && typeof item.score === 'number'
+}
+
+/** 对不可信 SSE JSON 进行运行时收口，避免异常帧污染引用展示。 */
+export function isChatEvent(value: unknown): value is ChatEvent {
+  if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') return false
+  const event = value as Record<string, unknown>
+  if (event.type === 'delta') return typeof event.content === 'string'
+  if (event.type === 'citations') {
+    return Array.isArray(event.citations)
+      && (event.bindings === undefined || (Array.isArray(event.bindings) && event.bindings.every(isCitationBinding)))
+  }
+  if (event.type === 'debug') return !!event.debug && typeof event.debug === 'object'
+  if (event.type === 'intent') return event.intent === 'simple' || event.intent === 'general'
+  if (event.type === 'plan') return typeof event.plan === 'string'
+  if (event.type === 'reflect') return typeof event.suggestions === 'string'
+  if (event.type === 'done') return true
+  return event.type === 'error' && typeof event.code === 'number' && typeof event.message === 'string'
+}
+
+export function isCitationEvent(value: unknown): value is Extract<ChatEvent, { type: 'citations' }> {
+  return isChatEvent(value) && value.type === 'citations'
+}
 
 // ── Agent CRUD ──────────────────────────
 
@@ -300,7 +345,13 @@ export async function chatAgentStream(
 
     for (const frame of frames) {
       if (frame.startsWith('data: ')) {
-        onEvent(JSON.parse(frame.slice(6)) as ChatEvent)
+        try {
+          const event: unknown = JSON.parse(frame.slice(6))
+          if (isChatEvent(event)) onEvent(event)
+          else console.warn('忽略格式不合法的 Agent SSE 事件')
+        } catch {
+          console.warn('忽略无法解析的 Agent SSE 事件')
+        }
       }
     }
   }

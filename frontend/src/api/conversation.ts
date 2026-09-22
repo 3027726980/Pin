@@ -4,7 +4,7 @@
  * 会话 id 即服务端 checkpoint 的 thread_id;历史消息查看走 messages 表。
  */
 import request from './request'
-import type { ChatCitation } from './agent'
+import type { ChatCitation, CitationBinding } from './agent'
 
 export interface ConversationItem {
   id: string
@@ -19,6 +19,7 @@ export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
   citations: ChatCitation[] | null
+  citation_bindings?: CitationBinding[] | null
   created_at: string
 }
 

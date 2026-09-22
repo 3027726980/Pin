@@ -27,6 +27,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     citations: list | None = None
+    citation_bindings: list | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

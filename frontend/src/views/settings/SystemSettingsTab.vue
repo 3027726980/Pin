@@ -72,10 +72,10 @@
       </n-card>
 
       <!-- 文档处理：结构化表单 -->
-      <n-card v-if="docConfig" title="文档处理（上传自动处理）" size="small" class="item-card">
+      <n-card v-if="docConfig" title="新建知识库默认处理策略" size="small" class="item-card">
         <n-form label-placement="left" label-width="160">
-          <n-form-item label="上传后自动处理">
-            <n-switch v-model:value="docConfig.auto_process" />
+          <n-form-item label="新建时默认自动处理">
+            <n-switch v-model:value="docConfig.default_auto_process" />
           </n-form-item>
           <n-form-item label="同时处理文件数">
             <n-input-number v-model:value="docConfig.max_concurrent" :min="1" :max="10" style="width: 200px" />
@@ -83,7 +83,7 @@
         </n-form>
         <div class="save-row">
           <span class="hint" style="margin-right: auto">
-            开启后上传文件自动跑完 解析→分块→向量化 全链路；修改立即生效（无需重启）
+            仅影响之后新建的知识库；已有知识库请在详情页单独设置。启用后，新库上传文件默认自动跑完解析→清洗→分块→向量化。
           </span>
           <n-button type="primary" :loading="saving" @click="saveDocConfig">保存文档处理设置</n-button>
         </div>
@@ -279,9 +279,9 @@ async function restoreAllLevels() {
 const redactConfig = ref<RedactRulesConfig | null>(null)
 const redactKey = 'logging.redact_rules'
 
-/** 文档处理（结构化编辑：上传自动处理开关 + 并发数） */
+/** 新建知识库默认处理策略（默认开关 + 并发数） */
 const docKey = 'document'
-const docConfig = ref<{ auto_process: boolean; max_concurrent: number } | null>(null)
+const docConfig = ref<{ default_auto_process: boolean; max_concurrent: number } | null>(null)
 
 /** 处理进度浮窗（测试中：可关闭） */
 const floatKey = 'processing_float'
@@ -318,7 +318,7 @@ async function load() {
     if (ds) {
       const v = ds.value as Record<string, unknown>
       docConfig.value = {
-        auto_process: Boolean(v.auto_process),
+        default_auto_process: Boolean(v.default_auto_process),
         max_concurrent: Number(v.max_concurrent ?? 2),
       }
     }
@@ -352,10 +352,10 @@ async function saveDocConfig() {
   saving.value = true
   try {
     await updateSetting(docKey, {
-      auto_process: docConfig.value.auto_process,
+      default_auto_process: docConfig.value.default_auto_process,
       max_concurrent: docConfig.value.max_concurrent,
     })
-    message.success('文档处理设置已保存并立即生效')
+    message.success('新建知识库默认处理策略已保存')
   } catch (e) {
     message.error((e as Error).message || '保存失败')
   } finally {

@@ -15,21 +15,22 @@ from backend.core.utils import parse_page, parse_page_size
 from backend.models import Users
 from backend.schemas.common import SuccessResponse
 from backend.services.document_process import DocumentProcessService
-from backend.services.system_settings import SystemSettingsService
 from backend.schemas.knowledge import (
     BatchFileAction,
     BatchKnowledgeBaseAction,
     BatchResult,
     ChunkIdsRequest,
     DocIdsRequest,
+    DocumentPreview,
     KnowledgeBaseCreate,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
     PaginatedResponse,
+    ProcessDocumentsRequest,
     ProcessResult,
 )
+from backend.repositories import DocumentRepo
 from backend.services import KnowledgeBaseService
-from backend.services.document_process import DocumentProcessService
 from backend.services.knowledge import _get_kb_for_user
 
 router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["知识库"])
@@ -70,6 +71,22 @@ async def create_kb(
 ):
     result = await KnowledgeBaseService.create(db, user, body)
     return SuccessResponse(result=result)
+
+
+@router.get("/defaults", response_model=SuccessResponse[dict], summary="获取知识库默认配置", description="返回新建知识库的默认处理策略，供创建表单回填")
+async def get_kb_defaults(
+    user: Users = Depends(get_current_user),
+):
+    _ = user
+    return SuccessResponse(result={
+        "cleaning_config": KnowledgeBaseService.get_default_cleaning_config(),
+        "auto_process": KnowledgeBaseService.get_default_auto_process(),
+        "chunk_size": int(getattr(settings.document, "default_chunk_size", 800)),
+        "chunk_overlap": int(getattr(settings.document, "default_chunk_overlap", 150)),
+        "chunk_separators": getattr(
+            settings.document, "default_chunk_separators", "\n##,\n###,\n,。,., "
+        ),
+    })
 
 
 @router.get("/{kb_id}", response_model=SuccessResponse[KnowledgeBaseResponse], summary="获取指定知识库的详细信息", description="包含分块配置、Embedding 配置等完整字段")
@@ -122,6 +139,21 @@ async def parse_docs(
     kb = await _get_kb_for_user(db, user, kb_id)
     total = len(body.doc_ids)
     processed = await DocumentProcessService.parse_documents(db, kb, body.doc_ids)
+    await db.commit()
+    _check_result(processed, total)
+    return SuccessResponse(result=ProcessResult(processed=processed, total=total))
+
+
+@router.post("/{kb_id}/clean", response_model=SuccessResponse[ProcessResult], summary="触发文档清洗", description="按知识库当前清洗规则处理已解析文本")
+async def clean_docs(
+    kb_id: UUID,
+    body: DocIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    total = len(body.doc_ids)
+    processed = await DocumentProcessService.clean_documents(db, kb, body.doc_ids)
     await db.commit()
     _check_result(processed, total)
     return SuccessResponse(result=ProcessResult(processed=processed, total=total))
@@ -199,13 +231,12 @@ async def upload_file(
     db: AsyncSession = Depends(get_db),
     user: Users = Depends(get_current_user),
 ):
+    kb = await _get_kb_for_user(db, user, kb_id)
     result = await KnowledgeBaseService.upload_file(db, user, kb_id, file)
-    # 上传后自动处理全链路（解析→分块→向量化）；
-    # 开关在系统设置 → 文档处理（system_settings.document.auto_process），动态可改
-    cfg = SystemSettingsService.get("document") or {}
-    if cfg.get("auto_process", True):
+    # 自动处理由知识库自身开关控制；系统设置只影响之后的新建知识库默认值。
+    if kb.auto_process:
         # 响应返回前预置"处理中"状态（任务入队标记），前端立即可见进行中标签
-        await KnowledgeBaseService.mark_processing(db, result.id)
+        await KnowledgeBaseService.mark_processing_to_stage(db, result.id, "vectorize")
         background_tasks.add_task(
             DocumentProcessService.auto_process_document,
             str(kb_id),
@@ -230,6 +261,51 @@ async def list_files(
     result = await KnowledgeBaseService.list_files(
         db, user, kb_id, parse_page(page), parse_page_size(page_size)
     )
+    return SuccessResponse(result=result)
+
+
+@router.post(
+    "/{kb_id}/files/process",
+    response_model=SuccessResponse[ProcessResult],
+    summary="一键处理文件",
+    description="将选中文件入队，后台按解析→清洗→分块→向量化完整处理。",
+)
+async def process_files(
+    kb_id: UUID,
+    body: ProcessDocumentsRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    documents = [await DocumentRepo.get_by_id(db, doc_id) for doc_id in body.doc_ids]
+    if any(doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id for doc in documents):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    for doc in documents:
+        await KnowledgeBaseService.mark_processing_to_stage(db, doc.id, body.target_stage)
+        background_tasks.add_task(
+            DocumentProcessService.auto_process_document,
+            str(kb_id),
+            str(doc.id),
+            body.target_stage,
+        )
+    return SuccessResponse(result=ProcessResult(processed=len(documents), total=len(body.doc_ids)))
+
+
+@router.post(
+    "/{kb_id}/files/{doc_id}/preview",
+    response_model=SuccessResponse[DocumentPreview],
+    summary="预览文件清洗与切片",
+    description="在内存中执行解析、清洗和切片，不写入 documents、chunks 或 embeddings。",
+)
+async def preview_file(
+    kb_id: UUID,
+    doc_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    result = await DocumentProcessService.preview_document(db, kb, doc_id)
     return SuccessResponse(result=result)
 
 

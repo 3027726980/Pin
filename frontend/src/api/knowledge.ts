@@ -5,6 +5,27 @@ import request from './request'
 
 // ── 类型定义 ────────────────────────────
 
+export type CleaningRuleType =
+  | 'normalize_unicode'
+  | 'remove_control_chars'
+  | 'collapse_blank_lines'
+  | 'trim_lines'
+  | 'collapse_punctuation'
+  | 'replace_text'
+  | 'regex_remove'
+
+export interface CleaningRule {
+  type: CleaningRuleType
+  enabled?: boolean
+  value?: string | null
+  replacement?: string
+  max_consecutive?: number
+}
+
+export interface CleaningConfig {
+  rules: CleaningRule[]
+}
+
 export interface KnowledgeBaseListItem {
   id: string
   name: string
@@ -22,8 +43,11 @@ export interface KnowledgeBaseDetail {
   allowed_extensions: string | null
   max_file_size: number
   allow_multiple: boolean
+  auto_process: boolean
   chunk_size: number
   chunk_overlap: number
+  chunk_separators: string
+  cleaning_config: CleaningConfig
   embedding_model: string
   embedding_dimension: number
   user_model_config_id: string | null
@@ -37,6 +61,11 @@ export interface KnowledgeBaseCreate {
   allowed_extensions?: string | null
   max_file_size?: number | null
   allow_multiple?: boolean
+  auto_process?: boolean | null
+  chunk_size?: number | null
+  chunk_overlap?: number | null
+  chunk_separators?: string | null
+  cleaning_config?: CleaningConfig | null
   embedding_model?: string | null
   embedding_dimension?: number | null
   user_model_config_id?: string | null
@@ -48,6 +77,11 @@ export interface KnowledgeBaseUpdate {
   allowed_extensions?: string | null
   max_file_size?: number | null
   allow_multiple?: boolean | null
+  auto_process?: boolean | null
+  chunk_size?: number | null
+  chunk_overlap?: number | null
+  chunk_separators?: string | null
+  cleaning_config?: CleaningConfig | null
   embedding_model?: string | null
   embedding_dimension?: number | null
   user_model_config_id?: string | null
@@ -61,6 +95,7 @@ export interface DocumentListItem {
   file_type: string | null
   status: number
   is_parsed: number
+  is_cleaned: number
   is_chunked: number
   is_vectorized: number
   last_error?: string | null
@@ -77,8 +112,12 @@ export interface DocumentDetail {
   file_type: string | null
   status: number
   is_parsed: number
+  is_cleaned: number
   is_chunked: number
   is_vectorized: number
+  cleaned_content?: string | null
+  cleaning_config_hash?: string | null
+  last_error?: string | null
   created_at: string
   updated_at: string
 }
@@ -102,6 +141,17 @@ export function listKnowledgeBases(page = 1, pageSize = 20): Promise<PaginatedRe
 /** 获取知识库详情 */
 export function getKnowledgeBase(id: string): Promise<KnowledgeBaseDetail> {
   return request.get(`/v1/knowledge-bases/${id}`)
+}
+
+/** 获取新建知识库时使用的服务端默认处理策略。 */
+export function getKnowledgeBaseDefaults(): Promise<{
+  cleaning_config: CleaningConfig
+  auto_process?: boolean
+  chunk_size?: number
+  chunk_overlap?: number
+  chunk_separators?: string
+}> {
+  return request.get('/v1/knowledge-bases/defaults')
 }
 
 /** 创建知识库 */
@@ -140,6 +190,29 @@ export function uploadFile(kbId: string, file: File): Promise<DocumentDetail> {
 /** 删除文件 */
 export function deleteFile(kbId: string, docId: string): Promise<void> {
   return request.delete(`/v1/knowledge-bases/${kbId}/files/${docId}`)
+}
+
+export interface PreviewChunk {
+  index: number
+  content: string
+  char_count: number
+  overlap_char_count: number
+}
+
+export interface DocumentPreview {
+  document_id: string
+  filename: string
+  raw_content: string
+  cleaned_content: string
+  chunks: PreviewChunk[]
+  cleaning_config_hash: string
+  warnings: string[]
+}
+
+/** 仅用于文件预览的临时策略，不会自动保存到知识库。 */
+/** 在内存中预览文件的清洗文本和切片，不写入知识库 */
+export function previewDocument(kbId: string, docId: string): Promise<DocumentPreview> {
+  return request.post(`/v1/knowledge-bases/${kbId}/files/${docId}/preview`)
 }
 
 // ── 批量操作 ────────────────────────────
@@ -190,6 +263,20 @@ export function vectorizeDocuments(kbId: string, docIds: string[]): Promise<Proc
   return request.post(`/v1/knowledge-bases/${kbId}/vectorize-docs`, { doc_ids: docIds })
 }
 
+export type ProcessTarget = 'parse' | 'clean' | 'chunk' | 'vectorize'
+
+/** 将文件入队处理至指定阶段；后端自动补齐前置阶段。 */
+export function processDocuments(
+  kbId: string,
+  docIds: string[],
+  targetStage: ProcessTarget = 'vectorize',
+): Promise<ProcessResult> {
+  return request.post(`/v1/knowledge-bases/${kbId}/files/process`, {
+    doc_ids: docIds,
+    target_stage: targetStage,
+  })
+}
+
 // ── 全局处理任务（处理浮窗轮询） ────────
 
 export interface ProcessingTask {
@@ -197,7 +284,11 @@ export interface ProcessingTask {
   filename: string
   kb_id: string
   kb_name: string
-  stage: 'queued' | 'parsing' | 'chunking' | 'vectorizing' | 'processing'
+  is_parsed: number
+  is_cleaned: number
+  is_chunked: number
+  is_vectorized: number
+  stage: 'queued' | 'parsing' | 'cleaning' | 'chunking' | 'vectorizing' | 'processing'
 }
 
 /** 全局处理中/排队任务列表（所有知识库） */

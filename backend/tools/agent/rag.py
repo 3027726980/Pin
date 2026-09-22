@@ -139,7 +139,7 @@ class RAGTool(BaseTool):
 
         @tool
         async def rag(query: str) -> str:
-            """检索知识库中与用户问题相关的资料片段，返回可能包含答案的引用内容。"""
+            """检索知识库资料；回答引用时必须使用结果中的 source_id 标记，如 [S1]。"""
             try:
                 cits = await RAGTool.execute(
                     db, user, config, message=query,
@@ -148,6 +148,9 @@ class RAGTool(BaseTool):
             except HTTPException as e:
                 return json.dumps({"error": e.detail}, ensure_ascii=False)
             if citations_store is not None:
+                offset = len(citations_store)
+                for index, citation in enumerate(cits, offset + 1):
+                    citation.source_id = f"S{index}"
                 citations_store.extend(cits)
             return json.dumps([c.model_dump(mode="json") for c in cits], ensure_ascii=False)
 

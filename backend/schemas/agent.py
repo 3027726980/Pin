@@ -245,6 +245,7 @@ class ChatRequest(BaseModel):
 
 class Citation(BaseModel):
     """引用来源"""
+    source_id: str | None = Field(None, pattern=r"^S[1-9][0-9]*$", description="本轮回答使用的稳定来源标识")
     chunk_id: UUID
     document_name: str
     content: str
@@ -253,10 +254,23 @@ class Citation(BaseModel):
         None, description="原始向量相似度（Rerank 开启时与 score 不同，便于对比）")
 
 
+class CitationBinding(BaseModel):
+    """回答标记与已验证 RAG 候选来源之间的稳定绑定。"""
+
+    source_id: str = Field(pattern=r"^S[1-9][0-9]*$")
+    chunk_id: UUID
+    document_name: str
+    claim: str
+    quote: str
+    score: float
+    original_score: float | None = None
+
+
 class ChatResponse(BaseModel):
     """非流式对话响应"""
     conversation_id: UUID
     answer: str
     citations: list[Citation] = []
+    citation_bindings: list[CitationBinding] = []
     debug: dict | None = Field(
         None, description="调试信息（请求 debug=true 时返回）：queries/rerank 等")

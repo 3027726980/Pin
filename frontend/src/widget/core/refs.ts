@@ -7,12 +7,14 @@ export interface Citation {
   score: number
 }
 
-/** 拆分消息内容：文本段 + [N] 引用标注段（避免 innerHTML，防 XSS） */
-export function splitRefs(content: string): Array<{ type: 'text' | 'ref'; value: string; index?: number }> {
-  const parts = content.split(/(\[\d+\])/g)
+/** 拆分消息内容：优先识别稳定来源 [S#]，兼容历史 [N]。 */
+export function splitRefs(content: string): Array<{ type: 'text' | 'ref'; value: string; index?: number; sourceId?: string }> {
+  const parts = content.split(/(\[(?:S\d+|\d+)\])/g)
   return parts
     .filter(p => p)
     .map(p => {
+      const stable = p.match(/^\[(S\d+)\]$/)
+      if (stable) return { type: 'ref' as const, value: p, sourceId: stable[1] }
       const m = p.match(/^\[(\d+)\]$/)
       if (m) return { type: 'ref' as const, value: p, index: parseInt(m[1], 10) }
       return { type: 'text' as const, value: p }
