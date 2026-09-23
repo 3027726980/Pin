@@ -21,4 +21,12 @@ describe('knowledge detail layout', () => {
     expect(source).not.toContain('name="raw" tab="原文"')
     expect(source).toContain('name="cleaned" tab="清洗结果"')
   })
+
+  it('fills the preview drawer body instead of capping columns at 650px', () => {
+    expect(source).toContain('width="min(1180px, 100vw)"')
+    expect(source).toContain('body-content-style="height: 100%; overflow: hidden;"')
+    expect(source).toContain('.preview-layout { display: grid;')
+    expect(source).toContain('height: 100%; min-height: 0;')
+    expect(source).not.toContain('max-height: 650px')
+  })
 })

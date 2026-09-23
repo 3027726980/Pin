@@ -70,9 +70,14 @@
       </n-drawer-content>
     </n-drawer>
 
-    <n-drawer v-model:show="previewVisible" :width="1180">
-      <n-drawer-content :title="previewRow ? `${previewRow.filename} · 预览与重新处理` : '文件预览'" closable>
-        <n-spin :show="previewLoading">
+    <n-drawer v-model:show="previewVisible" width="min(1180px, 100vw)">
+      <n-drawer-content
+        :title="previewRow ? `${previewRow.filename} · 预览与重新处理` : '文件预览'"
+        body-content-class="preview-drawer-body"
+        body-content-style="height: 100%; overflow: hidden;"
+        closable
+      >
+        <n-spin :show="previewLoading" class="preview-spin">
           <n-alert v-if="previewVersionError" type="error" :show-icon="false" class="notice">{{ previewVersionError }}</n-alert>
           <n-alert v-for="warning in previewSource?.warnings || []" :key="warning" type="warning" :show-icon="false" class="notice">{{ warning }}</n-alert>
           <n-alert v-if="previewError" type="error" :show-icon="false" class="notice">本地预览计算失败：{{ previewError }}。已保留上一次成功结果。</n-alert>
@@ -303,13 +308,28 @@ onUnmounted(() => { stopPoll(); if (previewTimer) clearTimeout(previewTimer) })
 .strategy-drawer-hint { margin-top: 4px; text-align: left; }
 .batch-bar { justify-content: space-between; padding: 10px 16px; margin-bottom: 12px; background: var(--n-color-embedded); border: 1px solid var(--n-border-color); border-radius: 4px; }
 .pagination { margin-top: 16px; }
-.preview-layout { display: grid; grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; min-height: 600px; }
-.preview-strategy { min-width: 0; max-height: 650px; overflow-y: auto; padding-right: 16px; border-right: 1px solid var(--n-border-color); }
+.preview-spin { height: 100%; min-height: 0; }
+.preview-spin :deep(.n-spin-content) { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.preview-layout { display: grid; grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(0, 1fr); flex: 1; gap: 16px; min-height: 0; }
+.preview-strategy { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 16px; border-right: 1px solid var(--n-border-color); }
 .preview-strategy h3, .preview-source-column h3 { margin: 0 0 12px; }
 .scope-notice { margin: 12px 0; }
 .drawer-actions { width: 100%; margin-top: 12px; }
-.preview-source-column, .preview-result-column { min-width: 0; }
+.preview-source-column, .preview-result-column { min-width: 0; min-height: 0; }
+.preview-source-column { display: flex; flex-direction: column; }
+.preview-result-column :deep(.n-tabs) { height: 100%; }
+.preview-result-column :deep(.n-tabs-pane-wrapper), .preview-result-column :deep(.n-tab-pane) { min-height: 0; }
+.preview-result-column :deep(.n-tab-pane) { height: 100%; overflow: auto; }
 .preview-content { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--n-font-family-mono); line-height: 1.65; }
-.text-pane { max-height: 650px; overflow: auto; padding: 12px; border: 1px solid var(--n-border-color); border-radius: 4px; }
-@media (max-width: 1000px) { .preview-layout { grid-template-columns: 1fr; } .preview-strategy { max-height: none; padding-right: 0; padding-bottom: 16px; border-right: 0; border-bottom: 1px solid var(--n-border-color); } }
+.text-pane { min-height: 0; box-sizing: border-box; overflow: auto; padding: 12px; border: 1px solid var(--n-border-color); border-radius: 4px; }
+.preview-source-column .text-pane { flex: 1; }
+@media (max-width: 1000px) {
+  :deep(.preview-drawer-body) { height: auto !important; overflow: auto !important; }
+  .preview-spin, .preview-spin :deep(.n-spin-content) { height: auto; }
+  .preview-layout { grid-template-columns: 1fr; flex: none; }
+  .preview-strategy { min-height: auto; padding-right: 0; padding-bottom: 16px; border-right: 0; border-bottom: 1px solid var(--n-border-color); }
+  .preview-source-column, .preview-result-column { min-height: auto; }
+  .preview-source-column .text-pane { flex: none; }
+  .preview-result-column :deep(.n-tabs), .preview-result-column :deep(.n-tab-pane) { height: auto; }
+}
 </style>
