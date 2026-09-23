@@ -1,0 +1,93 @@
+{
+  "algorithm_version": 1,
+  "cases": [
+    {
+      "name": "ordered-cleaning-rules",
+      "raw_text": "é\r\n  第一行  \u0000\n\n\n第二行！！",
+      "processing_config": {
+        "cleaning_config": {
+          "rules": [
+            { "type": "normalize_unicode", "enabled": true },
+            { "type": "remove_control_chars", "enabled": true },
+            { "type": "collapse_blank_lines", "enabled": true, "max_consecutive": 1 },
+            { "type": "trim_lines", "enabled": true },
+            { "type": "collapse_punctuation", "enabled": true }
+          ]
+        },
+        "chunk_size": 50,
+        "chunk_overlap": 0,
+        "chunk_separators": "。"
+      },
+      "expected_cleaned_text": "é\n第一行\n第二行！",
+      "expected_chunks": [
+        { "content": "é\n第一行\n第二行！", "char_count": 10, "overlap_char_count": 0 }
+      ]
+    },
+    {
+      "name": "semantic-split-with-forced-overlap",
+      "raw_text": "甲乙丙丁。戊己庚辛。壬癸子丑。",
+      "processing_config": {
+        "cleaning_config": { "rules": [] },
+        "chunk_size": 8,
+        "chunk_overlap": 2,
+        "chunk_separators": "。"
+      },
+      "expected_cleaned_text": "甲乙丙丁。戊己庚辛。壬癸子丑。",
+      "expected_chunks": [
+        { "content": "甲乙丙丁。", "char_count": 5, "overlap_char_count": 0 },
+        { "content": "丁。戊己庚辛。", "char_count": 7, "overlap_char_count": 2 },
+        { "content": "辛。壬癸子丑。", "char_count": 7, "overlap_char_count": 2 }
+      ]
+    },
+    {
+      "name": "hard-split-with-zero-overlap",
+      "raw_text": "abcdefghijkl",
+      "processing_config": {
+        "cleaning_config": { "rules": [] },
+        "chunk_size": 5,
+        "chunk_overlap": 0,
+        "chunk_separators": "。"
+      },
+      "expected_cleaned_text": "abcdefghijkl",
+      "expected_chunks": [
+        { "content": "abcde", "char_count": 5, "overlap_char_count": 0 },
+        { "content": "fghij", "char_count": 5, "overlap_char_count": 0 },
+        { "content": "kl", "char_count": 2, "overlap_char_count": 0 }
+      ]
+    },
+    {
+      "name": "literal-and-regex-replacement",
+      "raw_text": "保留-删除123-旧词",
+      "processing_config": {
+        "cleaning_config": {
+          "rules": [
+            { "type": "replace_text", "enabled": true, "value": "旧词", "replacement": "新词" },
+            { "type": "regex_remove", "enabled": true, "value": "[0-9]+", "replacement": "$" }
+          ]
+        },
+        "chunk_size": 50,
+        "chunk_overlap": 0,
+        "chunk_separators": "。"
+      },
+      "expected_cleaned_text": "保留-删除$-新词",
+      "expected_chunks": [
+        { "content": "保留-删除$-新词", "char_count": 9, "overlap_char_count": 0 }
+      ]
+    },
+    {
+      "name": "unicode-code-point-overlap",
+      "raw_text": "甲😀乙丙",
+      "processing_config": {
+        "cleaning_config": { "rules": [] },
+        "chunk_size": 3,
+        "chunk_overlap": 1,
+        "chunk_separators": "。"
+      },
+      "expected_cleaned_text": "甲😀乙丙",
+      "expected_chunks": [
+        { "content": "甲😀", "char_count": 2, "overlap_char_count": 0 },
+        { "content": "😀乙丙", "char_count": 3, "overlap_char_count": 1 }
+      ]
+    }
+  ]
+}

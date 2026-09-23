@@ -1,4 +1,5 @@
-from sqlalchemy import BigInteger, Boolean, ForeignKey, SmallInteger, String, Text
+from sqlalchemy import BigInteger, ForeignKey, Integer, SmallInteger, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid import UUID
 
@@ -46,6 +47,15 @@ class Documents(Base):
     )
     cleaning_config_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True, comment="生成 cleaned_content 所用清洗规则的 SHA-256"
+    )
+    processing_config: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, comment="文件独立处理策略；NULL 表示继承知识库默认策略"
+    )
+    applied_processing_config_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="当前生效切片所用完整处理策略的 SHA-256"
+    )
+    applied_algorithm_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="当前生效切片所用处理算法版本"
     )
     is_chunked: Mapped[int] = mapped_column(
         SmallInteger, default=0, nullable=False, comment="切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中"

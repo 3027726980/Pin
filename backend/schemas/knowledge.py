@@ -8,6 +8,7 @@
 - DocumentListItem：文件列表响应（精简）
 """
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -111,6 +112,65 @@ class KnowledgeBaseListItem(BaseModel):
 
 # ── 文档 ──────────────────────────────
 
+class ProcessingConfig(BaseModel):
+    """可用于知识库或单个文件的完整清洗与切片策略。"""
+
+    cleaning_config: CleaningConfig
+    chunk_size: int = Field(..., ge=50, le=10000)
+    chunk_overlap: int = Field(..., ge=0, le=9999)
+    chunk_separators: str
+
+    @model_validator(mode="after")
+    def validate_chunk_config(self) -> "ProcessingConfig":
+        """确保重叠长度小于单片长度。"""
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap 必须小于 chunk_size")
+        return self
+
+
+class DocumentProcessingStrategyUpdate(BaseModel):
+    """切换文件策略继承模式，或保存一份完整的文件独立策略。"""
+
+    mode: Literal["inherit", "custom"]
+    cleaning_config: CleaningConfig | None = None
+    chunk_size: int | None = Field(None, ge=50, le=10000)
+    chunk_overlap: int | None = Field(None, ge=0, le=9999)
+    chunk_separators: str | None = None
+
+    @model_validator(mode="after")
+    def validate_mode_payload(self) -> "DocumentProcessingStrategyUpdate":
+        """inherit 不接受独立字段；custom 必须提供完整且有效的策略。"""
+        fields = (
+            self.cleaning_config,
+            self.chunk_size,
+            self.chunk_overlap,
+            self.chunk_separators,
+        )
+        if self.mode == "inherit":
+            if any(value is not None for value in fields):
+                raise ValueError("inherit 模式不能携带 custom 策略字段")
+            return self
+        if any(value is None for value in fields):
+            raise ValueError("custom 模式必须提供完整处理策略")
+        ProcessingConfig(
+            cleaning_config=self.cleaning_config,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            chunk_separators=self.chunk_separators,
+        )
+        return self
+
+    def to_processing_config(self) -> ProcessingConfig | None:
+        """将 custom 请求转换为规范策略；inherit 返回 None。"""
+        if self.mode == "inherit":
+            return None
+        return ProcessingConfig(
+            cleaning_config=self.cleaning_config,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            chunk_separators=self.chunk_separators,
+        )
+
 class PreviewChunk(BaseModel):
     """仅用于前端预览的内存切片。"""
 
@@ -130,6 +190,28 @@ class DocumentPreview(BaseModel):
     chunks: list[PreviewChunk]
     cleaning_config_hash: str
     warnings: list[str] = Field(default_factory=list)
+
+
+class DocumentPreviewSource(BaseModel):
+    """供浏览器本地清洗和切片的原始解析文本。"""
+
+    document_id: UUID
+    filename: str
+    raw_content: str
+    algorithm_version: int
+    truncated: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class StoredChunkItem(BaseModel):
+    """数据库当前生效切片的安全展示结构，不包含向量。"""
+
+    id: UUID
+    index: int
+    content: str
+    char_count: int
+    metadata: dict | None = None
+    is_vectorized: int
 
 
 class DocumentResponse(BaseModel):
@@ -166,6 +248,12 @@ class DocumentListItem(BaseModel):
     is_cleaned: int
     is_chunked: int
     is_vectorized: int
+    processing_config: ProcessingConfig | None = None
+    strategy_mode: Literal["inherit", "custom"] = "inherit"
+    effective_processing_config: ProcessingConfig | None = None
+    strategy_outdated: bool = False
+    applied_algorithm_version: int | None = None
+    chunk_count: int = 0
     last_error: str | None = None
     created_at: datetime
 
@@ -173,9 +261,6 @@ class DocumentListItem(BaseModel):
 
 
 # ── 批量操作 ──────────────────────────────
-
-from typing import Literal
-
 
 class BatchKnowledgeBaseAction(BaseModel):
     """批量操作知识库"""
@@ -198,6 +283,7 @@ class ProcessDocumentsRequest(DocIdsRequest):
     """将文档处理到指定阶段；服务端自动补齐前置阶段。"""
 
     target_stage: Literal["parse", "clean", "chunk", "vectorize"] = "vectorize"
+    algorithm_version: int = Field(..., ge=1)
 
 
 class ChunkIdsRequest(BaseModel):

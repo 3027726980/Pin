@@ -18,10 +18,20 @@ from backend.core.constants import UPLOAD_ROOT
 from backend.core.database import async_session_local
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases, UserModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo
-from backend.schemas.knowledge import DocumentPreview, PreviewChunk
+from backend.schemas.knowledge import (
+    DocumentPreview,
+    DocumentPreviewSource,
+    PreviewChunk,
+    ProcessingConfig,
+)
 from backend.services.document_cleaning import clean_text, cleaning_hash
 from backend.services.embedding import EmbeddingService
 from backend.services.parsers import get_parser
+from backend.services.processing_strategy import (
+    PROCESSING_ALGORITHM_VERSION,
+    effective_processing_config,
+    processing_config_hash,
+)
 from backend.services.system_settings import SystemSettingsService
 
 logger = logging.getLogger(__name__)
@@ -41,6 +51,53 @@ class DocumentProcessService:
     # ═══════════════════════════════════════════════
     # 解析
     # ═══════════════════════════════════════════════
+
+    @staticmethod
+    def _resolve_processing_config(
+        kb: KnowledgeBases,
+        doc: Documents,
+        snapshot: ProcessingConfig | dict | None = None,
+    ) -> ProcessingConfig:
+        """优先使用任务快照，否则解析文档当前有效策略。"""
+        if snapshot is not None:
+            return ProcessingConfig.model_validate(snapshot)
+        return effective_processing_config(kb, doc)
+
+    @staticmethod
+    async def get_preview_source(
+        db: AsyncSession,
+        kb: KnowledgeBases,
+        doc_id: UUID,
+    ) -> DocumentPreviewSource:
+        """读取已有原文或临时解析原文件，返回前端预览源且不写数据库。"""
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        try:
+            if doc.content is not None:
+                raw = doc.content
+            else:
+                parser = get_parser(doc.file_type or "")
+                file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
+                raw = await asyncio.to_thread(parser.parse, str(file_path))
+        except Exception as exc:
+            logger.error("读取文档 %s 预览源失败: %s", doc.filename, exc)
+            raise HTTPException(status_code=400, detail=f"预览源解析失败: {exc}") from exc
+
+        max_chars = int(getattr(settings.document, "preview_max_chars", 30000))
+        truncated = len(raw) > max_chars
+        warnings = (
+            [f"当前仅预览前 {max_chars} 个字符；正式处理会使用完整文件"]
+            if truncated else []
+        )
+        return DocumentPreviewSource(
+            document_id=doc.id,
+            filename=doc.filename,
+            raw_content=raw[:max_chars],
+            algorithm_version=PROCESSING_ALGORITHM_VERSION,
+            truncated=truncated,
+            warnings=warnings,
+        )
 
     @staticmethod
     async def parse_documents(
@@ -87,29 +144,46 @@ class DocumentProcessService:
         return count
 
     @staticmethod
-    def _split_text(kb: KnowledgeBases, content: str) -> list[str]:
+    def _split_text(kb: KnowledgeBases | ProcessingConfig, content: str) -> list[str]:
         """按知识库分块设置切分文本，返回最终片段内容。"""
         return [part.content for part in DocumentProcessService._split_text_with_overlap(kb, content)]
 
     @staticmethod
-    def _split_text_with_overlap(kb: KnowledgeBases, content: str) -> list[TextChunk]:
-        """语义切分后强制保留相邻切片的尾首重叠。"""
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-
+    def _split_text_with_overlap(
+        kb: KnowledgeBases | ProcessingConfig,
+        content: str,
+    ) -> list[TextChunk]:
+        """按有序分隔符贪心切主体，再强制保留相邻切片尾首重叠。"""
         chunk_size = max(1, int(kb.chunk_size))
         overlap = min(max(0, int(kb.chunk_overlap)), chunk_size - 1)
         body_size = max(1, chunk_size - overlap)
-        # 不能 strip：换行符和单个空格本身是有效的语义分隔符。
         separator_list = [s for s in kb.chunk_separators.split(",") if s != ""]
-        if "" not in separator_list:
-            separator_list.append("")
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=body_size,
-            chunk_overlap=0,
-            separators=separator_list,
-            keep_separator=True,
-        )
-        bodies = [text for text in splitter.split_text(content) if text.strip()]
+        bodies: list[str] = []
+        position = 0
+        while position < len(content):
+            max_end = min(position + body_size, len(content))
+            chosen_end = max_end
+            if max_end < len(content):
+                found_separator = False
+                for separator in separator_list:
+                    search_end = max_end
+                    while search_end > position:
+                        index = content.rfind(separator, position + 1, search_end)
+                        if index < 0:
+                            break
+                        candidate = index + len(separator)
+                        if candidate <= max_end:
+                            chosen_end = candidate
+                            found_separator = True
+                            break
+                        search_end = index
+                    if found_separator:
+                        break
+            body = content[position:chosen_end]
+            if body.strip():
+                bodies.append(body)
+            position = chosen_end
+
         parts: list[TextChunk] = []
         for body in bodies:
             if not parts or overlap == 0:
@@ -137,8 +211,9 @@ class DocumentProcessService:
             parser = get_parser(doc.file_type or "")
             file_path = Path(UPLOAD_ROOT) / doc.file_path.lstrip("/")
             raw = await asyncio.to_thread(parser.parse, str(file_path))
-            cleaned = clean_text(raw, kb.cleaning_config)
-            chunks = DocumentProcessService._split_text_with_overlap(kb, cleaned)
+            strategy = effective_processing_config(kb, doc)
+            cleaned = clean_text(raw, strategy.cleaning_config)
+            chunks = DocumentProcessService._split_text_with_overlap(strategy, cleaned)
         except Exception as exc:
             logger.error("预览文档 %s 失败: %s", doc.filename, exc)
             raise HTTPException(status_code=400, detail=f"预览失败: {exc}") from exc
@@ -166,7 +241,7 @@ class DocumentProcessService:
                 )
                 for index, part in enumerate(chunks[:max_chunks])
             ],
-            cleaning_config_hash=cleaning_hash(kb.cleaning_config),
+            cleaning_config_hash=cleaning_hash(strategy.cleaning_config),
             warnings=warnings,
         )
 
@@ -175,10 +250,10 @@ class DocumentProcessService:
         db: AsyncSession,
         kb: KnowledgeBases,
         doc_ids: list[UUID],
+        processing_config: ProcessingConfig | dict | None = None,
     ) -> int:
-        """将已解析原文按知识库规则清洗，持久化到 documents.cleaned_content。"""
+        """将已解析原文按文档有效策略清洗并持久化。"""
         count = 0
-        config_hash = cleaning_hash(kb.cleaning_config)
         for doc_id in doc_ids:
             doc = await DocumentRepo.get_by_id(db, doc_id)
             if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
@@ -189,8 +264,11 @@ class DocumentProcessService:
             doc.is_cleaned = 2
             doc.last_error = None
             try:
-                doc.cleaned_content = clean_text(doc.content, kb.cleaning_config)
-                doc.cleaning_config_hash = config_hash
+                strategy = DocumentProcessService._resolve_processing_config(
+                    kb, doc, processing_config
+                )
+                doc.cleaned_content = clean_text(doc.content, strategy.cleaning_config)
+                doc.cleaning_config_hash = cleaning_hash(strategy.cleaning_config)
                 doc.is_cleaned = 1
                 count += 1
             except Exception as exc:
@@ -209,6 +287,7 @@ class DocumentProcessService:
         db: AsyncSession,
         kb: KnowledgeBases,
         doc_ids: list[UUID],
+        processing_config: ProcessingConfig | dict | None = None,
     ) -> int:
         """
         对已清洗的文档文本进行分块
@@ -231,7 +310,12 @@ class DocumentProcessService:
             doc.is_chunked = 2
             doc.last_error = None  # 重新处理开始，清空上次失败原因
             try:
-                parts = DocumentProcessService._split_text_with_overlap(kb, doc.cleaned_content)
+                strategy = DocumentProcessService._resolve_processing_config(
+                    kb, doc, processing_config
+                )
+                parts = DocumentProcessService._split_text_with_overlap(
+                    strategy, doc.cleaned_content
+                )
 
                 # 先删 embeddings（FK 依赖），再删旧 chunks
                 old_chunks = (await db.execute(
@@ -257,6 +341,8 @@ class DocumentProcessService:
                     )
                     db.add(chunk)
                 doc.is_chunked = 1
+                doc.applied_processing_config_hash = processing_config_hash(strategy)
+                doc.applied_algorithm_version = PROCESSING_ALGORITHM_VERSION
                 success_count += 1
             except Exception as e:
                 logger.error(f"文档 {doc.filename} 分块失败: {e}")
@@ -397,11 +483,15 @@ class DocumentProcessService:
         db: AsyncSession,
         kb: KnowledgeBases,
         doc_id: UUID,
+        processing_config: ProcessingConfig | dict | None = None,
     ) -> bool:
         """执行解析、清洗、分块和向量化，并在成功后原子替换旧的可检索切片。"""
         doc = await DocumentRepo.get_by_id(db, doc_id)
         if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
             return False
+        strategy = DocumentProcessService._resolve_processing_config(
+            kb, doc, processing_config
+        )
 
         # 清除排队标记或此前处理的瞬态状态；原有 chunks/embeddings 保持可检索，
         # 直到新切片和向量全部生成成功。
@@ -415,13 +505,15 @@ class DocumentProcessService:
         await DocumentProcessService.parse_documents(db, kb, [doc_id])
         if doc.is_parsed != 1:
             return False
-        await DocumentProcessService.clean_documents(db, kb, [doc_id])
+        await DocumentProcessService.clean_documents(db, kb, [doc_id], strategy)
         if doc.is_cleaned != 1 or not doc.cleaned_content:
             return False
 
         doc.is_chunked = 2
         try:
-            parts = DocumentProcessService._split_text_with_overlap(kb, doc.cleaned_content)
+            parts = DocumentProcessService._split_text_with_overlap(
+                strategy, doc.cleaned_content
+            )
             if not parts:
                 raise ValueError("清洗后的文本为空，无法切片")
             staged_chunks = [
@@ -477,6 +569,8 @@ class DocumentProcessService:
             chunk.status = 1
         doc.is_chunked = 1
         doc.is_vectorized = 1
+        doc.applied_processing_config_hash = processing_config_hash(strategy)
+        doc.applied_algorithm_version = PROCESSING_ALGORITHM_VERSION
         doc.last_error = None
         await db.flush()
         return True
@@ -487,16 +581,22 @@ class DocumentProcessService:
         kb: KnowledgeBases,
         doc_id: UUID,
         target_stage: str,
+        processing_config: ProcessingConfig | dict | None = None,
     ) -> bool:
         """处理到指定阶段，并在服务端重跑所需的前置阶段。"""
         if target_stage not in {"parse", "clean", "chunk", "vectorize"}:
             raise ValueError(f"未知处理目标阶段: {target_stage}")
         if target_stage == "vectorize":
-            return await DocumentProcessService.process_document(db, kb, doc_id)
+            return await DocumentProcessService.process_document(
+                db, kb, doc_id, processing_config
+            )
 
         doc = await DocumentRepo.get_by_id(db, doc_id)
         if doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id:
             return False
+        strategy = DocumentProcessService._resolve_processing_config(
+            kb, doc, processing_config
+        )
         doc.is_parsed = 0
         doc.is_cleaned = 0
         doc.is_chunked = 0
@@ -507,10 +607,10 @@ class DocumentProcessService:
         await DocumentProcessService.parse_documents(db, kb, [doc_id])
         if doc.is_parsed != 1 or target_stage == "parse":
             return doc.is_parsed == 1
-        await DocumentProcessService.clean_documents(db, kb, [doc_id])
+        await DocumentProcessService.clean_documents(db, kb, [doc_id], strategy)
         if doc.is_cleaned != 1 or target_stage == "clean":
             return doc.is_cleaned == 1
-        await DocumentProcessService.chunk_documents(db, kb, [doc_id])
+        await DocumentProcessService.chunk_documents(db, kb, [doc_id], strategy)
         return doc.is_chunked == 1
 
     _auto_process_slots: set[str] = set()  # 正在自动处理的 doc_id（进程内并发上限管理）
@@ -521,6 +621,7 @@ class DocumentProcessService:
         kb_id: str | UUID,
         doc_id: str | UUID,
         target_stage: str = "vectorize",
+        processing_config: dict | None = None,
     ) -> None:
         """
         上传后自动处理后台任务：解析 → 清洗 → 分块 → 向量化 全链路
@@ -553,7 +654,7 @@ class DocumentProcessService:
 
                 # 处理到目标阶段；向量化档使用暂存切片，仅在成功后替换旧可检索数据。
                 await DocumentProcessService.process_document_to_stage(
-                    db, kb, doc_id, target_stage
+                    db, kb, doc_id, target_stage, processing_config
                 )
                 await db.commit()
         except Exception as e:  # 兜底：未预期异常不冒泡（BackgroundTasks 已返回响应）

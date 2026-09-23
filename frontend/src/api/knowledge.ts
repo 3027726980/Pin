@@ -26,6 +26,13 @@ export interface CleaningConfig {
   rules: CleaningRule[]
 }
 
+export interface ProcessingConfig {
+  cleaning_config: CleaningConfig
+  chunk_size: number
+  chunk_overlap: number
+  chunk_separators: string
+}
+
 export interface KnowledgeBaseListItem {
   id: string
   name: string
@@ -98,6 +105,12 @@ export interface DocumentListItem {
   is_cleaned: number
   is_chunked: number
   is_vectorized: number
+  processing_config?: ProcessingConfig | null
+  strategy_mode: 'inherit' | 'custom'
+  effective_processing_config: ProcessingConfig
+  strategy_outdated: boolean
+  applied_algorithm_version?: number | null
+  chunk_count: number
   last_error?: string | null
   created_at: string
 }
@@ -209,10 +222,57 @@ export interface DocumentPreview {
   warnings: string[]
 }
 
-/** 仅用于文件预览的临时策略，不会自动保存到知识库。 */
+export interface DocumentPreviewSource {
+  document_id: string
+  filename: string
+  raw_content: string
+  algorithm_version: number
+  truncated: boolean
+  warnings: string[]
+}
+
+export interface StoredChunk {
+  id: string
+  index: number
+  content: string
+  char_count: number
+  metadata?: Record<string, unknown> | null
+  is_vectorized: number
+}
+
+export type DocumentStrategyPayload =
+  | { mode: 'inherit' }
+  | ({ mode: 'custom' } & ProcessingConfig)
+
 /** 在内存中预览文件的清洗文本和切片，不写入知识库 */
 export function previewDocument(kbId: string, docId: string): Promise<DocumentPreview> {
   return request.post(`/v1/knowledge-bases/${kbId}/files/${docId}/preview`)
+}
+
+/** 获取一次原始解析文本，供浏览器本地实时清洗和切片。 */
+export function getDocumentPreviewSource(kbId: string, docId: string): Promise<DocumentPreviewSource> {
+  return request.get(`/v1/knowledge-bases/${kbId}/files/${docId}/preview-source`)
+}
+
+/** 分页获取数据库当前生效切片。 */
+export function listDocumentChunks(
+  kbId: string,
+  docId: string,
+  page = 1,
+  pageSize = 20,
+): Promise<PaginatedResponse<StoredChunk>> {
+  return request.get(`/v1/knowledge-bases/${kbId}/files/${docId}/chunks`, {
+    params: { page: String(page), page_size: String(pageSize) },
+  })
+}
+
+/** 保存文件独立处理策略，或恢复继承知识库默认策略。 */
+export function updateDocumentProcessingStrategy(
+  kbId: string,
+  docId: string,
+  payload: DocumentStrategyPayload,
+): Promise<DocumentListItem> {
+  return request.put(`/v1/knowledge-bases/${kbId}/files/${docId}/processing-strategy`, payload)
 }
 
 // ── 批量操作 ────────────────────────────
@@ -269,11 +329,13 @@ export type ProcessTarget = 'parse' | 'clean' | 'chunk' | 'vectorize'
 export function processDocuments(
   kbId: string,
   docIds: string[],
+  algorithmVersion: number,
   targetStage: ProcessTarget = 'vectorize',
 ): Promise<ProcessResult> {
   return request.post(`/v1/knowledge-bases/${kbId}/files/process`, {
     doc_ids: docIds,
     target_stage: targetStage,
+    algorithm_version: algorithmVersion,
   })
 }
 

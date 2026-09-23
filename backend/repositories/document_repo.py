@@ -5,7 +5,7 @@
 """
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases
@@ -52,6 +52,21 @@ class DocumentRepo:
         return await db.get(Documents, doc_id)
 
     @staticmethod
+    async def has_processing_in_kb(db: AsyncSession, kb_id: UUID) -> bool:
+        """判断知识库是否存在任一处理中或排队中的未删除文档。"""
+        query = select(exists().where(
+            Documents.knowledge_base_id == kb_id,
+            Documents.status != 9,
+            or_(
+                Documents.is_parsed == 2,
+                Documents.is_cleaned == 2,
+                Documents.is_chunked == 2,
+                Documents.is_vectorized == 2,
+            ),
+        ))
+        return bool((await db.execute(query)).scalar())
+
+    @staticmethod
     async def list_by_kb(
         db: AsyncSession,
         kb_id: UUID,
@@ -81,6 +96,48 @@ class DocumentRepo:
         )
         items = (await db.execute(q)).scalars().all()
         return list(items), total
+
+    @staticmethod
+    async def list_active_chunks(
+        db: AsyncSession,
+        kb_id: UUID,
+        doc_id: UUID,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[Chunks], int]:
+        """分页返回文档当前启用切片，按 chunk_index 升序。"""
+        filters = (
+            Chunks.kb_id == kb_id,
+            Chunks.document_id == doc_id,
+            Chunks.status == 1,
+        )
+        total = (await db.execute(
+            select(func.count()).select_from(Chunks).where(*filters)
+        )).scalar() or 0
+        query = (
+            select(Chunks)
+            .where(*filters)
+            .order_by(Chunks.chunk_index.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        chunks = (await db.execute(query)).scalars().all()
+        return list(chunks), total
+
+    @staticmethod
+    async def count_active_chunks_by_documents(
+        db: AsyncSession,
+        doc_ids: list[UUID],
+    ) -> dict[UUID, int]:
+        """批量统计每份文档当前启用切片数，避免文件列表 N+1。"""
+        if not doc_ids:
+            return {}
+        rows = (await db.execute(
+            select(Chunks.document_id, func.count(Chunks.id))
+            .where(Chunks.document_id.in_(doc_ids), Chunks.status == 1)
+            .group_by(Chunks.document_id)
+        )).all()
+        return {document_id: int(count) for document_id, count in rows}
 
     @staticmethod
     async def soft_delete(db: AsyncSession, doc: Documents) -> None:

@@ -161,6 +161,9 @@ CREATE TABLE IF NOT EXISTS documents (
     cleaned_content     TEXT,
     is_cleaned          SMALLINT    NOT NULL DEFAULT 0,
     cleaning_config_hash VARCHAR(64),
+    processing_config JSONB,
+    applied_processing_config_hash VARCHAR(64),
+    applied_algorithm_version INTEGER,
     is_chunked          SMALLINT    NOT NULL DEFAULT 0,
     is_vectorized       SMALLINT    NOT NULL DEFAULT 0,
     last_error          TEXT,                    -- 最近一次处理失败原因（重新处理时清空）
@@ -185,6 +188,9 @@ COMMENT ON COLUMN documents.status IS '0=禁用, 1=启用, 9=逻辑删除';
 COMMENT ON COLUMN documents.is_parsed IS '解析状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.is_cleaned IS '清洗状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.cleaning_config_hash IS '生成 cleaned_content 所用清洗规则的 SHA-256';
+COMMENT ON COLUMN documents.processing_config IS '文件独立处理策略；NULL 表示继承知识库默认策略';
+COMMENT ON COLUMN documents.applied_processing_config_hash IS '当前生效切片所用完整处理策略的 SHA-256';
+COMMENT ON COLUMN documents.applied_algorithm_version IS '当前生效切片所用处理算法版本';
 COMMENT ON COLUMN documents.is_chunked IS '切片状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.is_vectorized IS '向量化状态：-1=失败, 0=未完成, 1=已完成, 2=进行中';
 COMMENT ON COLUMN documents.created_at IS '记录创建时间';

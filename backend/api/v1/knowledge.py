@@ -22,6 +22,9 @@ from backend.schemas.knowledge import (
     ChunkIdsRequest,
     DocIdsRequest,
     DocumentPreview,
+    DocumentPreviewSource,
+    DocumentProcessingStrategyUpdate,
+    DocumentListItem,
     KnowledgeBaseCreate,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
@@ -32,6 +35,11 @@ from backend.schemas.knowledge import (
 from backend.repositories import DocumentRepo
 from backend.services import KnowledgeBaseService
 from backend.services.knowledge import _get_kb_for_user
+from backend.services.processing_strategy import (
+    PROCESSING_ALGORITHM_VERSION,
+    effective_processing_config,
+    knowledge_base_processing_config,
+)
 
 router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["知识库"])
 
@@ -241,6 +249,8 @@ async def upload_file(
             DocumentProcessService.auto_process_document,
             str(kb_id),
             str(result.id),
+            "vectorize",
+            knowledge_base_processing_config(kb).model_dump(mode="json"),
         )
     return SuccessResponse(result=result)
 
@@ -278,16 +288,23 @@ async def process_files(
     user: Users = Depends(get_current_user),
 ):
     kb = await _get_kb_for_user(db, user, kb_id)
+    if body.algorithm_version != PROCESSING_ALGORITHM_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail="处理算法已更新，请刷新页面后重新预览",
+        )
     documents = [await DocumentRepo.get_by_id(db, doc_id) for doc_id in body.doc_ids]
     if any(doc is None or doc.status == 9 or doc.knowledge_base_id != kb.id for doc in documents):
         raise HTTPException(status_code=404, detail="文件不存在")
     for doc in documents:
+        strategy_snapshot = effective_processing_config(kb, doc).model_dump(mode="json")
         await KnowledgeBaseService.mark_processing_to_stage(db, doc.id, body.target_stage)
         background_tasks.add_task(
             DocumentProcessService.auto_process_document,
             str(kb_id),
             str(doc.id),
             body.target_stage,
+            strategy_snapshot,
         )
     return SuccessResponse(result=ProcessResult(processed=len(documents), total=len(body.doc_ids)))
 
@@ -306,6 +323,66 @@ async def preview_file(
 ):
     kb = await _get_kb_for_user(db, user, kb_id)
     result = await DocumentProcessService.preview_document(db, kb, doc_id)
+    return SuccessResponse(result=result)
+
+
+@router.get(
+    "/{kb_id}/files/{doc_id}/preview-source",
+    response_model=SuccessResponse[DocumentPreviewSource],
+    summary="获取前端实时预览源",
+    description="返回已有原文或临时解析结果，不写处理状态、切片或向量。",
+)
+async def get_preview_source(
+    kb_id: UUID,
+    doc_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    kb = await _get_kb_for_user(db, user, kb_id)
+    result = await DocumentProcessService.get_preview_source(db, kb, doc_id)
+    return SuccessResponse(result=result)
+
+
+@router.get(
+    "/{kb_id}/files/{doc_id}/chunks",
+    response_model=SuccessResponse[PaginatedResponse],
+    summary="分页获取文件当前生效切片",
+    description="只返回有效切片内容和元数据，不返回 embedding。",
+)
+async def list_document_chunks(
+    kb_id: UUID,
+    doc_id: UUID,
+    page: str = Query("", description="页码，默认 1"),
+    page_size: str = Query("", description="每页条数，默认 20"),
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    result = await KnowledgeBaseService.list_document_chunks(
+        db,
+        user,
+        kb_id,
+        doc_id,
+        parse_page(page),
+        parse_page_size(page_size),
+    )
+    return SuccessResponse(result=result)
+
+
+@router.put(
+    "/{kb_id}/files/{doc_id}/processing-strategy",
+    response_model=SuccessResponse[DocumentListItem],
+    summary="保存文件独立处理策略或恢复继承",
+)
+async def update_document_processing_strategy(
+    kb_id: UUID,
+    doc_id: UUID,
+    body: DocumentProcessingStrategyUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    result = await KnowledgeBaseService.update_document_strategy(
+        db, user, kb_id, doc_id, body
+    )
     return SuccessResponse(result=result)
 
 

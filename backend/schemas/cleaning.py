@@ -46,6 +46,8 @@ class CleaningRule(BaseModel):
             raise ValueError("regex_remove 规则不能匹配空文本")
         if re.search(r"\([^()]*[+*{][^()]*\)[+*{]", self.value):
             raise ValueError("regex_remove 规则不能包含嵌套量词")
+        if "\\" in self.replacement:
+            raise ValueError("regex_remove replacement 不支持反向引用或反斜杠转义")
         return self
 
 

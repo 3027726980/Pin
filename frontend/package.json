@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "build:widget": "vite build --config vite.widget.config.ts",
+    "test:unit": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "unplugin-vue-components": "^0.28.0",
     "vite": "^6.2.0",
     "vite-plugin-vue-devtools": "^8.2.1",
+    "vitest": "^5.0.1",
     "vue-tsc": "^2.2.0"
   }
 }

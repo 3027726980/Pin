@@ -16,18 +16,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.constants import UPLOAD_ROOT
-from backend.models import KnowledgeBases, UserModelConfig, Users
+from backend.models import Documents, KnowledgeBases, UserModelConfig, Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo, UserModelConfigRepo
 from backend.schemas.knowledge import (
     DocumentListItem,
+    DocumentProcessingStrategyUpdate,
     KnowledgeBaseCreate,
     KnowledgeBaseListItem,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
     PaginatedResponse,
+    StoredChunkItem,
 )
 from backend.schemas.cleaning import CleaningConfig
 from backend.services.system_settings import SystemSettingsService
+from backend.services.processing_strategy import (
+    effective_processing_config,
+    processing_config_hash,
+)
+
+
+def _document_list_item(
+    kb: KnowledgeBases,
+    doc: Documents,
+    chunk_count: int,
+) -> DocumentListItem:
+    """将文档 ORM 对象补齐为包含策略状态的列表响应。"""
+    effective_config = effective_processing_config(kb, doc)
+    current_hash = processing_config_hash(effective_config)
+    return DocumentListItem(
+        id=doc.id,
+        filename=doc.filename,
+        file_size=doc.file_size,
+        file_type=doc.file_type,
+        status=doc.status,
+        is_parsed=doc.is_parsed,
+        is_cleaned=doc.is_cleaned,
+        is_chunked=doc.is_chunked,
+        is_vectorized=doc.is_vectorized,
+        processing_config=doc.processing_config,
+        strategy_mode="custom" if doc.processing_config is not None else "inherit",
+        effective_processing_config=effective_config,
+        strategy_outdated=(
+            chunk_count > 0
+            and (
+                doc.applied_processing_config_hash is None
+                or doc.applied_processing_config_hash != current_hash
+            )
+        ),
+        applied_algorithm_version=doc.applied_algorithm_version,
+        chunk_count=chunk_count,
+        last_error=doc.last_error,
+        created_at=doc.created_at,
+    )
 
 
 async def _ensure_model_config(
@@ -201,6 +242,16 @@ class KnowledgeBaseService:
         仅更新传入的非 None 字段，未传的字段保持原值
         """
         kb = await _get_kb_for_user(db, user, kb_id)
+        submitted_fields = set(data.model_dump(exclude_unset=True))
+        strategy_fields = {
+            "auto_process",
+            "chunk_size",
+            "chunk_overlap",
+            "chunk_separators",
+            "cleaning_config",
+        }
+        if submitted_fields & strategy_fields and await DocumentRepo.has_processing_in_kb(db, kb_id):
+            raise HTTPException(status_code=409, detail="知识库有文件正在处理，暂不能修改处理策略")
         next_chunk_size = data.chunk_size if data.chunk_size is not None else kb.chunk_size
         next_chunk_overlap = (
             data.chunk_overlap if data.chunk_overlap is not None else kb.chunk_overlap
@@ -392,10 +443,86 @@ class KnowledgeBaseService:
         校验：知识库归属 + 未删除
         自动过滤 status=9 的文件
         """
-        await _get_kb_for_user(db, user, kb_id)
+        kb = await _get_kb_for_user(db, user, kb_id)
         items, total = await DocumentRepo.list_by_kb(db, kb_id, page, page_size)
+        chunk_counts = await DocumentRepo.count_active_chunks_by_documents(
+            db, [doc.id for doc in items]
+        )
+        result_items: list[DocumentListItem] = []
+        for doc in items:
+            chunk_count = chunk_counts.get(doc.id, 0)
+            result_items.append(_document_list_item(kb, doc, chunk_count))
         return PaginatedResponse(
-            items=[DocumentListItem.model_validate(doc) for doc in items],
+            items=result_items,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+
+    @staticmethod
+    async def update_document_strategy(
+        db: AsyncSession,
+        user: Users,
+        kb_id: UUID,
+        doc_id: UUID,
+        data: DocumentProcessingStrategyUpdate,
+    ) -> DocumentListItem:
+        """保存文件独立策略或恢复继承；处理中时拒绝修改。"""
+        kb = await _get_kb_for_user(db, user, kb_id)
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if (
+            doc is None
+            or doc.status == 9
+            or doc.knowledge_base_id != kb_id
+            or doc.user_id != user.id
+        ):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        if await DocumentRepo.has_processing_in_kb(db, kb_id):
+            raise HTTPException(status_code=409, detail="知识库有文件正在处理，暂不能修改处理策略")
+
+        config = data.to_processing_config()
+        doc.processing_config = (
+            config.model_dump(mode="json") if config is not None else None
+        )
+        await db.commit()
+        await db.refresh(doc)
+        chunk_counts = await DocumentRepo.count_active_chunks_by_documents(db, [doc.id])
+        return _document_list_item(kb, doc, chunk_counts.get(doc.id, 0))
+
+    @staticmethod
+    async def list_document_chunks(
+        db: AsyncSession,
+        user: Users,
+        kb_id: UUID,
+        doc_id: UUID,
+        page: int,
+        page_size: int,
+    ) -> PaginatedResponse:
+        """分页读取当前文件数据库中实际生效的切片。"""
+        await _get_kb_for_user(db, user, kb_id)
+        doc = await DocumentRepo.get_by_id(db, doc_id)
+        if (
+            doc is None
+            or doc.status == 9
+            or doc.knowledge_base_id != kb_id
+            or doc.user_id != user.id
+        ):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        chunks, total = await DocumentRepo.list_active_chunks(
+            db, kb_id, doc_id, page, page_size
+        )
+        return PaginatedResponse(
+            items=[
+                StoredChunkItem(
+                    id=chunk.id,
+                    index=chunk.chunk_index,
+                    content=chunk.content,
+                    char_count=len(chunk.content),
+                    metadata=chunk.chunk_metadata,
+                    is_vectorized=chunk.is_vectorized,
+                )
+                for chunk in chunks
+            ],
             total=total,
             page=page,
             page_size=page_size,
