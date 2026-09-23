@@ -22,18 +22,19 @@
       </n-descriptions>
     </n-card>
 
-    <n-card v-if="kbInfo" title="知识库默认处理策略" size="small" class="section-card">
-      <n-alert v-if="strategyLocked" type="warning" :show-icon="false" class="notice">当前知识库有文件正在处理，任务结束前不能修改处理策略。</n-alert>
-      <div class="auto-row">
-        <div><strong>上传后自动处理</strong><p>新上传文件会继承此策略并自动处理至向量化。</p></div>
-        <n-switch v-model:value="autoProcessDraft" :disabled="strategyLocked" />
+    <n-card v-if="kbInfo" size="small" class="section-card strategy-summary">
+      <div class="strategy-summary-content">
+        <div>
+          <strong>默认处理策略</strong>
+          <n-space size="small" align="center" class="strategy-summary-meta">
+            <n-tag :type="kbInfo.auto_process ? 'success' : 'default'" size="small">自动处理：{{ kbInfo.auto_process ? '开启' : '关闭' }}</n-tag>
+            <span>单片 {{ kbInfo.chunk_size }} 字符</span>
+            <span>重叠 {{ kbInfo.chunk_overlap }} 字符</span>
+            <n-tag v-if="strategyLocked" type="warning" size="small">处理中，暂不可修改</n-tag>
+          </n-space>
+        </div>
+        <n-button type="primary" secondary @click="openStrategyDrawer">查看/设置</n-button>
       </div>
-      <ProcessingStrategyForm v-model="knowledgeStrategyDraft" :disabled="strategyLocked" />
-      <div class="actions">
-        <n-button :disabled="strategyLocked || strategySaving" @click="resetKnowledgeStrategy">放弃修改</n-button>
-        <n-button type="primary" :loading="strategySaving" :disabled="strategyLocked" @click="() => saveKnowledgeStrategy()">保存默认策略</n-button>
-      </div>
-      <p class="hint">保存不会重建已有索引；文件会标记为“待重新处理”，处理成功后才替换旧切片。</p>
     </n-card>
 
     <n-card title="文件列表">
@@ -50,6 +51,24 @@
       </n-data-table>
       <div v-if="fileTotal" class="pagination"><n-pagination v-model:page="filePage" :page-size="filePageSize" :item-count="fileTotal" :page-sizes="[10, 20, 50]" show-size-picker @update:page="() => fetchFiles()" @update:page-size="onFilePageSizeChange" /></div>
     </n-card>
+
+    <n-drawer v-model:show="strategyDrawerVisible" :width="520" @after-leave="resetKnowledgeStrategy">
+      <n-drawer-content title="知识库默认处理策略" closable>
+        <n-alert v-if="strategyLocked" type="warning" :show-icon="false" class="notice">当前知识库有文件正在处理，任务结束前不能修改处理策略。</n-alert>
+        <div class="auto-row">
+          <div><strong>上传后自动处理</strong><p>新上传文件会继承此策略并自动处理至向量化。</p></div>
+          <n-switch v-model:value="autoProcessDraft" :disabled="strategyLocked" />
+        </div>
+        <ProcessingStrategyForm v-model="knowledgeStrategyDraft" :disabled="strategyLocked" />
+        <p class="hint strategy-drawer-hint">保存不会重建已有索引；文件会标记为“待重新处理”，处理成功后才替换旧切片。</p>
+        <template #footer>
+          <n-space justify="end">
+            <n-button :disabled="strategyLocked || strategySaving" @click="resetKnowledgeStrategy">放弃修改</n-button>
+            <n-button type="primary" :loading="strategySaving" :disabled="strategyLocked" @click="saveKnowledgeStrategyFromDrawer">保存默认策略</n-button>
+          </n-space>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
 
     <n-drawer v-model:show="previewVisible" :width="1180">
       <n-drawer-content :title="previewRow ? `${previewRow.filename} · 预览与重新处理` : '文件预览'" closable>
@@ -70,9 +89,12 @@
                 <n-button block type="primary" :loading="processing" :disabled="strategyLocked || !!previewVersionError" @click="saveAndReprocessCurrentFile">保存并重新处理此文件</n-button>
               </n-space>
             </section>
-            <section class="preview-results">
-              <n-tabs type="line" animated>
-                <n-tab-pane name="raw" tab="原文"><pre class="preview-content text-pane">{{ previewSource.raw_content }}</pre></n-tab-pane>
+            <section class="preview-source-column">
+              <h3>原文</h3>
+              <pre class="preview-content text-pane">{{ previewSource.raw_content }}</pre>
+            </section>
+            <section class="preview-result-column">
+              <n-tabs type="line" animated default-value="cleaned">
                 <n-tab-pane name="cleaned" tab="清洗结果"><pre class="preview-content text-pane">{{ localPreview?.cleanedText || '' }}</pre></n-tab-pane>
                 <n-tab-pane name="draft" :tab="`草稿切片（${localPreview?.chunks.length || 0}）`">
                   <n-empty v-if="!localPreview?.chunks.length" description="清洗后没有可展示的草稿切片" />
@@ -120,6 +142,7 @@ const kbName = computed(() => kbInfo.value?.name || '知识库详情')
 const knowledgeStrategyDraft = ref<ProcessingConfig>(blankStrategy())
 const autoProcessDraft = ref(false)
 const strategySaving = ref(false)
+const strategyDrawerVisible = ref(false)
 const modelConfigs = ref<UserModelConfigItem[]>([])
 const embeddingLabel = computed(() => {
   if (!kbInfo.value) return '-'
@@ -192,6 +215,7 @@ async function fetchKnowledgeBase() {
   catch (error) { message.error(errorText(error, '获取知识库信息失败')) }
 }
 function resetKnowledgeStrategy() { if (kbInfo.value) { autoProcessDraft.value = kbInfo.value.auto_process; knowledgeStrategyDraft.value = strategyFromKb(kbInfo.value) } }
+function openStrategyDrawer() { resetKnowledgeStrategy(); strategyDrawerVisible.value = true }
 function validStrategy(value: ProcessingConfig) {
   if (value.chunk_overlap >= value.chunk_size) { message.warning('切片重叠必须小于单片长度'); return false }
   if (value.cleaning_config.rules.some(rule => rule.type === 'regex_remove' && (rule.replacement || '').includes('\\'))) {
@@ -207,6 +231,7 @@ async function saveKnowledgeStrategy(show = true): Promise<boolean> {
   catch (error) { message.error(errorText(error, '保存默认策略失败')); return false }
   finally { strategySaving.value = false }
 }
+async function saveKnowledgeStrategyFromDrawer() { if (await saveKnowledgeStrategy()) strategyDrawerVisible.value = false }
 
 let fetchSeq = 0
 async function fetchFiles(silent = false) {
@@ -264,24 +289,27 @@ onUnmounted(() => { stopPoll(); if (previewTimer) clearTimeout(previewTimer) })
 
 <style scoped>
 .page { height: 100%; }
-.page-header, .auto-row, .actions, .batch-bar, .pagination { display: flex; align-items: center; }
+.page-header, .auto-row, .actions, .batch-bar, .pagination, .strategy-summary-content { display: flex; align-items: center; }
 .page-header { justify-content: space-between; margin-bottom: 16px; }
 .page-header h2 { margin: 0; font-size: 20px; }
 .section-card { margin-bottom: 16px; }
+.strategy-summary-content { justify-content: space-between; gap: 16px; }
+.strategy-summary-meta { margin-top: 8px; color: var(--n-text-color-3); font-size: 13px; }
 .notice { margin-bottom: 12px; }
 .auto-row { justify-content: space-between; margin-bottom: 14px; }
 .auto-row p, .hint { margin: 4px 0 0; color: var(--n-text-color-3); font-size: 13px; }
 .actions, .pagination { justify-content: flex-end; gap: 8px; }
 .hint { text-align: right; }
+.strategy-drawer-hint { margin-top: 4px; text-align: left; }
 .batch-bar { justify-content: space-between; padding: 10px 16px; margin-bottom: 12px; background: var(--n-color-embedded); border: 1px solid var(--n-border-color); border-radius: 4px; }
 .pagination { margin-top: 16px; }
-.preview-layout { display: flex; gap: 16px; min-height: 600px; }
-.preview-strategy { flex: 0 0 360px; overflow-y: auto; padding-right: 16px; border-right: 1px solid var(--n-border-color); }
-.preview-strategy h3 { margin: 0 0 12px; }
+.preview-layout { display: grid; grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; min-height: 600px; }
+.preview-strategy { min-width: 0; max-height: 650px; overflow-y: auto; padding-right: 16px; border-right: 1px solid var(--n-border-color); }
+.preview-strategy h3, .preview-source-column h3 { margin: 0 0 12px; }
 .scope-notice { margin: 12px 0; }
 .drawer-actions { width: 100%; margin-top: 12px; }
-.preview-results { min-width: 0; flex: 1; }
+.preview-source-column, .preview-result-column { min-width: 0; }
 .preview-content { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--n-font-family-mono); line-height: 1.65; }
 .text-pane { max-height: 650px; overflow: auto; padding: 12px; border: 1px solid var(--n-border-color); border-radius: 4px; }
-@media (max-width: 900px) { .preview-layout { flex-direction: column; } .preview-strategy { flex-basis: auto; padding-right: 0; padding-bottom: 16px; border-right: 0; border-bottom: 1px solid var(--n-border-color); } }
+@media (max-width: 1000px) { .preview-layout { grid-template-columns: 1fr; } .preview-strategy { max-height: none; padding-right: 0; padding-bottom: 16px; border-right: 0; border-bottom: 1px solid var(--n-border-color); } }
 </style>
