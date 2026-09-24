@@ -11,6 +11,25 @@ _SENTENCE_BOUNDARY = re.compile(r"[。！？!?\n]")
 _QUOTE_LIMIT = 300
 
 
+def strip_unbound_source_markers(
+    answer: str,
+    valid_source_ids: set[str] | None = None,
+) -> str:
+    """移除没有本轮来源支撑的 ``[S#]`` 标记。
+
+    ``valid_source_ids`` 为空时移除全部稳定来源标记；非空时只保留本轮
+    候选来源中存在的标记，避免模型从历史消息复制不可验证的来源编号。
+    """
+    valid = valid_source_ids or set()
+    sanitized = _SOURCE_PATTERN.sub(
+        lambda marker: marker.group(0) if marker.group(1) in valid else "",
+        answer,
+    )
+    if sanitized == answer:
+        return answer
+    return re.sub(r"[ \t]+([，。！？；：,.!?;:])", r"\1", sanitized)
+
+
 def _claim_for_marker(answer: str, marker: re.Match[str]) -> str:
     """取包含来源标记的句子作为 claim，保留可见的 source_id 供前端定位。"""
     before = answer[:marker.start()]

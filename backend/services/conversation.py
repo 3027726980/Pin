@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models import Users
 from backend.repositories import ConversationRepo, MessageRepo, AgentIndexRepo
 from backend.schemas.conversation import ConversationResponse
+from backend.services.citation_bindings import strip_unbound_source_markers
 
 # 会话默认标题(首轮对话后自动用首条用户消息命名)
 DEFAULT_CONV_TITLE = "新会话"
@@ -94,6 +95,17 @@ class ConversationService:
             raise HTTPException(status_code=404, detail="会话不存在")
         msgs, total = await MessageRepo.list_by_conversation(
             db, conv_id, page, page_size)
+        msgs = [
+            {
+                **message,
+                "content": strip_unbound_source_markers(message.get("content") or ""),
+            }
+            if message.get("role") == "assistant"
+            and not message.get("citations")
+            and not message.get("citation_bindings")
+            else message
+            for message in msgs
+        ]
         return msgs, total
 
     @staticmethod

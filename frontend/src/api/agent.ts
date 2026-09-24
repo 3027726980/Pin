@@ -183,6 +183,7 @@ export interface ChatDebug {
   queries?: string[]
   rerank?: { enabled: boolean; provider?: string | null; model?: string | null }
   intent?: 'simple' | 'general'
+  intent_code?: string
 }
 
 export interface ChatResult {

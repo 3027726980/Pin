@@ -6,6 +6,7 @@
 
 import { getClientId, getToken, type CitationBinding, type ConvItem, type Msg } from './state'
 import { filterUsedCitations, type Citation } from './refs'
+import { stripUnboundSourceMarkers } from '../../utils/citations'
 
 export interface ChatEvent {
   type: 'delta' | 'citations' | 'done' | 'error'
@@ -189,10 +190,12 @@ export class PublicApi {
       if (e.type === 'citations' && e.citations) rawCitations = e.citations
       if (e.type === 'citations' && e.bindings) citationBindings = e.bindings
       if (e.type === 'done') {
+        const sanitizedContent = stripUnboundSourceMarkers(
+          fullContent, citationBindings.map(binding => binding.source_id))
         onEvent({
           type: 'done',
-          content: fullContent,
-          citations: citationBindings.length ? [] : filterUsedCitations(rawCitations, fullContent),
+          content: sanitizedContent,
+          citations: citationBindings.length ? [] : filterUsedCitations(rawCitations, sanitizedContent),
           rawCitations,  // 完整列表：UI 渲染时按内容 [N] 过滤并保留原始编号
           bindings: citationBindings,
         })
@@ -220,9 +223,11 @@ export class PublicApi {
     }
     // 兜底：流结束但没收到 done（异常断流）
     if (rawCitations.length > 0 || citationBindings.length > 0 || fullContent) {
+      const sanitizedContent = stripUnboundSourceMarkers(
+        fullContent, citationBindings.map(binding => binding.source_id))
       onEvent({
-        type: 'done', content: fullContent,
-        citations: citationBindings.length ? [] : filterUsedCitations(rawCitations, fullContent),
+        type: 'done', content: sanitizedContent,
+        citations: citationBindings.length ? [] : filterUsedCitations(rawCitations, sanitizedContent),
         rawCitations,
         bindings: citationBindings,
       })

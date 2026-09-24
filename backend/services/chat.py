@@ -25,7 +25,10 @@ from backend.repositories import (
     UserModelConfigRepo,
 )
 from backend.schemas.agent import ChatRequest, ChatResponse, Citation, CitationBinding
-from backend.services.citation_bindings import build_citation_bindings
+from backend.services.citation_bindings import (
+    build_citation_bindings,
+    strip_unbound_source_markers,
+)
 from backend.services.conversation import ConversationService
 from backend.services.middleware import build_middlewares
 from backend.tools import RAGTool, ToolRegistry
@@ -101,7 +104,10 @@ class ChatService:
                 debug_store["intent_code"] = graph_result.intent
             answer, citations = graph_result.answer, graph_result.citations
 
-        bindings = build_citation_bindings(answer, ChatService._source_map(citations))
+        source_map = ChatService._source_map(citations)
+        answer = strip_unbound_source_markers(
+            answer, ChatService._bindable_source_ids(source_map))
+        bindings = build_citation_bindings(answer, source_map)
         await ChatService._persist_messages(
             db, conv, request.message, answer, citations, bindings)
         return ChatResponse(conversation_id=conv.id, answer=answer,
@@ -131,7 +137,8 @@ class ChatService:
                 async for event in ChatService._chat_simple_rag_stream(
                         db, user, agent, llm_cfg, conv, request,
                         full_answer, citations, debug_store=debug_store):
-                    yield event
+                    if event.get("type") not in {"debug", "citations", "done"}:
+                        yield event
             else:
                 from backend.services.agent_graph import AgentGraphService
 
@@ -166,14 +173,21 @@ class ChatService:
                         debug_store["intent"] = event.get("intent")
                         debug_store["intent_code"] = event.get("intent_code")
                     yield event
-                if debug_store is not None:
-                    yield {"type": "debug", "debug": debug_store}
-                yield ChatService._citation_event("".join(full_answer), citations)
-                yield {"type": "done"}
+            source_map = ChatService._source_map(citations)
+            sanitized_answer = strip_unbound_source_markers(
+                "".join(full_answer), ChatService._bindable_source_ids(source_map))
+            full_answer[:] = [sanitized_answer]
+            if debug_store is not None:
+                yield {"type": "debug", "debug": debug_store}
+            yield ChatService._citation_event(sanitized_answer, citations)
+            yield {"type": "done"}
         finally:
+            source_map = ChatService._source_map(citations)
+            sanitized_answer = strip_unbound_source_markers(
+                "".join(full_answer), ChatService._bindable_source_ids(source_map))
             await ChatService._persist_messages(
-                db, conv, request.message, "".join(full_answer), citations,
-                build_citation_bindings("".join(full_answer), ChatService._source_map(citations)))
+                db, conv, request.message, sanitized_answer, citations,
+                build_citation_bindings(sanitized_answer, source_map))
 
     # ═══════════════════════════════════════════════
     # simple_rag(预检索 + create_agent)
@@ -703,7 +717,7 @@ class ChatService:
             return
         msgs = list(tup.checkpoint.get("channel_values", {}).get("messages", []))
         fixed = ChatService._repair_messages(msgs)
-        if len(fixed) != len(msgs):
+        if fixed != msgs:
             # 递增 messages 版本号(blob 同版本 DO NOTHING,必须换新版本)
             cur_ver = str(tup.checkpoint.get("channel_versions", {}).get("messages", "0"))
             new_ver = (str(int(cur_ver) + 1) if cur_ver.isdigit()
@@ -717,11 +731,20 @@ class ChatService:
     def _repair_messages(msgs: list) -> list:
         """清洗消息列表:assistant 的 tool_calls 后缺失对应 ToolMessage 时自动补齐
 
-        返回:修复后的新列表(无断裂时不新增元素)
-        """
-        from langchain_core.messages import ToolMessage
+        同时清理历史 AI 消息中的展示型 ``[S#]``，避免下一轮模型复制
+        已失去当前来源上下文的引用编号。
 
-        result = list(msgs)
+        返回:修复后的新列表(无断裂且无来源标记时不新增元素)
+        """
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        result = []
+        for message in msgs:
+            if isinstance(message, AIMessage) and isinstance(message.content, str):
+                sanitized = strip_unbound_source_markers(message.content)
+                if sanitized != message.content:
+                    message = message.model_copy(update={"content": sanitized})
+            result.append(message)
         inserted = 0  # 已插入数量(修正后续插入位置)
         for i, m in enumerate(list(result)):
             if not (hasattr(m, "tool_calls") and m.tool_calls):
@@ -1035,6 +1058,15 @@ class ChatService:
             citation.source_id: citation
             for citation in citations
             if citation.source_id is not None
+        }
+
+    @staticmethod
+    def _bindable_source_ids(source_map: dict[str, Citation]) -> set[str]:
+        """返回能够生成结构化引用绑定的本轮来源编号。"""
+        return {
+            source_id
+            for source_id, citation in source_map.items()
+            if citation.content.strip()
         }
 
     @staticmethod

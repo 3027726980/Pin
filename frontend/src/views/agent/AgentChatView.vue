@@ -144,6 +144,15 @@
           <div v-if="msg.role === 'assistant' && msg.debug && debugMode" class="msg-debug">
             <n-collapse>
               <n-collapse-item title="🔍 检索调试信息" name="debug">
+                <div v-if="msg.debug.intent || msg.debug.intent_code" class="debug-section">
+                  <div class="debug-title">意图路由</div>
+                  <div class="debug-query">
+                    <n-tag size="tiny" :type="msg.debug.intent === 'simple' ? 'success' : 'warning'" :bordered="false">
+                      {{ msg.debug.intent === 'simple' ? '轻量模式' : '完整模式' }}
+                    </n-tag>
+                    <span>意图代码：{{ msg.debug.intent_code || msg.debug.intent }}</span>
+                  </div>
+                </div>
                 <div v-if="msg.debug.queries && msg.debug.queries.length" class="debug-section">
                   <div class="debug-title">检索 Query（{{ msg.debug.queries.length }} 路）</div>
                   <div v-for="(q, i) in msg.debug.queries" :key="i" class="debug-query">
@@ -151,6 +160,14 @@
                       {{ i === 0 ? '原始' : '增强' }}
                     </n-tag>
                     <span>{{ q }}</span>
+                  </div>
+                </div>
+                <div v-else class="debug-section">
+                  <div class="debug-title">知识库检索</div>
+                  <div class="debug-query">
+                    {{ msg.debug.intent === 'simple'
+                      ? '本轮为轻量模式，未执行知识库检索。'
+                      : '本轮未调用 RAG 工具，因此没有检索 Query。' }}
                   </div>
                 </div>
                 <div v-if="msg.debug.rerank" class="debug-section">
@@ -282,6 +299,7 @@ import {
   deleteConversation as apiDeleteConversation,
   type ConversationItem,
 } from '@/api/conversation'
+import { stripUnboundSourceMarkers } from '@/utils/citations'
 
 interface DisplayMessage extends ChatMessage {
   /** 检索调试信息（Debug 模式） */
@@ -545,6 +563,10 @@ async function doRequest(
           assistantMsg.citations = assistantMsg.citationBindings.length
             ? []
             : event.citations.filter((_, i) => used.has(i + 1))
+          assistantMsg.content = stripUnboundSourceMarkers(
+            assistantMsg.content,
+            assistantMsg.citationBindings.map(binding => binding.source_id),
+          )
         } else if (event.type === 'debug') {
           assistantMsg.debug = event.debug
         } else if (event.type === 'error') {
