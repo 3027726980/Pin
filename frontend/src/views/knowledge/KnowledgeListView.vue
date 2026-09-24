@@ -94,11 +94,15 @@
           <n-switch v-model:value="formData.allow_multiple" />
         </n-form-item>
         <n-form-item label="Embedding 模型" path="embedding">
-          <n-select
-            v-model:value="formData.user_model_config_id"
-            :options="embeddingOptions"
-            placeholder="选择向量化模型"
-          />
+          <div class="embedding-field">
+            <n-select
+              v-model:value="formData.user_model_config_id"
+              :options="embeddingOptions"
+              :disabled="!!editingId"
+              placeholder="选择向量化模型"
+            />
+            <div v-if="editingId" class="embedding-lock-hint">创建后不可修改</div>
+          </div>
         </n-form-item>
         <n-form-item label="清洗规则">
           <div class="cleaning-rules">
@@ -531,6 +535,16 @@ onMounted(() => {
 
 .cleaning-rules {
   width: 100%;
+}
+
+.embedding-field {
+  width: 100%;
+}
+
+.embedding-lock-hint {
+  margin-top: 4px;
+  color: var(--n-text-color-3);
+  font-size: 12px;
 }
 
 .cleaning-hint {
