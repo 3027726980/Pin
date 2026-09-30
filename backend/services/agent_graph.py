@@ -7,7 +7,9 @@
 意图时才走 ``plan -> draft -> reflect -> main_agent``。因此规划与反思是确定节点而非
 可被 ReAct 任意调用的工具。
 """
+import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypedDict
@@ -40,6 +42,8 @@ class AgentGraphState(TypedDict, total=False):
     plan: str
     draft: str
     reflection: str
+    verify_result: dict[str, Any]
+    revision_required: bool
     guidance: str
     answer: str
     citations: list[Any]
@@ -69,6 +73,8 @@ class AgentGraphResult:
 
 class AgentGraphService:
     """构建并运行 General Agent 的无持久化 LangGraph。"""
+
+    _compiled_graph: Any = None
 
     @staticmethod
     async def run(
@@ -151,32 +157,46 @@ class AgentGraphService:
 
     @staticmethod
     def _build_graph():
-        """创建节点固定、依赖由 state 注入的图实例。"""
+        """节点结构固定，进程内只编译一次。"""
+        if AgentGraphService._compiled_graph is not None:
+            return AgentGraphService._compiled_graph
         from langgraph.graph import END, START, StateGraph
 
         graph = StateGraph(AgentGraphState)
         graph.add_node("intent", AgentGraphService._intent_node)
         graph.add_node("simple", AgentGraphService._simple_node)
         graph.add_node("plan", AgentGraphService._plan_node)
-        graph.add_node("draft", AgentGraphService._draft_node)
-        graph.add_node("reflect", AgentGraphService._reflect_node)
         graph.add_node("main_agent", AgentGraphService._main_agent_node)
+        graph.add_node("verify", AgentGraphService._verify_node)
+        graph.add_node("revision", AgentGraphService._revision_node)
         graph.add_edge(START, "intent")
         graph.add_conditional_edges("intent", AgentGraphService._after_intent, {
-            "simple": "simple", "plan": "plan", "draft": "draft", "main": "main_agent",
+            "simple": "simple", "plan": "plan", "main": "main_agent",
         })
-        graph.add_conditional_edges("plan", AgentGraphService._after_plan, {
-            "draft": "draft", "main": "main_agent",
-        })
-        graph.add_edge("draft", "reflect")
-        graph.add_edge("reflect", "main_agent")
+        graph.add_edge("plan", "main_agent")
         graph.add_edge("simple", END)
-        graph.add_edge("main_agent", END)
-        return graph.compile()
+        graph.add_conditional_edges("main_agent", AgentGraphService._after_main, {
+            "verify": "verify", "end": END,
+        })
+        graph.add_conditional_edges("verify", AgentGraphService._after_verify, {
+            "revision": "revision", "end": END,
+        })
+        graph.add_edge("revision", END)
+        AgentGraphService._compiled_graph = graph.compile()
+        return AgentGraphService._compiled_graph
 
     @staticmethod
     async def _intent_node(state: AgentGraphState) -> dict:
         """读取最近五条语义消息，由规则/LLM 选择配置化意图枚举。"""
+        started = time.perf_counter()
+        if state.get("stream"):
+            AgentGraphService._write_stream_event({
+                "type": "stage",
+                "stage": "intent",
+                "stage_id": "intent.1",
+                "status": "running",
+                "summary": "正在识别意图",
+            })
         classifier = state.get("classify_runner")
         if classifier is None:
             intent = await IntentService.classify(
@@ -189,7 +209,15 @@ class AgentGraphService:
         policy = IntentService.resolve_policy(intent, state.get("categories"))
         use_plan = policy.use_plan and bool(getattr(state["agent"], "plan_enabled", True))
         use_reflect = policy.use_reflect and bool(getattr(state["agent"], "reflect_enabled", True))
-        event = {"type": "intent", "intent": policy.route, "intent_code": policy.code}
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        event = {
+            "type": "intent",
+            "intent": policy.route,
+            "intent_code": policy.code,
+            "duration_ms": duration_ms,
+        }
+        logger.info("agent_graph node=intent duration_ms=%d intent=%s",
+                    duration_ms, policy.code)
         return AgentGraphService._with_event(state, event, {
             "intent": policy.code,
             "route": policy.route,
@@ -204,34 +232,43 @@ class AgentGraphService:
             return "simple"
         if state.get("use_plan"):
             return "plan"
-        if state.get("use_reflect"):
-            return "draft"
         return "main"
 
     @staticmethod
-    def _after_plan(state: AgentGraphState) -> str:
-        """计划完成后，只有开启反思时才生成草稿。"""
-        return "draft" if state.get("use_reflect") else "main"
+    def _after_main(state: AgentGraphState) -> str:
+        """高要求任务在主答案之后核验，避免阻塞首答案 Token。"""
+        return "verify" if state.get("use_reflect") else "end"
+
+    @staticmethod
+    def _after_verify(state: AgentGraphState) -> str:
+        """仅核验明确要求修订时进入 revision。"""
+        return "revision" if state.get("revision_required") else "end"
 
     @staticmethod
     async def _simple_node(state: AgentGraphState) -> dict:
         """轻量意图：零工具直接回答节点。"""
+        started = time.perf_counter()
         if state.get("stream"):
             runner = state.get("simple_stream_runner")
             if runner is None:
                 raise RuntimeError("流式 simple 节点缺少执行器")
             async for event in runner():
                 AgentGraphService._write_stream_event(event)
+            logger.info("agent_graph node=simple duration_ms=%d",
+                        int((time.perf_counter() - started) * 1000))
             return {}
         runner = state.get("simple_runner")
         if runner is None:
             raise RuntimeError("simple 节点缺少执行器")
         answer, citations = await runner()
+        logger.info("agent_graph node=simple duration_ms=%d",
+                    int((time.perf_counter() - started) * 1000))
         return {"answer": answer, "citations": citations}
 
     @staticmethod
     async def _plan_node(state: AgentGraphState) -> dict:
         """规划节点：只在复杂意图启用，失败不阻断主 Agent。"""
+        started = time.perf_counter()
         runner = state.get("plan_runner")
         try:
             if runner is None:
@@ -241,25 +278,39 @@ class AgentGraphService:
                     state["llm_cfg"], state["message"], state.get("tools_desc", ""))
             else:
                 plan = await runner(state["message"], state.get("tools_desc", ""))
+            status = "completed"
         except Exception:
             logger.exception("规划节点失败，继续主 Agent")
             plan = ""
-        event = {"type": "plan", "plan": plan}
+            status = "degraded"
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        event = {
+            "type": "plan",
+            "plan": plan,
+            "status": status,
+            "duration_ms": duration_ms,
+        }
+        logger.info("agent_graph node=plan duration_ms=%d",
+                    duration_ms)
         return AgentGraphService._with_event(state, event, {"plan": plan})
 
     @staticmethod
     async def _draft_node(state: AgentGraphState) -> dict:
         """反思前的临时草稿节点；不写入用户会话 checkpoint。"""
+        started = time.perf_counter()
         runner = state.get("draft_runner")
         if runner is None:
             raise RuntimeError("reflect 已启用但缺少草稿执行器")
         guidance = AgentGraphService._compose_guidance(state, include_reflection=False)
         draft = await runner(guidance)
+        logger.info("agent_graph node=draft duration_ms=%d",
+                    int((time.perf_counter() - started) * 1000))
         return {"draft": draft}
 
     @staticmethod
     async def _reflect_node(state: AgentGraphState) -> dict:
         """答案反思节点：审查草稿并把建议交给最终主 Agent 节点。"""
+        started = time.perf_counter()
         runner = state.get("reflect_runner")
         try:
             if runner is None:
@@ -271,25 +322,111 @@ class AgentGraphService:
         except Exception:
             logger.exception("反思节点失败，继续主 Agent")
             reflection = ""
-        event = {"type": "reflect", "suggestions": reflection}
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        event = {
+            "type": "reflect",
+            "suggestions": reflection,
+            "duration_ms": duration_ms,
+        }
+        logger.info("agent_graph node=reflect duration_ms=%d",
+                    duration_ms)
         return AgentGraphService._with_event(state, event, {"reflection": reflection})
 
     @staticmethod
     async def _main_agent_node(state: AgentGraphState) -> dict:
-        """最终主 Agent 节点：接收计划、草稿、反思及原有会话记忆。"""
+        """主 Agent 节点：计划后立即生成首答案。"""
+        started = time.perf_counter()
+        from backend.services.model_policy import current_turn_budget
+
+        budget = current_turn_budget()
+        if budget is not None:
+            budget.acquire_llm()
         guidance = AgentGraphService._compose_guidance(state, include_reflection=True)
         if state.get("stream"):
             runner = state.get("main_stream_runner")
             if runner is None:
                 raise RuntimeError("流式主 Agent 节点缺少执行器")
+            chunks: list[str] = []
             async for event in runner(guidance):
+                if event.get("type") == "delta":
+                    chunks.append(str(event.get("content", "")))
                 AgentGraphService._write_stream_event(event)
-            return {"guidance": guidance}
+            logger.info("agent_graph node=main_agent duration_ms=%d",
+                        int((time.perf_counter() - started) * 1000))
+            return {"guidance": guidance, "answer": "".join(chunks)}
         runner = state.get("main_runner")
         if runner is None:
             raise RuntimeError("主 Agent 节点缺少执行器")
         answer, citations = await runner(guidance)
+        logger.info("agent_graph node=main_agent duration_ms=%d",
+                    int((time.perf_counter() - started) * 1000))
         return {"guidance": guidance, "answer": answer, "citations": citations}
+
+    @staticmethod
+    async def _verify_node(state: AgentGraphState) -> dict:
+        """核验主答案；失败或超时降级保留原答案。"""
+        from backend.schemas.agent import VerifyResult
+
+        started = time.perf_counter()
+        try:
+            runner = state.get("reflect_runner")
+            if runner is None:
+                from backend.tools.agent.reflect import ReflectTool
+
+                result = await ReflectTool._verify_answer(
+                    state["llm_cfg"], state.get("answer", "")
+                )
+            else:
+                raw = await runner(state.get("answer", ""))
+                if isinstance(raw, VerifyResult):
+                    result = raw
+                elif isinstance(raw, dict):
+                    result = VerifyResult.model_validate(raw)
+                else:
+                    try:
+                        result = VerifyResult.model_validate_json(str(raw))
+                    except Exception:
+                        suggestions = json.loads(str(raw))
+                        result = VerifyResult(
+                            passed=not bool(suggestions),
+                            reasons=[str(item) for item in suggestions],
+                            revision_required=bool(suggestions),
+                        )
+            status = "completed"
+        except Exception as error:
+            logger.warning("核验节点失败，保留主答案: %s", error)
+            result = VerifyResult(passed=True, reasons=["verifier_degraded"], revision_required=False)
+            status = "degraded"
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        event = {
+            "type": "verify",
+            "passed": result.passed,
+            "reasons": result.reasons,
+            "revision_required": result.revision_required,
+            "status": status,
+            "duration_ms": duration_ms,
+        }
+        logger.info("agent_graph node=verify duration_ms=%d status=%s",
+                    duration_ms, status)
+        return AgentGraphService._with_event(state, event, {
+            "verify_result": result.model_dump(),
+            "revision_required": result.revision_required,
+            "reflection": json.dumps(result.reasons, ensure_ascii=False),
+        })
+
+    @staticmethod
+    async def _revision_node(state: AgentGraphState) -> dict:
+        """按核验原因生成修正版；流式协议先声明替换旧答案。"""
+        runner = state.get("draft_runner")
+        if runner is None:
+            logger.warning("核验要求修订但缺少 revision runner，保留主答案")
+            return {"revision_required": False}
+        guidance = AgentGraphService._compose_guidance(state, include_reflection=True)
+        revised = await runner(guidance)
+        if state.get("stream"):
+            AgentGraphService._write_stream_event({"type": "answer.revision_started"})
+            AgentGraphService._write_stream_event({"type": "delta", "content": revised})
+        return {"answer": revised, "revision_required": False}
 
     @staticmethod
     def _compose_guidance(state: AgentGraphState, *, include_reflection: bool) -> str:
@@ -297,8 +434,8 @@ class AgentGraphService:
         parts: list[str] = []
         if state.get("plan"):
             parts.append(f"<orchestration_plan>\n{state['plan']}\n</orchestration_plan>")
-        if state.get("draft"):
-            parts.append(f"<draft_for_review>\n{state['draft']}\n</draft_for_review>")
+        if state.get("answer") and include_reflection:
+            parts.append(f"<answer_to_revise>\n{state['answer']}\n</answer_to_revise>")
         if include_reflection and state.get("reflection"):
             parts.append(f"<review_suggestions>\n{state['reflection']}\n</review_suggestions>")
         if not parts:

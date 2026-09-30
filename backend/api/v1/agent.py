@@ -4,10 +4,9 @@ Agent 路由
 - CRUD + 批量操作（照抄 knowledge 模式）
 - POST /{agent_id}/chat：RAG 对话，stream 参数切换流式/非流式
 """
-import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +27,10 @@ from backend.schemas.common import SuccessResponse
 from backend.schemas.knowledge import BatchResult, PaginatedResponse
 from backend.services import AgentService
 from backend.services.chat import ChatService
+from backend.services.turn_stream import (
+    encode_sse,
+    filter_event_visibility,
+)
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 
@@ -134,6 +137,7 @@ async def batch_agents(
 async def chat_agent(
     agent_id: UUID,
     body: ChatRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: Users = Depends(get_current_user),
 ):
@@ -142,12 +146,15 @@ async def chat_agent(
         return SuccessResponse(result=result)
 
     async def event_gen():
-        try:
-            async for event in ChatService.chat_stream(db, user, agent_id, body):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except HTTPException as e:
-            # 校验类错误（如 Agent 不存在）在 SSE 中作为 error 事件返回
-            yield f"data: {json.dumps({'type': 'error', 'code': e.status_code, 'message': e.detail}, ensure_ascii=False)}\n\n"
-            yield "data: {\"type\": \"done\"}\n\n"
+        async for event in ChatService.chat_stream(
+                db, user, agent_id, body,
+                request_id=request.scope.get("state", {}).get("request_id")):
+            visible = filter_event_visibility(event, public=False)
+            if visible is not None:
+                yield encode_sse(visible)
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

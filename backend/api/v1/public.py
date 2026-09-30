@@ -2,10 +2,9 @@
 
 设计：与主站接口隔离，复用 Service 层；访客身份 = JWT（登录）或 client_id（匿名）。
 """
-import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +21,10 @@ from backend.schemas.public import PublicChatRequest, PublicConversationCreate
 from backend.services.auth import AuthService
 from backend.services.chat import ChatService
 from backend.services.conversation import ConversationService
+from backend.services.turn_stream import (
+    encode_sse,
+    filter_event_visibility,
+)
 
 router = APIRouter(prefix="/api/v1/public", tags=["公开接口"])
 
@@ -48,6 +51,7 @@ async def public_login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 async def public_chat(
     agent_id: UUID,
     body: PublicChatRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: Users | None = Depends(get_optional_user),
     auth=Depends(get_public_agent("write")),
@@ -67,20 +71,23 @@ async def public_chat(
     if not body.stream:
         result = await ChatService.chat(
             db, actor, agent_id, chat_req,
-            client_id=client_id, exec_user=exec_user)
+            client_id=client_id, exec_user=exec_user, include_debug=False)
         return SuccessResponse(result=result)
 
     async def event_gen():
-        try:
-            async for event in ChatService.chat_stream(
-                    db, actor, agent_id, chat_req,
-                    client_id=client_id, exec_user=exec_user):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except HTTPException as e:
-            yield f"data: {json.dumps({'type': 'error', 'code': e.status_code, 'message': e.detail}, ensure_ascii=False)}\n\n"
-            yield "data: {\"type\": \"done\"}\n\n"
+        async for event in ChatService.chat_stream(
+                db, actor, agent_id, chat_req,
+                client_id=client_id, exec_user=exec_user,
+                request_id=request.scope.get("state", {}).get("request_id")):
+            visible = filter_event_visibility(event, public=True)
+            if visible is not None:
+                yield encode_sse(visible)
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/conversations", response_model=SuccessResponse[ConversationResponse],

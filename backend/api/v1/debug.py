@@ -6,19 +6,31 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from backend.api.deps import get_current_user
 from backend.core.config import settings
 from backend.models import Users
 from backend.schemas.common import SuccessResponse
+from backend.services.trace_query import TraceQueryError, trace_query_service
 
 router = APIRouter(prefix="/api/v1/debug", tags=["调试"])
 
 # logger 名校验：root 或允许的前缀（防乱建 logger）
 _ALLOWED_PREFIXES = ("backend.", "sqlalchemy.", "uvicorn")
 _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _require_superuser(user: Users) -> None:
+    """统一限制调试与 Trace API 仅超级管理员访问。"""
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+
+
+def _trace_error(exc: TraceQueryError) -> HTTPException:
+    """将安全查询参数错误转换为统一 HTTP 422。"""
+    return HTTPException(status_code=422, detail=str(exc))
 
 
 def _validate_logger(name: str) -> None:
@@ -62,6 +74,78 @@ async def list_log_levels(user: Users = Depends(get_current_user)):
         "initial": getattr(settings.logging, "level", "INFO"),
     }
     return SuccessResponse(result=result)
+
+
+@router.get("/agent-traces", response_model=SuccessResponse[dict], summary="查询 Agent Trace")
+async def list_agent_traces(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    agent_id: str | None = None,
+    status: str | None = None,
+    model: str | None = None,
+    user: Users = Depends(get_current_user),
+):
+    """按日期和常用维度分页查询结构化 Trace 汇总。"""
+    _require_superuser(user)
+    try:
+        result = trace_query_service.list_traces(
+            date_from=date_from,
+            date_to=date_to,
+            page=page,
+            page_size=page_size,
+            agent_id=agent_id,
+            status=status,
+            model=model,
+        )
+    except TraceQueryError as exc:
+        raise _trace_error(exc) from exc
+    return SuccessResponse(result=result)
+
+
+@router.get("/agent-traces/{trace_id}", response_model=SuccessResponse[dict], summary="查看 Agent Trace")
+async def get_agent_trace(
+    trace_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    user: Users = Depends(get_current_user),
+):
+    """返回经过可见性过滤和再次脱敏的 Trace 事件。"""
+    _require_superuser(user)
+    try:
+        result = trace_query_service.get_trace(
+            trace_id, date_from=date_from, date_to=date_to
+        )
+    except TraceQueryError as exc:
+        raise _trace_error(exc) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Trace 不存在或已过期")
+    return SuccessResponse(result=result)
+
+
+@router.get("/agent-traces/{trace_id}/export", summary="导出 Agent Trace")
+async def export_agent_trace(
+    trace_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    user: Users = Depends(get_current_user),
+):
+    """导出安全 JSON；不会直接下载或拼接服务端日志文件路径。"""
+    _require_superuser(user)
+    try:
+        content = trace_query_service.export_trace(
+            trace_id, date_from=date_from, date_to=date_to
+        )
+    except TraceQueryError as exc:
+        raise _trace_error(exc) from exc
+    if content is None:
+        raise HTTPException(status_code=404, detail="Trace 不存在或已过期")
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="trace-{trace_id}.json"'},
+    )
 
 
 @router.post("/log-level", response_model=SuccessResponse[dict], summary="切换日志级别（可选自动还原）")

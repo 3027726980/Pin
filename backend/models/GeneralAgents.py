@@ -38,6 +38,15 @@ class GeneralAgents(Base):
         JSONB, default=list, nullable=False,
         comment='工具配置列表：[{"type": "rag", "kb_id": "...", "top_k": 5, "score_threshold": 0.3}]',
     )
+    mqe_mode: Mapped[str] = mapped_column(
+        String(10), default="auto", nullable=False, comment="表级 MQE 默认模式"
+    )
+    hyde_mode: Mapped[str] = mapped_column(
+        String(10), default="auto", nullable=False, comment="表级 HyDE 默认模式"
+    )
+    rerank_mode: Mapped[str] = mapped_column(
+        String(10), default="auto", nullable=False, comment="表级 Rerank 默认模式"
+    )
     # ── 意图路由 + 内置推理工具（Phase 4.10）──
     intent_rules: Mapped[dict] = mapped_column(
         JSONB, default=dict, nullable=False,

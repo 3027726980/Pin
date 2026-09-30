@@ -157,6 +157,12 @@ class KnowledgeBaseService:
         if not config_id:
             cfg = await _ensure_model_config(db, user.id, "local", model, dim)
             config_id = cfg.id
+        else:
+            cfg = await UserModelConfigRepo.get_by_id(db, config_id)
+            if cfg is None or cfg.user_id != user.id or cfg.model_type != 1:
+                raise HTTPException(status_code=400, detail="Embedding 模型配置无效")
+            model = cfg.model_name
+            dim = cfg.dimension or dim
 
         kb = await KnowledgeBaseRepo.create(
             db,
@@ -243,6 +249,19 @@ class KnowledgeBaseService:
         """
         kb = await _get_kb_for_user(db, user, kb_id)
         submitted_fields = set(data.model_dump(exclude_unset=True))
+        embedding_fields = {
+            "embedding_model": (data.embedding_model, kb.embedding_model),
+            "embedding_dimension": (data.embedding_dimension, kb.embedding_dimension),
+            "user_model_config_id": (data.user_model_config_id, kb.user_model_config_id),
+        }
+        if any(
+            field in submitted_fields and new_value != old_value
+            for field, (new_value, old_value) in embedding_fields.items()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="知识库创建后不可修改 Embedding 配置；如需更换模型，请新建知识库并重新向量化",
+            )
         strategy_fields = {
             "auto_process",
             "chunk_size",

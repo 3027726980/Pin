@@ -34,6 +34,13 @@ _REFLECT_PROMPT_TEMPLATE = (
     "答案草稿：{draft}"
 )
 
+_VERIFY_PROMPT_TEMPLATE = (
+    "你是答案核验器。检查回答是否完整、准确、引用充分且没有明显编造。\n"
+    "只输出 JSON 对象："
+    '{"passed":true,"reasons":[],"revision_required":false}。\n\n'
+    "回答：{answer}"
+)
+
 
 class ReflectTool(BaseTool):
     """反思工具：批评性审查答案草稿，输出改进建议（供主 LLM 修正最终回答）"""
@@ -92,6 +99,8 @@ class ReflectTool(BaseTool):
                 temperature=settings.intent.classify_temperature,
                 top_p=0.9,
                 protocol=getattr(llm_cfg, "protocol", None),
+                max_tokens=getattr(llm_cfg, "max_tokens", None),
+                purpose="reflect",
             )
         except Exception as e:
             from backend.services.chat import ChatService
@@ -107,5 +116,32 @@ class ReflectTool(BaseTool):
                     temperature=1.0,
                     top_p=0.9,
                     protocol=getattr(llm_cfg, "protocol", None),
+                    max_tokens=getattr(llm_cfg, "max_tokens", None),
+                    purpose="reflect",
                 )
             raise
+
+    @staticmethod
+    async def _verify_answer(llm_cfg: object, answer: str):
+        """主答案后执行结构化核验；解析失败交由图节点降级为通过。"""
+        from backend.schemas.agent import VerifyResult
+        from backend.services.llm import LLMService
+
+        text = await LLMService.chat(
+            provider=llm_cfg.provider,
+            model_name=llm_cfg.model_name,
+            api_key=llm_cfg.api_key,
+            base_url=llm_cfg.base_url,
+            messages=[{"role": "user", "content": _VERIFY_PROMPT_TEMPLATE.format(answer=answer)}],
+            temperature=settings.intent.classify_temperature,
+            top_p=0.9,
+            protocol=getattr(llm_cfg, "protocol", None),
+            max_tokens=min(getattr(llm_cfg, "max_tokens", None) or 500, 500),
+            purpose="verify",
+        )
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.splitlines()[1:-1]).strip()
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+        return VerifyResult.model_validate_json(cleaned)

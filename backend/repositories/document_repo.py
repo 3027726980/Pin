@@ -5,7 +5,7 @@
 """
 from uuid import UUID
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Chunks, Documents, Embeddings, KnowledgeBases
@@ -238,6 +238,50 @@ class DocumentRepo:
                 "score": float(r.score),
             }
             for r in rows
+        ]
+
+    @staticmethod
+    async def search_chunks_multi(
+        db: AsyncSession,
+        kb_id: UUID,
+        query_vecs: list[list[float]],
+        top_k: int,
+    ) -> list[dict]:
+        """一次数据库往返完成多向量召回，并标记各 query 索引。"""
+        if not query_vecs:
+            return []
+        branches = []
+        for index, query_vec in enumerate(query_vecs):
+            branch = (
+                select(
+                    literal(index).label("query_index"),
+                    Chunks.id.label("chunk_id"),
+                    Chunks.content.label("content"),
+                    Documents.filename.label("filename"),
+                    (1 - Embeddings.embedding.cosine_distance(query_vec)).label("score"),
+                )
+                .join(Embeddings, Embeddings.chunk_id == Chunks.id)
+                .join(Documents, Documents.id == Chunks.document_id)
+                .where(
+                    Embeddings.kb_id == kb_id,
+                    Embeddings.status == 1,
+                    Chunks.status == 1,
+                )
+                .order_by(Embeddings.embedding.cosine_distance(query_vec))
+                .limit(top_k)
+                .subquery()
+            )
+            branches.append(select(branch))
+        rows = (await db.execute(union_all(*branches))).all()
+        return [
+            {
+                "query_index": int(row.query_index),
+                "chunk_id": row.chunk_id,
+                "content": row.content,
+                "filename": row.filename,
+                "score": float(row.score),
+            }
+            for row in rows
         ]
 
     # ═══════════════════════════════════════════════

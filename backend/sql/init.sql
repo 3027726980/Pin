@@ -396,6 +396,9 @@ CREATE TABLE IF NOT EXISTS simple_rag_agents (
     hyde_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
     mqe_query_count      SMALLINT NOT NULL DEFAULT 3,
     rerank_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+    mqe_mode             VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (mqe_mode IN ('off', 'auto', 'always')),
+    hyde_mode            VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (hyde_mode IN ('off', 'auto', 'always')),
+    rerank_mode          VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (rerank_mode IN ('off', 'auto', 'always')),
     enhance_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
     rerank_config_id     UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
     status           SMALLINT     NOT NULL DEFAULT 1,
@@ -452,6 +455,9 @@ CREATE TABLE IF NOT EXISTS general_agents (
     -- Phase 4.6：检索增强（Agent 级模型引用）
     enhance_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
     rerank_config_id     UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
+    mqe_mode        VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (mqe_mode IN ('off', 'auto', 'always')),
+    hyde_mode       VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (hyde_mode IN ('off', 'auto', 'always')),
+    rerank_mode     VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (rerank_mode IN ('off', 'auto', 'always')),
     status          SMALLINT      NOT NULL DEFAULT 1,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()

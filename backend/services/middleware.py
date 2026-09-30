@@ -15,17 +15,22 @@ def _build_summary_model(summary_llm_cfg, llm_cfg):
     from langchain_openai import ChatOpenAI
 
     cfg = summary_llm_cfg or llm_cfg
-    temperature = getattr(cfg, "temperature", None) or 0.7
-    top_p = getattr(cfg, "top_p", None) or 0.9
-    max_tokens = getattr(cfg, "max_tokens", None)
+    from backend.services.llm import get_rate_limiter
+    from backend.services.model_policy import build_model_invocation_config
+
+    invocation = build_model_invocation_config(cfg)
     return ChatOpenAI(
-        model=cfg.model_name,
-        api_key=cfg.api_key,
-        base_url=cfg.base_url or "https://api.openai.com/v1",
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=max_tokens if max_tokens else None,
-        timeout=60.0,
+        model=invocation.model_name,
+        api_key=invocation.api_key,
+        base_url=invocation.base_url or "https://api.openai.com/v1",
+        temperature=invocation.temperature,
+        top_p=invocation.top_p,
+        max_tokens=invocation.max_tokens,
+        timeout=invocation.timeout,
+        max_retries=invocation.max_retries,
+        rate_limiter=get_rate_limiter(
+            invocation.provider, invocation.model_name, invocation.api_key
+        ),
     )
 
 

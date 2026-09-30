@@ -48,6 +48,15 @@ class SimpleRagAgents(Base):
     rerank_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, comment="Rerank 精排开关（默认取 config.yaml tools.default_rerank_enabled）"
     )
+    mqe_mode: Mapped[str] = mapped_column(
+        String(10), default="auto", nullable=False, comment="MQE：off/auto/always"
+    )
+    hyde_mode: Mapped[str] = mapped_column(
+        String(10), default="auto", nullable=False, comment="HyDE：off/auto/always"
+    )
+    rerank_mode: Mapped[str] = mapped_column(
+        String(10), default="auto", nullable=False, comment="Rerank：off/auto/always"
+    )
     enhance_llm_config_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("user_model_config.id", ondelete="SET NULL"), nullable=True, comment="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2，空=跟随对话模型）"
     )

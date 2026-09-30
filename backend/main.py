@@ -8,6 +8,7 @@ Phase 1：FastAPI 启动 → 建表 → 种子管理员 → 注册认证路由
 # (必须在使用事件循环前设置,uvicorn 导入本模块时生效)
 import asyncio
 import logging
+from uuid import uuid4
 import sys
 
 if sys.platform == "win32":
@@ -171,7 +172,15 @@ async def lifespan(app: FastAPI):
     global _redact_filter
     _redact_filter = RedactFilter(SystemSettingsService.get("logging.redact_rules"))
     # 挂载到全部 handler（root + 分文件 handler：llm/http/sql 同样脱敏）
-    for _lgr_name in ("", "backend.llm", "backend.http", "sqlalchemy.engine"):
+    for _lgr_name in (
+        "",
+        "backend.llm",
+        "backend.http",
+        "backend.agent.trace",
+        "backend.llm.metrics",
+        "backend.tool.trace",
+        "sqlalchemy.engine",
+    ):
         for _h in logging.getLogger(_lgr_name).handlers:
             _h.addFilter(_redact_filter)
     SystemSettingsService.register_on_change(_on_setting_change)
@@ -180,6 +189,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _cleanup_task.cancel()
+        from backend.core.checkpointer import close_checkpointer
+        from backend.services.llm import close_llm_clients
+
+        await close_llm_clients()
+        await close_checkpointer()
 
 
 # ── 应用实例 ────────────────────────────────────────
@@ -207,65 +221,66 @@ _http_logger = logging.getLogger("backend.http")
 
 
 class HttpAccessLogMiddleware:
-    """纯 ASGI 中间件：记录每个请求的 方法/路径/状态/耗时/IP + 请求体 + 响应体（脱敏 Filter 兜底）
+    """纯 ASGI 中间件：仅记录请求元数据和字节数。
 
     用纯 ASGI 而非 BaseHTTPMiddleware 的原因：
-      - 需要收集**响应体**（含 SSE 流式响应）——BaseHTTPMiddleware 拿不到发送中的 body
-      - 包装 receive/send：请求体在读取时收集，响应体在发送时收集（SSE 也在流结束后完整记录）
+      - SSE 流结束前需要持续累计响应字节数；
+      - 包装 receive/send 可统计真实传输量，但不保存正文。
     """
 
-    # 请求/响应体收集上限（config.yaml logging.http_body_max_bytes，0 = 不收集）
     def __init__(self, app):
         self.app = app
-        try:
-            self.max_collect = int(
-                getattr(settings.logging, "http_body_max_bytes", 1024 * 1024))
-        except (AttributeError, ValueError, TypeError):
-            self.max_collect = 1024 * 1024
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         start = _time.perf_counter()
-        req_chunks: list[bytes] = []
-        resp_chunks: list[bytes] = []
+        request_bytes = 0
+        response_bytes = 0
         status = 0
+        headers = dict(scope.get("headers", []))
+        request_id = headers.get(b"x-request-id", b"").decode(
+            "utf-8", errors="replace"
+        ) or f"req_{uuid4().hex}"
+        scope.setdefault("state", {})["request_id"] = request_id
 
         async def receive_wrapper():
+            nonlocal request_bytes
             message = await receive()
             if message["type"] == "http.request":
-                body = message.get("body", b"")
-                if len(b"".join(req_chunks)) < self.max_collect:
-                    req_chunks.append(body)
+                request_bytes += len(message.get("body", b""))
             return message
 
         async def send_wrapper(message):
-            nonlocal status
+            nonlocal response_bytes, status
             if message["type"] == "http.response.start":
                 status = message["status"]
             elif message["type"] == "http.response.body":
-                body = message.get("body", b"")
-                if len(b"".join(resp_chunks)) < self.max_collect:
-                    resp_chunks.append(body)
+                response_bytes += len(message.get("body", b""))
             await send(message)
 
-        await self.app(scope, receive_wrapper, send_wrapper)
-
-        duration_ms = int((_time.perf_counter() - start) * 1000)
-        # 完整记录请求/响应体；换行转义为 \n 保持单行（便于 grep/日志解析）
-        req_text = b"".join(req_chunks).decode("utf-8", errors="replace")
-        resp_text = b"".join(resp_chunks).decode("utf-8", errors="replace")
-        req_preview = req_text.replace("\r", "\\r").replace("\n", "\\n")
-        resp_preview = resp_text.replace("\r", "\\r").replace("\n", "\\n")
-        _http_logger.info(
-            "method=%s path=%s status=%d duration_ms=%d ip=%s authorization=%s body=%s response=%s",
-            scope.get("method", ""), scope.get("path", ""), status, duration_ms,
-            scope.get("client", ("unknown", 0))[0],
-            dict(scope.get("headers", []))
-            .get(b"authorization", b"").decode("utf-8", errors="replace"),
-            req_preview, resp_preview,
-        )
+        try:
+            await self.app(scope, receive_wrapper, send_wrapper)
+        finally:
+            duration_ms = int((_time.perf_counter() - start) * 1000)
+            state = scope.get("state", {})
+            _http_logger.info(
+                "http.access",
+                extra={
+                    "structured_data": {
+                        "method": scope.get("method", ""),
+                        "path": scope.get("path", ""),
+                        "status": status or 500,
+                        "duration_ms": duration_ms,
+                        "request_bytes": request_bytes,
+                        "response_bytes": response_bytes,
+                        "request_id": request_id,
+                        "trace_id": state.get("trace_id"),
+                        "ip": scope.get("client", ("unknown", 0))[0],
+                    }
+                },
+            )
 
 
 # 注册 HTTP 访问日志中间件（在 public_cors 之后添加 = 更外层，先收集请求体）

@@ -61,6 +61,7 @@ import {
   GridOutline,
   BookOutline,
   HardwareChipOutline,
+  AnalyticsOutline,
   SettingsOutline,
   CogOutline,
   MenuOutline,
@@ -84,6 +85,7 @@ const menuOptions = [
   { label: '仪表盘', key: '/dashboard', icon: renderIcon(GridOutline) },
   { label: '知识库', key: '/knowledge', icon: renderIcon(BookOutline) },
   { label: 'Agent', key: '/agent', icon: renderIcon(HardwareChipOutline) },
+  { label: '链路日志', key: '/agent-traces', icon: renderIcon(AnalyticsOutline) },
   { label: '模型配置', key: '/settings/model-config', icon: renderIcon(SettingsOutline) },
   { label: '系统设置', key: '/settings/system', icon: renderIcon(CogOutline) },
 ]
@@ -91,6 +93,7 @@ const menuOptions = [
 const activeMenu = computed(() => {
   // 子路由高亮父菜单：/knowledge/:id → /knowledge
   if (route.path.startsWith('/knowledge')) return '/knowledge'
+  if (route.path.startsWith('/agent-traces')) return '/agent-traces'
   if (route.path.startsWith('/agent')) return '/agent'
   if (route.path.startsWith('/settings/model-config')) return '/settings/model-config'
   if (route.path.startsWith('/settings/system')) return '/settings/system'

@@ -57,6 +57,13 @@ tools:
     # 粗召回倍数：top_k * factor → 精排 top_k（模型配置见 local_models.rerank）
     factor: 5
 
+# ── 单 Turn 硬预算（所有模型与工具节点共享）──
+agent:
+  turn_budget:
+    max_llm_calls: 8
+    max_tool_calls: 8
+    deadline_ms: 120000
+
 # ── 意图识别（general Agent 意图路由，Phase 4.10）──
 intent:
   simple_max_length: 30          # 规则判 simple 的最大消息长度（超过升级 LLM 兜底分类）
@@ -236,6 +243,9 @@ logging:
   levels:
     backend.llm: INFO
     backend.http: INFO
+    backend.agent.trace: INFO
+    backend.llm.metrics: INFO
+    backend.tool.trace: INFO
     backend.services.llm: INFO
     backend.services.chat: INFO
     backend.tools: INFO
@@ -246,7 +256,7 @@ logging:
   # 分文件开关
   separate_files:
     llm: true
-    http: true
+    http: false                    # 旧版纯文本 HTTP 文件；access.jsonl 已替代
     sql: true
   # 轮转（所有文件统一）
   rotation:
@@ -265,5 +275,4 @@ logging:
       backend.llm: false
   # 脱敏总开关（默认值；实际规则存 system_settings.logging.redact_rules）
   redact_sensitive: true
-  # HTTP 日志请求/响应体收集上限（字节，0 = 不收集）
-  http_body_max_bytes: 1048576
+  # HTTP access 日志固定只记录元数据和字节数，不采集请求/响应正文。

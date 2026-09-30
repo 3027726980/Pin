@@ -10,14 +10,93 @@ LLM 服务 — 协议注册表模式
 协议解析：查 config.yaml providers[provider].protocol，查不到默认 "openai"
 （OpenAI 兼容是事实标准，即使厂商从配置删除，已有数据也能继续工作）。
 """
+import hashlib
 import logging
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from backend.core.config import settings
+from backend.core.observability.context import current_trace
+from backend.services.model_policy import (
+    current_turn_budget,
+    model_requests_per_minute,
+    normalize_sampling_params,
+)
 
 logger = logging.getLogger(__name__)
 _llm_logger = logging.getLogger("backend.llm")
+_llm_metrics_logger = logging.getLogger("backend.llm.metrics")
+
+
+@dataclass(slots=True)
+class LLMCallMetrics:
+    """一次直接 LLM 调用的排队、首 Token 和总耗时。"""
+
+    queue_wait_ms: int = 0
+    first_token_ms: int | None = None
+    generation_ms: int | None = None
+    total_ms: int = 0
+    chars: int = 0
+    attempt: int = 1
+
+
+_LANGCHAIN_RATE_LIMITERS: dict[str, object] = {}
+_OPENAI_CLIENTS: dict[tuple[str, str, float], object] = {}
+
+
+async def close_llm_clients() -> None:
+    """应用退出时关闭所有缓存的异步客户端。"""
+    clients = list(_OPENAI_CLIENTS.values())
+    _OPENAI_CLIENTS.clear()
+    for client in clients:
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+
+def get_rate_limiter(provider: str, model_name: str, api_key: str):
+    """返回按供应商/API Key 共享的 LangChain 限流器，未知配额返回 None。"""
+    rpm = model_requests_per_minute(provider, model_name)
+    if not rpm:
+        return None
+    from langchain_core.rate_limiters import InMemoryRateLimiter
+
+    identity = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+    key = f"{provider.lower()}:{identity}"
+    if key not in _LANGCHAIN_RATE_LIMITERS:
+        limiter = InMemoryRateLimiter(
+            requests_per_second=rpm / 60,
+            check_every_n_seconds=0.1,
+            max_bucket_size=1,
+        )
+        limiter.available_tokens = 1.0
+        _LANGCHAIN_RATE_LIMITERS[key] = limiter
+    return _LANGCHAIN_RATE_LIMITERS[key]
+
+
+async def _acquire_request_slot(provider: str, model_name: str, api_key: str) -> None:
+    limiter = get_rate_limiter(provider, model_name, api_key)
+    if limiter is not None:
+        await limiter.aacquire()
+
+
+def _log_llm_metric(event: str, **payload: object) -> None:
+    """写入不含 Prompt、回答和 API Key 的结构化模型指标。"""
+    trace = current_trace()
+    structured = {
+        "event": event,
+        "request_id": trace.request_id if trace else None,
+        "trace_id": trace.trace_id if trace else None,
+        "turn_id": trace.turn_id if trace else None,
+        **payload,
+    }
+    level = logging.ERROR if event == "llm.failed" else logging.INFO
+    _llm_metrics_logger.log(
+        level, event, extra={"structured_data": structured}
+    )
 
 
 class LLMService:
@@ -35,6 +114,8 @@ class LLMService:
         protocol: str | None = None,
         timeout: float = 60.0,
         max_tokens: int | None = None,
+        purpose: str = "answer",
+        metrics: LLMCallMetrics | None = None,
     ) -> str:
         """
         非流式对话，返回完整回答文本
@@ -51,7 +132,60 @@ class LLMService:
             max_tokens: 最大生成 token 数（空 = 厂商默认）
         """
         impl = _resolve_implementation(provider, protocol)
-        return await impl.chat(model_name, api_key, base_url, messages, temperature, top_p, timeout, max_tokens)
+        call_metrics = metrics or LLMCallMetrics()
+        temperature, top_p = normalize_sampling_params(
+            provider, model_name, temperature, top_p)
+        _log_llm_metric(
+            "llm.started", purpose=purpose, provider=provider,
+            model=model_name, stream=False, attempt=call_metrics.attempt,
+        )
+        total_started = time.perf_counter()
+        queue_started = time.perf_counter()
+        try:
+            budget = current_turn_budget()
+            if budget is not None:
+                budget.acquire_llm()
+            await _acquire_request_slot(provider, model_name, api_key)
+            call_metrics.queue_wait_ms = round(
+                (time.perf_counter() - queue_started) * 1000
+            )
+            generation_started = time.perf_counter()
+            content = await impl.chat(
+                model_name, api_key, base_url, messages, temperature, top_p,
+                timeout, max_tokens,
+            )
+            call_metrics.generation_ms = round(
+                (time.perf_counter() - generation_started) * 1000
+            )
+            call_metrics.total_ms = max(
+                round((time.perf_counter() - total_started) * 1000),
+                call_metrics.queue_wait_ms + call_metrics.generation_ms,
+            )
+            call_metrics.chars = len(content)
+            _log_llm_metric(
+                "llm.completed", purpose=purpose, provider=provider,
+                model=model_name, stream=False, status="completed",
+                queue_wait_ms=call_metrics.queue_wait_ms,
+                first_token_ms=None,
+                generation_ms=call_metrics.generation_ms,
+                total_ms=call_metrics.total_ms,
+                chars=call_metrics.chars,
+                attempt=call_metrics.attempt,
+            )
+            return content
+        except Exception as error:
+            call_metrics.total_ms = round(
+                (time.perf_counter() - total_started) * 1000
+            )
+            _log_llm_metric(
+                "llm.failed", purpose=purpose, provider=provider,
+                model=model_name, stream=False, status="failed",
+                queue_wait_ms=call_metrics.queue_wait_ms,
+                total_ms=call_metrics.total_ms,
+                attempt=call_metrics.attempt,
+                error_type=error.__class__.__name__,
+            )
+            raise
 
     @staticmethod
     async def chat_stream(
@@ -63,6 +197,10 @@ class LLMService:
         temperature: float = 0.7,
         top_p: float = 0.9,
         protocol: str | None = None,
+        timeout: float = 60.0,
+        max_tokens: int | None = None,
+        purpose: str = "answer",
+        metrics: LLMCallMetrics | None = None,
     ) -> AsyncIterator[str]:
         """
         流式对话，逐 token 产出回答片段
@@ -70,8 +208,65 @@ class LLMService:
         与 chat() 参数一致，返回异步生成器
         """
         impl = _resolve_implementation(provider, protocol)
-        async for delta in impl.chat_stream(model_name, api_key, base_url, messages, temperature, top_p):
-            yield delta
+        call_metrics = metrics or LLMCallMetrics()
+        temperature, top_p = normalize_sampling_params(
+            provider, model_name, temperature, top_p)
+        _log_llm_metric(
+            "llm.started", purpose=purpose, provider=provider,
+            model=model_name, stream=True, attempt=call_metrics.attempt,
+        )
+        total_started = time.perf_counter()
+        queue_started = time.perf_counter()
+        try:
+            budget = current_turn_budget()
+            if budget is not None:
+                budget.acquire_llm()
+            await _acquire_request_slot(provider, model_name, api_key)
+            call_metrics.queue_wait_ms = round(
+                (time.perf_counter() - queue_started) * 1000
+            )
+            generation_started = time.perf_counter()
+            async for delta in impl.chat_stream(
+                model_name, api_key, base_url, messages, temperature, top_p,
+                timeout, max_tokens,
+            ):
+                if call_metrics.first_token_ms is None:
+                    call_metrics.first_token_ms = round(
+                        (time.perf_counter() - generation_started) * 1000
+                    )
+                call_metrics.chars += len(delta)
+                yield delta
+            call_metrics.generation_ms = round(
+                (time.perf_counter() - generation_started) * 1000
+            )
+            call_metrics.total_ms = max(
+                round((time.perf_counter() - total_started) * 1000),
+                call_metrics.queue_wait_ms + call_metrics.generation_ms,
+            )
+            _log_llm_metric(
+                "llm.completed", purpose=purpose, provider=provider,
+                model=model_name, stream=True, status="completed",
+                queue_wait_ms=call_metrics.queue_wait_ms,
+                first_token_ms=call_metrics.first_token_ms,
+                generation_ms=call_metrics.generation_ms,
+                total_ms=call_metrics.total_ms,
+                chars=call_metrics.chars,
+                attempt=call_metrics.attempt,
+            )
+        except Exception as error:
+            call_metrics.total_ms = round(
+                (time.perf_counter() - total_started) * 1000
+            )
+            _log_llm_metric(
+                "llm.failed", purpose=purpose, provider=provider,
+                model=model_name, stream=True, status="failed",
+                queue_wait_ms=call_metrics.queue_wait_ms,
+                first_token_ms=call_metrics.first_token_ms,
+                total_ms=call_metrics.total_ms,
+                attempt=call_metrics.attempt,
+                error_type=error.__class__.__name__,
+            )
+            raise
 
 
 # ── 协议注册表 ─────────────────────────
@@ -84,14 +279,19 @@ class OpenAICompatible:
 
     @staticmethod
     def _build_client(api_key: str, base_url: str | None, timeout: float = 60.0):
-        """构建 AsyncOpenAI 客户端（base_url 为空则用官方地址）"""
+        """按连接参数复用 AsyncOpenAI 客户端，避免每次请求重建连接池。"""
         from openai import AsyncOpenAI
 
-        return AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url or "https://api.openai.com/v1",
-            timeout=timeout,
-        )
+        identity = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        key = (identity, base_url or "https://api.openai.com/v1", float(timeout))
+        if key not in _OPENAI_CLIENTS:
+            _OPENAI_CLIENTS[key] = AsyncOpenAI(
+                api_key=api_key,
+                base_url=key[1],
+                timeout=timeout,
+                max_retries=0,
+            )
+        return _OPENAI_CLIENTS[key]
 
     @staticmethod
     async def chat(
@@ -145,6 +345,7 @@ class OpenAICompatible:
         temperature: float,
         top_p: float,
         timeout: float = 60.0,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """OpenAI 兼容流式对话（埋点：首 token / 总耗时 / 输出长度 / 错误）"""
         client = OpenAICompatible._build_client(api_key, base_url, timeout)
@@ -152,12 +353,16 @@ class OpenAICompatible:
         first_token_ms: int | None = None
         chars = 0
         try:
+            kwargs = {}
+            if max_tokens:
+                kwargs["max_tokens"] = max_tokens
             stream = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 temperature=temperature,
                 top_p=top_p,
                 stream=True,
+                **kwargs,
             )
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:

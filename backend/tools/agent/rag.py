@@ -23,6 +23,7 @@ import asyncio
 import functools
 import json
 import logging
+import time
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -35,6 +36,8 @@ from backend.repositories import DocumentRepo, KnowledgeBaseRepo, UserModelConfi
 from backend.schemas.agent import Citation
 from backend.services.embedding import EmbeddingService
 from backend.services.llm import LLMService
+from backend.services.model_policy import current_turn_budget, model_requests_per_minute
+from backend.services.rag_policy import RagPolicy, RetrievalSignals, resolve_rag_mode
 from backend.services.rerank import RerankService
 from backend.tools.common.base import BaseTool
 
@@ -77,15 +80,40 @@ class RAGTool(BaseTool):
          "default": 5, "min": 1, "max": 50},
         {"key": "score_threshold", "label": "相似度阈值", "type": "number",
          "default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05},
-        {"key": "mqe_enabled", "label": "多查询扩展 MQE", "type": "boolean",
-         "default": False},
-        {"key": "hyde_enabled", "label": "假设文档嵌入 HyDE", "type": "boolean",
-         "default": False},
+        {"key": "mqe_mode", "label": "多查询扩展 MQE", "type": "select",
+         "default": "auto", "options": [
+             {"label": "关闭", "value": "off"}, {"label": "自动（推荐）", "value": "auto"},
+             {"label": "始终开启", "value": "always"}]},
+        {"key": "hyde_mode", "label": "假设文档嵌入 HyDE", "type": "select",
+         "default": "auto", "options": [
+             {"label": "关闭", "value": "off"}, {"label": "自动（推荐）", "value": "auto"},
+             {"label": "始终开启", "value": "always"}]},
         {"key": "mqe_query_count", "label": "MQE 子问题数", "type": "number",
          "default": 3, "min": 2, "max": 5},
-        {"key": "rerank_enabled", "label": "Rerank 精排", "type": "boolean",
-         "default": False},
+        {"key": "rerank_mode", "label": "Rerank 精排", "type": "select",
+         "default": "auto", "options": [
+             {"label": "关闭", "value": "off"}, {"label": "自动（推荐）", "value": "auto"},
+             {"label": "始终开启", "value": "always"}]},
     ]
+
+    @staticmethod
+    def _ensure_embedding_consistency(kb: object, emb_cfg: object) -> None:
+        """检索前校验知识库保存的向量空间快照与当前配置一致。"""
+        current_model = getattr(emb_cfg, "model_name", None)
+        current_dimension = getattr(emb_cfg, "dimension", None)
+        model_mismatch = bool(current_model) and current_model != kb.embedding_model
+        dimension_mismatch = (
+            current_dimension is not None
+            and current_dimension != kb.embedding_dimension
+        )
+        if model_mismatch or dimension_mismatch:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "知识库 Embedding 配置与已生成向量不一致，请恢复原配置，"
+                    "或使用新配置重新向量化全部文档"
+                ),
+            )
 
     @staticmethod
     async def fetch_options(db: AsyncSession, user: Users, source: str) -> list[dict]:
@@ -111,7 +139,6 @@ class RAGTool(BaseTool):
         kb_id = to_uuid(config.get("kb_id")) if config.get("kb_id") else None
         if kb_id is None:
             raise HTTPException(status_code=400, detail="rag 工具缺少 kb_id")
-
         kb = await KnowledgeBaseRepo.get_by_id(db, kb_id)
         if kb is None or kb.status == 9 or kb.user_id != user.id:
             raise HTTPException(status_code=404, detail="知识库不存在")
@@ -135,7 +162,8 @@ class RAGTool(BaseTool):
         citations_store = kwargs.get("citations_store")
         enhance_cfg = kwargs.get("enhance_cfg")
         rerank_cfg = kwargs.get("rerank_cfg")
-        debug_store = kwargs.get("debug_store")  # 调试信息收集器（request.debug=true 时传入）
+        debug_store = kwargs.get("debug_store")  # 服务端始终采集，前端开关仅控制展示
+        event_sink = kwargs.get("event_sink")
 
         @tool
         async def rag(query: str) -> str:
@@ -144,7 +172,7 @@ class RAGTool(BaseTool):
                 cits = await RAGTool.execute(
                     db, user, config, message=query,
                     enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
-                    debug_store=debug_store)
+                    debug_store=debug_store, event_sink=event_sink)
             except HTTPException as e:
                 return json.dumps({"error": e.detail}, ensure_ascii=False)
             if citations_store is not None:
@@ -180,23 +208,38 @@ class RAGTool(BaseTool):
         kb_id = to_uuid(config.get("kb_id")) if config.get("kb_id") else None
         if kb_id is None:
             raise HTTPException(status_code=400, detail="rag 工具缺少 kb_id")
+        budget = current_turn_budget()
+        if budget is not None:
+            budget.acquire_tool()
         top_k = config.get("top_k") or settings.tools.default_top_k
-        score_threshold = config.get("score_threshold") or settings.tools.default_score_threshold
+        score_threshold = (config.get("score_threshold")
+                           if config.get("score_threshold") is not None
+                           else settings.tools.default_score_threshold)
 
-        # 检索增强开关（独立控制，空 → config.yaml 默认）
-        mqe_enabled = config.get("mqe_enabled")
-        if mqe_enabled is None:
-            mqe_enabled = settings.tools.default_mqe_enabled
-        hyde_enabled = config.get("hyde_enabled")
-        if hyde_enabled is None:
-            hyde_enabled = settings.tools.default_hyde_enabled
+        # 三态模式优先；旧 enabled 仅作兼容映射。
+        mqe_mode = resolve_rag_mode(config.get("mqe_mode"), config.get("mqe_enabled"))
+        hyde_mode = resolve_rag_mode(config.get("hyde_mode"), config.get("hyde_enabled"))
         mqe_query_count = config.get("mqe_query_count") or settings.tools.default_mqe_query_count
-        rerank_enabled = config.get("rerank_enabled")
-        if rerank_enabled is None:
-            rerank_enabled = settings.tools.default_rerank_enabled
+        rerank_mode = resolve_rag_mode(config.get("rerank_mode"), config.get("rerank_enabled"))
         enhance_cfg = kwargs.get("enhance_cfg")
         rerank_cfg = kwargs.get("rerank_cfg")
-        debug_store = kwargs.get("debug_store")  # 调试信息收集器（request.debug=true 时传入）
+        debug_store = kwargs.get("debug_store")  # 服务端始终采集，前端开关仅控制展示
+        event_sink = kwargs.get("event_sink")
+        stage_occurrences: dict[str, int] = {}
+
+        async def emit_stage(stage: str, status: str, summary: str,
+                             *, duration_ms: int | None = None,
+                             visibility: str = "public", detail: dict | None = None) -> None:
+            if event_sink is not None:
+                if status == "running":
+                    stage_occurrences[stage] = stage_occurrences.get(stage, 0) + 1
+                occurrence = stage_occurrences.get(stage, 1)
+                await event_sink({
+                    "type": "stage", "stage": stage, "status": status,
+                    "stage_id": f"{stage}.{occurrence}",
+                    "summary": summary, "duration_ms": duration_ms,
+                    "visibility": visibility, "detail": detail or {},
+                })
 
         # 1. 知识库校验：归属 + 未删除 + 启用
         await RAGTool.validate_config(db, user, config)
@@ -208,64 +251,155 @@ class RAGTool(BaseTool):
         emb_cfg = await UserModelConfigRepo.get_by_id(db, kb.user_model_config_id)
         if emb_cfg is None or emb_cfg.user_id != user.id:
             raise HTTPException(status_code=400, detail="知识库未配置 Embedding 模型")
+        RAGTool._ensure_embedding_consistency(kb, emb_cfg)
 
-        # 3. 构建检索 query 列表（原始 query 永远保留，增强只扩不替）
-        queries = [message]
-        if mqe_enabled and enhance_cfg is not None:
-            sub = await RAGTool._expand_queries(enhance_cfg, message, mqe_query_count)
-            if sub:
-                queries.extend(sub)
-            else:
-                logger.warning("MQE 改写失败或结果为空，仅用原始 query 检索")
-        if hyde_enabled and enhance_cfg is not None:
-            hypo = await RAGTool._generate_hyde(enhance_cfg, message)
-            if hypo:
-                queries.append(hypo)
-            else:
-                logger.warning("HyDE 生成失败，跳过")
-
-        # 调试信息：实际执行的检索 query 列表（原始 + MQE 子问题 + HyDE 假设文档）
-        if debug_store is not None:
-            debug_store["queries"] = list(queries)
-
-        # 4. 批量向量化（多 query 一次调用）
-        # 同步 embed（本地 torch 推理 / 同步 HTTP）扔进线程池执行：
-        # 本方法是用户等待答案的热路径，同步直调会冻结事件循环
-        # （卡住期间所有请求与 SSE 流停摆；线程在等待 I/O/内核计算时释放 GIL，循环不受影响）
-        query_vecs = await asyncio.get_running_loop().run_in_executor(
-            None,
-            functools.partial(
-                EmbeddingService.embed,
-                provider=emb_cfg.provider,
-                model_name=emb_cfg.model_name,
-                api_key=emb_cfg.api_key,
-                base_url=emb_cfg.base_url,
-                texts=queries,
-                protocol=emb_cfg.protocol,
-            ),
-        )
+        # 3. 原始 query 先召回，策略只依据真实召回质量决策。
+        started = time.perf_counter()
+        await emit_stage("embedding", "running", "正在生成检索向量")
+        original_vec = (await RAGTool._embed_queries(emb_cfg, [message]))[0]
+        await emit_stage("embedding", "completed", "检索向量已生成",
+                         duration_ms=round((time.perf_counter() - started) * 1000))
         max_dim = settings.embedding.max_dimension
+        original_vec = RAGTool._pad_vector(original_vec, max_dim)
+        candidate_limit = (
+            top_k * settings.tools.rerank.factor
+            if rerank_mode != "off" else top_k
+        )
+        started = time.perf_counter()
+        await emit_stage("retrieval", "running", "正在检索原始问题")
+        original_rows = await DocumentRepo.search_chunks(
+            db, kb.id, original_vec, candidate_limit
+        )
+        await emit_stage("retrieval", "completed", "原始检索完成",
+                         duration_ms=round((time.perf_counter() - started) * 1000),
+                         detail={"candidate_count": len(original_rows)})
+        accepted_original = [row for row in original_rows if row["score"] >= score_threshold]
+        scores = [row["score"] for row in accepted_original]
+        lower_message = message.lower()
+        signals = RetrievalSignals(
+            query_length=len(message.strip()),
+            is_follow_up=any(token in message for token in ("那", "这个", "上述", "继续", "它", "前面")),
+            is_multi_part=(len([part for part in message.replace("？", "?").split("?") if part.strip()]) > 1
+                           or any(token in message for token in ("以及", "并且", "分别", "同时", "、"))),
+            is_conceptual=any(token in lower_message for token in ("什么是", "定义", "概念", "原理", "why", "what is")),
+            top1_score=max(scores) if scores else None,
+            top3_avg=(sum(sorted(scores, reverse=True)[:3]) / min(3, len(scores))) if scores else None,
+            above_threshold_count=len(scores),
+            document_diversity=len({row["filename"] for row in accepted_original}),
+            threshold=float(score_threshold),
+        )
+        rpm = (model_requests_per_minute(
+            str(getattr(enhance_cfg, "provider", "")),
+            str(getattr(enhance_cfg, "model_name", "")),
+        ) if enhance_cfg is not None else None)
+        auto_budget_available = (
+            enhance_cfg is not None and rpm is None
+            and (budget is None or budget.llm_calls_used + 2 <= budget.max_llm_calls)
+        )
+        decision = RagPolicy.decide(
+            signals,
+            mqe_mode=mqe_mode,
+            hyde_mode=hyde_mode,
+            rerank_mode=rerank_mode,
+            auto_budget_available=auto_budget_available,
+        )
+        await emit_stage(
+            "rag_strategy", "completed", f"检索策略：{decision.strategy}",
+            visibility="debug",
+            detail={"strategy": decision.strategy,
+                    "reason_codes": list(decision.reason_codes)},
+        )
+        if not auto_budget_available:
+            if mqe_mode == "auto":
+                await emit_stage("mqe", "skipped", "MQE 因预算或模型配额跳过")
+            if hyde_mode == "auto":
+                await emit_stage("hyde", "skipped", "HyDE 因预算或模型配额跳过")
 
-        # 5. 多路粗召回：每路独立检索，按 chunk_id 去重（保留最高分）
-        #    rerank 开启时放大候选集（top_k * factor），供精排挑选
-        limit = top_k * settings.tools.rerank.factor if rerank_enabled else top_k
+        # 4. 仅按策略执行增强；hybrid 在模型无低 RPM 限制时并行。
+        enhanced_queries: list[str] = []
+
+        async def run_mqe() -> list[str]:
+            stage_started = time.perf_counter()
+            await emit_stage("mqe", "running", "正在扩展检索问题")
+            result = await RAGTool._expand_queries(enhance_cfg, message, mqe_query_count)
+            await emit_stage(
+                "mqe", "completed" if result else "degraded",
+                f"MQE 生成 {len(result)} 个扩展问题" if result else "MQE 已降级",
+                duration_ms=round((time.perf_counter() - stage_started) * 1000),
+            )
+            return result
+
+        async def run_hyde() -> str | None:
+            stage_started = time.perf_counter()
+            await emit_stage("hyde", "running", "正在生成假设检索文档")
+            result = await RAGTool._generate_hyde(enhance_cfg, message)
+            await emit_stage(
+                "hyde", "completed" if result else "degraded",
+                "HyDE 假设文档已生成" if result else "HyDE 已降级",
+                duration_ms=round((time.perf_counter() - stage_started) * 1000),
+            )
+            return result
+
+        if enhance_cfg is not None and decision.strategy == "hybrid" and rpm is None:
+            sub, hypo = await asyncio.gather(
+                run_mqe(), run_hyde(),
+            )
+            enhanced_queries.extend(sub)
+            if hypo:
+                enhanced_queries.append(hypo)
+        elif enhance_cfg is not None:
+            if decision.strategy in {"mqe", "hybrid"}:
+                enhanced_queries.extend(await run_mqe())
+            if decision.strategy in {"hyde", "hybrid"}:
+                hypo = await run_hyde()
+                if hypo:
+                    enhanced_queries.append(hypo)
+
+        if debug_store is not None:
+            debug_store["queries"] = [message, *enhanced_queries]
+            debug_store["rag.strategy.selected"] = {
+                "strategy": decision.strategy,
+                "reason_codes": list(decision.reason_codes),
+                "signals": {
+                    "top1_score": signals.top1_score,
+                    "top3_avg": signals.top3_avg,
+                    "above_threshold_count": signals.above_threshold_count,
+                    "document_diversity": signals.document_diversity,
+                    "threshold": signals.threshold,
+                },
+                "modes": {"mqe": mqe_mode, "hyde": hyde_mode, "rerank": rerank_mode},
+                "auto_budget_available": auto_budget_available,
+            }
+
+        # 5. 增强 query 批量向量化，并用一次 SQL 往返补充召回。
         seen: dict[UUID, tuple[str, str, float]] = {}
-        for qv in query_vecs:
-            if len(qv) < max_dim:
-                qv = list(qv) + [0.0] * (max_dim - len(qv))
-            rows = await DocumentRepo.search_chunks(db, kb.id, qv, limit)
-            for r in rows:
-                if r["score"] < score_threshold:
-                    continue
-                cid = r["chunk_id"]
-                if cid not in seen or r["score"] > seen[cid][2]:
-                    seen[cid] = (r["content"], r["filename"], r["score"])
+        RAGTool._merge_rows(seen, original_rows, score_threshold)
+        if enhanced_queries:
+            started = time.perf_counter()
+            await emit_stage("embedding", "running", "正在生成增强检索向量")
+            enhanced_vecs = [
+                RAGTool._pad_vector(vec, max_dim)
+                for vec in await RAGTool._embed_queries(emb_cfg, enhanced_queries)
+            ]
+            await emit_stage("embedding", "completed", "增强向量已生成",
+                             duration_ms=round((time.perf_counter() - started) * 1000))
+            started = time.perf_counter()
+            await emit_stage("retrieval", "running", "正在补充检索")
+            enhanced_rows = await DocumentRepo.search_chunks_multi(
+                db, kb.id, enhanced_vecs, candidate_limit
+            )
+            await emit_stage("retrieval", "completed", "补充检索完成",
+                             duration_ms=round((time.perf_counter() - started) * 1000),
+                             detail={"candidate_count": len(enhanced_rows)})
+            RAGTool._merge_rows(seen, enhanced_rows, score_threshold)
 
         if not seen:
             return []
 
         # 6. 精排 / 纯向量排序
-        if rerank_enabled:
+        if decision.rerank:
+            started = time.perf_counter()
+            await emit_stage("rerank", "running", "正在精排候选资料")
             candidates = [
                 {"chunk_id": str(cid), "content": content,
                  "filename": filename, "score": score}
@@ -273,6 +407,9 @@ class RAGTool(BaseTool):
             ]
             # RerankService 内部降级：模型缺失/异常 → 纯向量排序返回前 top_k
             ranked = await RerankService.rerank(rerank_cfg, message, candidates, top_k)
+            await emit_stage("rerank", "completed", "候选资料精排完成",
+                             duration_ms=round((time.perf_counter() - started) * 1000),
+                             detail={"candidate_count": len(candidates), "result_count": len(ranked)})
             result = [
                 Citation(
                     chunk_id=UUID(c["chunk_id"]),
@@ -304,12 +441,49 @@ class RAGTool(BaseTool):
             for cid, (content, filename, score) in ranked
         ]
 
+    @staticmethod
+    async def _embed_queries(emb_cfg: object, queries: list[str]) -> list[list[float]]:
+        """在线程池批量向量化，避免同步 SDK 阻塞事件循环。"""
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                EmbeddingService.embed,
+                provider=emb_cfg.provider,
+                model_name=emb_cfg.model_name,
+                api_key=emb_cfg.api_key,
+                base_url=emb_cfg.base_url,
+                texts=queries,
+                protocol=emb_cfg.protocol,
+            ),
+        )
+
+    @staticmethod
+    def _pad_vector(vector: list[float], max_dim: int) -> list[float]:
+        """将小维向量补零到数据库固定维度。"""
+        return list(vector) + [0.0] * max(0, max_dim - len(vector))
+
+    @staticmethod
+    def _merge_rows(
+        seen: dict[UUID, tuple[str, str, float]],
+        rows: list[dict],
+        threshold: float,
+    ) -> None:
+        """按 chunk_id 去重，保留所有检索路径中的最高原始分数。"""
+        for row in rows:
+            if row["score"] < threshold:
+                continue
+            chunk_id = row["chunk_id"]
+            if chunk_id not in seen or row["score"] > seen[chunk_id][2]:
+                seen[chunk_id] = (row["content"], row["filename"], row["score"])
+
     # ═══════════════════════════════════════════════
     # 查询增强（MQE / HyDE）
     # ═══════════════════════════════════════════════
 
     @staticmethod
-    async def _call_enhance_llm(enhance_cfg: object, prompt: str) -> str | None:
+    async def _call_enhance_llm(
+        enhance_cfg: object, prompt: str, *, purpose: str
+    ) -> str | None:
         """增强 LLM 统一调用：低温改写；推理模型 temperature 限制时自动用 1 重试一次
 
         返回回答文本；失败返回 None（调用方降级）
@@ -324,6 +498,8 @@ class RAGTool(BaseTool):
                 temperature=0.2,
                 top_p=0.9,
                 protocol=getattr(enhance_cfg, "protocol", None),
+                max_tokens=getattr(enhance_cfg, "max_tokens", None),
+                purpose=purpose,
             )
         except Exception as e:
             # 推理模型（kimi 等）只允许 temperature=1：降级重试一次
@@ -341,6 +517,8 @@ class RAGTool(BaseTool):
                         temperature=1.0,
                         top_p=0.9,
                         protocol=getattr(enhance_cfg, "protocol", None),
+                        max_tokens=getattr(enhance_cfg, "max_tokens", None),
+                        purpose=purpose,
                     )
                 except Exception as e2:
                     logger.warning(f"增强 LLM 重试仍失败: {e2}")
@@ -357,7 +535,9 @@ class RAGTool(BaseTool):
         """
         try:
             prompt = _MQE_PROMPT_TEMPLATE.format(n=n, message=message)
-            text = await RAGTool._call_enhance_llm(enhance_cfg, prompt)
+            text = await RAGTool._call_enhance_llm(
+                enhance_cfg, prompt, purpose="mqe"
+            )
             return RAGTool._parse_query_list(text or "")
         except Exception as e:
             logger.warning(f"MQE 改写调用失败: {e}")
@@ -404,7 +584,9 @@ class RAGTool(BaseTool):
         """
         try:
             prompt = _HYDE_PROMPT_TEMPLATE.format(message=message)
-            text = await RAGTool._call_enhance_llm(enhance_cfg, prompt)
+            text = await RAGTool._call_enhance_llm(
+                enhance_cfg, prompt, purpose="hyde"
+            )
             text = (text or "").strip()
             return text or None
         except Exception as e:

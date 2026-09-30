@@ -7,7 +7,9 @@
 - 每轮对话原子追加到会话 JSON(user 原始问题 + assistant 回答含 citations)
 - 短期记忆:SummarizationMiddleware(参数走 config.yaml,总结模型 Agent 级配置)
 """
+import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -60,58 +62,59 @@ class ChatService:
         request: ChatRequest,
         client_id: str | None = None,
         exec_user: Users | None = None,
+        include_debug: bool = True,
     ) -> ChatResponse:
-        """非流式对话(记忆由 checkpoint 持久化,原子追加会话 JSON)
+        """消费统一 Turn 事件流并聚合为兼容的非流式响应。
 
         client_id 非空 = 匿名访客场景（会话归属 client_id，user 为 Agent 所有者）；
         为空 = 登录用户场景（会话归属 user.id）。
         exec_user:公开接口登录场景的 Agent 所有者（agent/LLM 校验身份，会话仍归 user）。
         """
-        atype, agent, llm_cfg, conv = await ChatService._load_context(
-            db, user, agent_id, request.conversation_id, client_id, exec_user)
+        answer_parts: list[str] = []
+        citations: list[Citation] = []
+        bindings: list[CitationBinding] = []
+        debug_store: dict = {}
+        conversation_id: UUID | None = request.conversation_id
+        trace_id: str | None = None
+        async for event in ChatService.chat_stream(
+                db, user, agent_id, request,
+                client_id=client_id, exec_user=exec_user):
+            trace_id = event.trace_id
+            if event.conversation_id:
+                conversation_id = UUID(event.conversation_id)
+            if event.type == "answer.delta" and event.content:
+                answer_parts.append(event.content)
+            elif event.type == "citations.completed":
+                citations = [
+                    Citation.model_validate(item) for item in event.citations or []
+                ]
+                bindings = [
+                    CitationBinding.model_validate(item)
+                    for item in event.detail.get("bindings", [])
+                ]
+            elif event.visibility.value == "debug":
+                debug_store[event.stage_id] = event.detail
+            elif event.type == "turn.failed":
+                status_code = (
+                    int(event.code) if (event.code or "").isdigit() else 502
+                )
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=event.summary or "请求失败",
+                )
+            elif event.type == "turn.cancelled":
+                raise HTTPException(status_code=499, detail="请求已取消")
 
-        debug_store: dict | None = {} if request.debug else None
-        if atype == "simple_rag":
-            answer, citations = await ChatService._chat_simple_rag(
-                db, user, agent, llm_cfg, conv, request, debug_store=debug_store)
-        else:
-            from backend.services.agent_graph import AgentGraphService
-
-            history = await ChatService._load_semantic_history(conv, limit=5)
-
-            async def simple_runner() -> tuple[str, list[Citation]]:
-                return await ChatService._chat_simple(
-                    db, user, agent, llm_cfg, conv, request, debug_store=debug_store)
-
-            async def main_runner(guidance: str) -> tuple[str, list[Citation]]:
-                return await ChatService._chat_general(
-                    db, user, agent, llm_cfg, conv, request, debug_store=debug_store,
-                    orchestration_guidance=guidance)
-
-            async def draft_runner(guidance: str) -> str:
-                return await ChatService._generate_review_draft(
-                    agent, llm_cfg, conv, request.message, history, guidance)
-
-            graph_result = await AgentGraphService.run(
-                agent=agent, llm_cfg=llm_cfg, message=request.message,
-                history=history, tools_desc=ChatService._business_tools_desc(agent),
-                simple_runner=simple_runner, main_runner=main_runner,
-                draft_runner=draft_runner)
-            if debug_store is not None:
-                debug_store["intent"] = next(
-                    (event["intent"] for event in graph_result.events
-                     if event.get("type") == "intent"), "general")
-                debug_store["intent_code"] = graph_result.intent
-            answer, citations = graph_result.answer, graph_result.citations
-
-        source_map = ChatService._source_map(citations)
-        answer = strip_unbound_source_markers(
-            answer, ChatService._bindable_source_ids(source_map))
-        bindings = build_citation_bindings(answer, source_map)
-        await ChatService._persist_messages(
-            db, conv, request.message, answer, citations, bindings)
-        return ChatResponse(conversation_id=conv.id, answer=answer,
-                            citations=citations, citation_bindings=bindings, debug=debug_store)
+        if conversation_id is None:
+            raise RuntimeError("Turn stream completed without conversation_id")
+        return ChatResponse(
+            conversation_id=conversation_id,
+            answer="".join(answer_parts),
+            citations=citations,
+            citation_bindings=bindings,
+            debug=debug_store if include_debug else None,
+            trace_id=trace_id,
+        )
 
     @staticmethod
     async def chat_stream(
@@ -121,23 +124,51 @@ class ChatService:
         request: ChatRequest,
         client_id: str | None = None,
         exec_user: Users | None = None,
+        request_id: str | None = None,
+    ) -> AsyncIterator["AgentEvent"]:
+        """执行唯一 Turn 流，并返回 AgentEvent v2。"""
+        from backend.services.turn_stream import execute_turn_stream
+
+        runner = ChatService._chat_stream_legacy(
+            db, user, agent_id, request,
+            client_id=client_id, exec_user=exec_user)
+        async for event in execute_turn_stream(
+                request_id=request_id or f"req_{uuid4().hex}",
+                agent_id=agent_id,
+                conversation_id=request.conversation_id,
+                runner=runner):
+            yield event
+
+    @staticmethod
+    async def _chat_stream_legacy(
+        db: AsyncSession,
+        user: Users,
+        agent_id: UUID,
+        request: ChatRequest,
+        client_id: str | None = None,
+        exec_user: Users | None = None,
     ) -> AsyncIterator[dict]:
-        """流式对话,产出 SSE 事件 dict;流结束(含异常)后原子追加会话 JSON
+        """内部领域 runner；产生兼容事件但不负责 v2 Turn 终态。
 
         client_id 非空 = 匿名访客场景（会话归属 client_id）；
         exec_user:公开接口登录场景的 Agent 所有者。
         """
         atype, agent, llm_cfg, conv = await ChatService._load_context(
             db, user, agent_id, request.conversation_id, client_id, exec_user)
+        yield {"type": "context", "conversation_id": str(conv.id)}
         full_answer: list[str] = []
         citations: list[Citation] = []
-        debug_store: dict | None = {} if request.debug else None
+        stream_failed = False
+        # 后端始终采集安全调试数据；前端 Debug 仅控制展示。
+        debug_store: dict = {}
         try:
             if atype == "simple_rag":
                 async for event in ChatService._chat_simple_rag_stream(
                         db, user, agent, llm_cfg, conv, request,
                         full_answer, citations, debug_store=debug_store):
                     if event.get("type") not in {"debug", "citations", "done"}:
+                        if event.get("type") == "error":
+                            stream_failed = True
                         yield event
             else:
                 from backend.services.agent_graph import AgentGraphService
@@ -169,9 +200,16 @@ class ChatService:
                         simple_stream_runner=simple_stream_runner,
                         main_stream_runner=main_stream_runner,
                         draft_runner=draft_runner):
+                    if event.get("type") == "answer.revision_started":
+                        full_answer.clear()
+                    elif event.get("type") == "delta" and not full_answer:
+                        # revision delta 由图节点直接产生，不经过 main_stream_runner。
+                        full_answer.append(str(event.get("content", "")))
                     if event.get("type") == "intent" and debug_store is not None:
                         debug_store["intent"] = event.get("intent")
                         debug_store["intent_code"] = event.get("intent_code")
+                    if event.get("type") == "error":
+                        stream_failed = True
                     yield event
             source_map = ChatService._source_map(citations)
             sanitized_answer = strip_unbound_source_markers(
@@ -185,9 +223,10 @@ class ChatService:
             source_map = ChatService._source_map(citations)
             sanitized_answer = strip_unbound_source_markers(
                 "".join(full_answer), ChatService._bindable_source_ids(source_map))
-            await ChatService._persist_messages(
-                db, conv, request.message, sanitized_answer, citations,
-                build_citation_bindings(sanitized_answer, source_map))
+            if not stream_failed:
+                await ChatService._persist_messages(
+                    db, conv, request.message, sanitized_answer, citations,
+                    build_citation_bindings(sanitized_answer, source_map))
 
     # ═══════════════════════════════════════════════
     # simple_rag(预检索 + create_agent)
@@ -207,8 +246,11 @@ class ChatService:
         config = {"type": "rag", "kb_id": str(agent.kb_id),
                   "top_k": agent.top_k, "score_threshold": agent.score_threshold,
                   "mqe_enabled": agent.mqe_enabled, "hyde_enabled": agent.hyde_enabled,
+                  "mqe_mode": getattr(agent, "mqe_mode", None),
+                  "hyde_mode": getattr(agent, "hyde_mode", None),
                   "mqe_query_count": agent.mqe_query_count,
-                  "rerank_enabled": agent.rerank_enabled}
+                  "rerank_enabled": agent.rerank_enabled,
+                  "rerank_mode": getattr(agent, "rerank_mode", None)}
         enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
         if enhance_cfg is None:
             enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
@@ -242,15 +284,36 @@ class ChatService:
         config = {"type": "rag", "kb_id": str(agent.kb_id),
                   "top_k": agent.top_k, "score_threshold": agent.score_threshold,
                   "mqe_enabled": agent.mqe_enabled, "hyde_enabled": agent.hyde_enabled,
+                  "mqe_mode": getattr(agent, "mqe_mode", None),
+                  "hyde_mode": getattr(agent, "hyde_mode", None),
                   "mqe_query_count": agent.mqe_query_count,
-                  "rerank_enabled": agent.rerank_enabled}
+                  "rerank_enabled": agent.rerank_enabled,
+                  "rerank_mode": getattr(agent, "rerank_mode", None)}
         enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
         if enhance_cfg is None:
             enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
-        refs = await RAGTool.execute(
+        stage_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def stage_sink(event: dict) -> None:
+            await stage_queue.put(event)
+
+        rag_task = asyncio.create_task(RAGTool.execute(
             db, user, config, request.message,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg, debug_store=debug_store)
+            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
+            debug_store=debug_store, event_sink=stage_sink))
+        while not rag_task.done():
+            get_task = asyncio.create_task(stage_queue.get())
+            done, _ = await asyncio.wait(
+                {rag_task, get_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if get_task in done:
+                yield get_task.result()
+            else:
+                get_task.cancel()
+        while not stage_queue.empty():
+            yield stage_queue.get_nowait()
+        refs = await rag_task
         if not refs:
             await ChatService._persist_turn_without_llm(conv.id, request.message)
             full_answer.append("知识库中没有相关信息。")
@@ -260,12 +323,20 @@ class ChatService:
             return
         citations.extend(refs)
         user_content = ChatService._build_user_prompt(refs, request.message)
+        answer_started = datetime.now(timezone.utc)
+        answer_perf = time.perf_counter()
+        yield {"type": "stage", "stage": "answer", "stage_id": "answer.1",
+               "status": "running", "summary": "正在生成回答", "visibility": "public"}
         async for event in ChatService._invoke_agent_stream(
                 db, user, agent, llm_cfg, conv, tools=[],
                 user_content=user_content):
             if event.get("type") == "delta":
                 full_answer.append(event["content"])
             yield event
+        yield {"type": "stage", "stage": "answer", "stage_id": "answer.1",
+               "status": "completed", "summary": "回答生成完成", "visibility": "public",
+               "duration_ms": round((time.perf_counter() - answer_perf) * 1000),
+               "detail": {"started_at": answer_started.isoformat()}}
         if debug_store is not None:
             yield {"type": "debug", "debug": debug_store}
         yield ChatService._citation_event("".join(full_answer), refs)
@@ -321,17 +392,29 @@ class ChatService:
         if enhance_cfg is None:
             enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
+        event_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+
+        async def event_sink(event: dict) -> None:
+            await event_queue.put(("event", event))
+
         tools = ToolRegistry.build_langchain_tools(
             db, user, agent.tools, citations_store=citations_store,
             enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
-            debug_store=debug_store)
+            debug_store=debug_store, event_sink=event_sink)
+        answer_perf = time.perf_counter()
+        yield {"type": "stage", "stage": "agent", "stage_id": "agent.1",
+               "status": "running", "summary": "Agent 正在处理", "visibility": "public"}
         async for event in ChatService._invoke_agent_stream(
                 db, user, agent, llm_cfg, conv, tools=tools,
                 user_content=request.message, citations_store=citations_store,
-                orchestration_guidance=orchestration_guidance):
+                orchestration_guidance=orchestration_guidance,
+                event_queue=event_queue):
             if event.get("type") == "delta":
                 full_answer.append(event["content"])
             yield event
+        yield {"type": "stage", "stage": "agent", "stage_id": "agent.1",
+               "status": "completed", "summary": "Agent 处理完成", "visibility": "public",
+               "duration_ms": round((time.perf_counter() - answer_perf) * 1000)}
         citations.extend(citations_store)
         if debug_store is not None:
             yield {"type": "debug", "debug": debug_store}
@@ -380,24 +463,22 @@ class ChatService:
 
         messages = await ChatService._build_simple_messages(
             agent, conv, request.message)
-        temperature = (agent.temperature if agent.temperature is not None
-                       else getattr(llm_cfg, "temperature", None))
-        if temperature is None:
-            temperature = 0.7
-        top_p = (agent.top_p if agent.top_p is not None
-                 else getattr(llm_cfg, "top_p", None))
-        if top_p is None:
-            top_p = 0.9
+        from backend.services.model_policy import build_model_invocation_config
+
+        invocation = build_model_invocation_config(llm_cfg, agent=agent)
         try:
             async for delta in LLMService.chat_stream(
-                    provider=llm_cfg.provider,
-                    model_name=llm_cfg.model_name,
-                    api_key=llm_cfg.api_key,
-                    base_url=llm_cfg.base_url,
+                    provider=invocation.provider,
+                    model_name=invocation.model_name,
+                    api_key=invocation.api_key,
+                    base_url=invocation.base_url,
                     messages=messages,
-                    temperature=temperature,
-                    top_p=top_p,
-                    protocol=getattr(llm_cfg, "protocol", None)):
+                    temperature=invocation.temperature,
+                    top_p=invocation.top_p,
+                    protocol=invocation.protocol,
+                    timeout=invocation.timeout,
+                    max_tokens=invocation.max_tokens,
+                    purpose="answer"):
                 full_answer.append(delta)
                 yield {"type": "delta", "content": delta}
             await ChatService._persist_simple_turn(
@@ -412,7 +493,7 @@ class ChatService:
                        "suggestion": {"action": "set_temperature", "value": 1.0}}
             else:
                 logger.error(f"simple 档流式调用失败: {e}")
-                yield {"type": "error", "code": 502,
+                yield {"type": "error", "code": ChatService._upstream_error_status(e),
                        "message": f"LLM 服务调用失败: {e}"}
             yield {"type": "done"}
 
@@ -484,28 +565,23 @@ class ChatService:
 
         from backend.services.llm import LLMService
 
-        temperature = (agent.temperature if agent.temperature is not None
-                       else getattr(llm_cfg, "temperature", None))
-        if temperature is None:
-            temperature = 0.7
-        top_p = (agent.top_p if agent.top_p is not None
-                 else getattr(llm_cfg, "top_p", None))
-        if top_p is None:
-            top_p = 0.9
-        max_tokens = (agent.max_tokens if agent.max_tokens is not None
-                      else getattr(llm_cfg, "max_tokens", None))
+        from backend.services.model_policy import build_model_invocation_config
+
+        invocation = build_model_invocation_config(llm_cfg, agent=agent)
         t0 = _time.perf_counter()
         try:
             answer = await LLMService.chat(
-                provider=llm_cfg.provider,
-                model_name=llm_cfg.model_name,
-                api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url,
+                provider=invocation.provider,
+                model_name=invocation.model_name,
+                api_key=invocation.api_key,
+                base_url=invocation.base_url,
                 messages=messages,
-                temperature=temperature,
-                top_p=top_p,
-                protocol=getattr(llm_cfg, "protocol", None),
-                max_tokens=max_tokens if max_tokens else None,
+                temperature=invocation.temperature,
+                top_p=invocation.top_p,
+                protocol=invocation.protocol,
+                timeout=invocation.timeout,
+                max_tokens=invocation.max_tokens,
+                purpose="answer",
             )
             _llm_logger.info(
                 "agent=%s type=simple conversation=%s duration_ms=%d error=None",
@@ -529,7 +605,9 @@ class ChatService:
                 getattr(agent, "name", "?"),
                 int((_time.perf_counter() - t0) * 1000), e)
             logger.error(f"simple 档 LLM 调用失败: {e}")
-            raise HTTPException(status_code=502, detail=f"LLM 服务调用失败: {e}")
+            raise HTTPException(
+                status_code=ChatService._upstream_error_status(e),
+                detail=f"LLM 服务调用失败: {e}")
 
     @staticmethod
     async def _persist_simple_turn(conversation_id: UUID,
@@ -562,12 +640,13 @@ class ChatService:
                 versions_seen={},
                 pending_sends=[],
             )
-            metadata: dict = {}
+            metadata = ChatService._checkpoint_metadata()
             new_versions: dict = {"messages": "1"}
         else:
             checkpoint = tup.checkpoint
-            metadata = tup.metadata or {}
+            metadata = ChatService._checkpoint_metadata(tup.metadata)
             new_versions = dict(checkpoint.get("channel_versions", {}))
+        checkpoint["channel_versions"] = new_versions
         messages = list(checkpoint.get("channel_values", {}).get("messages", []))
         messages.append(HumanMessage(content=user_message))
         messages.append(AIMessage(content=assistant_message))
@@ -672,22 +751,20 @@ class ChatService:
         if orchestration_guidance:
             system_prompt = f"{system_prompt}\n\n{orchestration_guidance}"
         cp = await get_checkpointer()
-        temperature = (agent.temperature if agent.temperature is not None
-                       else getattr(llm_cfg, "temperature", None))
-        if temperature is None:
-            temperature = 0.7
-        top_p = (agent.top_p if agent.top_p is not None
-                 else getattr(llm_cfg, "top_p", None))
-        if top_p is None:
-            top_p = 0.9
-        max_tokens = (agent.max_tokens if agent.max_tokens is not None
-                      else getattr(llm_cfg, "max_tokens", None))
+        from backend.services.llm import get_rate_limiter
+        from backend.services.model_policy import build_model_invocation_config
+
+        invocation = build_model_invocation_config(llm_cfg, agent=agent)
         return create_agent(
             model=ChatOpenAI(
-                model=llm_cfg.model_name, api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url or "https://api.openai.com/v1",
-                temperature=temperature, top_p=top_p,
-                max_tokens=max_tokens if max_tokens else None, timeout=60.0),
+                model=invocation.model_name, api_key=invocation.api_key,
+                base_url=invocation.base_url or "https://api.openai.com/v1",
+                temperature=invocation.temperature, top_p=invocation.top_p,
+                max_tokens=invocation.max_tokens, timeout=invocation.timeout,
+                max_retries=invocation.max_retries,
+                rate_limiter=get_rate_limiter(
+                    invocation.provider, invocation.model_name,
+                    invocation.api_key)),
             tools=tools, system_prompt=system_prompt,
             checkpointer=cp, middleware=middlewares)
 
@@ -695,6 +772,22 @@ class ChatService:
     def _thread_config(conv: object) -> dict:
         """checkpoint thread 配置(thread_id = conversation_id)"""
         return {"configurable": {"thread_id": str(conv.id), "checkpoint_ns": ""}}
+
+    @staticmethod
+    def _checkpoint_metadata(metadata: dict | None = None) -> dict:
+        """补齐 LangGraph 恢复 checkpoint 所需的标准 metadata。"""
+        result = dict(metadata or {})
+        result.setdefault("source", "update")
+        result.setdefault("step", 0)
+        result.setdefault("parents", {})
+        return result
+
+    @staticmethod
+    def _upstream_error_status(error: Exception) -> int:
+        """把上游限流识别为 429，其余调用错误维持 502。"""
+        message = str(error).lower()
+        status_code = getattr(error, "status_code", None)
+        return 429 if status_code == 429 or "rate_limit" in message or "429" in message else 502
 
     @staticmethod
     async def _repair_checkpoint(conv: object) -> None:
@@ -717,14 +810,15 @@ class ChatService:
             return
         msgs = list(tup.checkpoint.get("channel_values", {}).get("messages", []))
         fixed = ChatService._repair_messages(msgs)
-        if fixed != msgs:
+        metadata = ChatService._checkpoint_metadata(tup.metadata)
+        if fixed != msgs or metadata != (tup.metadata or {}):
             # 递增 messages 版本号(blob 同版本 DO NOTHING,必须换新版本)
             cur_ver = str(tup.checkpoint.get("channel_versions", {}).get("messages", "0"))
             new_ver = (str(int(cur_ver) + 1) if cur_ver.isdigit()
                        else f"{cur_ver}.{datetime.now(timezone.utc).timestamp()}")
             tup.checkpoint["channel_versions"]["messages"] = new_ver
             tup.checkpoint["channel_values"]["messages"] = fixed
-            await cp.aput(config, tup.checkpoint, tup.metadata or {},
+            await cp.aput(config, tup.checkpoint, metadata,
                           {"messages": new_ver})
 
     @staticmethod
@@ -821,7 +915,9 @@ class ChatService:
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
                 str(conv.id), int((_time.perf_counter() - t0) * 1000), e)
             logger.error(f"Agent 调用失败: {e}")
-            raise HTTPException(status_code=502, detail=f"LLM 服务调用失败: {e}")
+            raise HTTPException(
+                status_code=ChatService._upstream_error_status(e),
+                detail=f"LLM 服务调用失败: {e}")
 
     @staticmethod
     async def _invoke_agent_stream(db: AsyncSession, user: Users, agent: object,
@@ -830,6 +926,7 @@ class ChatService:
                                    citations_store: list | None = None,
                                    pending_events: list[dict] | None = None,
                                    orchestration_guidance: str = "",
+                                   event_queue: asyncio.Queue[tuple[str, object]] | None = None,
                                    ) -> AsyncIterator[dict]:
         """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)（埋点：耗时/错误）
 
@@ -841,22 +938,56 @@ class ChatService:
         """
         import time as _time
 
-        from langchain_core.messages import AIMessageChunk, HumanMessage
+        from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
         await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(
             db, user, agent, llm_cfg, tools, orchestration_guidance)
         t0 = _time.perf_counter()
         try:
-            async for chunk, _meta in lc_agent.astream(
-                    {"messages": [HumanMessage(content=user_content)]},
-                    config=ChatService._thread_config(conv),
-                    stream_mode="messages"):
+            async def chunks():
+                async for item in lc_agent.astream(
+                        {"messages": [HumanMessage(content=user_content)]},
+                        config=ChatService._thread_config(conv),
+                        stream_mode="messages"):
+                    yield item
+
+            if event_queue is None:
+                stream = chunks()
+            else:
+                sentinel = object()
+
+                async def produce() -> None:
+                    try:
+                        async for item in chunks():
+                            await event_queue.put(("chunk", item))
+                    finally:
+                        await event_queue.put(("done", sentinel))
+
+                producer = asyncio.create_task(produce())
+
+                async def merged():
+                    while True:
+                        kind, item = await event_queue.get()
+                        if kind == "done":
+                            break
+                        if kind == "event":
+                            yield item, None
+                        else:
+                            yield item
+                    await producer
+
+                stream = merged()
+
+            async for chunk, _meta in stream:
+                if isinstance(chunk, dict) and chunk.get("type"):
+                    yield chunk
+                    continue
                 # 工具事件转发（plan/reflect 执行时由 event_sink 收集）
                 if pending_events is not None:
                     while pending_events:
                         yield pending_events.pop(0)
-                if isinstance(chunk, AIMessageChunk) and chunk.content:
+                if isinstance(chunk, (AIMessage, AIMessageChunk)) and chunk.content:
                     yield {"type": "delta", "content": chunk.content}
             _llm_logger.info(
                 "agent=%s type=%s conversation=%s duration_ms=%d error=None",
@@ -878,7 +1009,7 @@ class ChatService:
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),
                 str(conv.id), int((_time.perf_counter() - t0) * 1000), e)
             logger.error(f"Agent 流式调用失败: {e}")
-            yield {"type": "error", "code": 502,
+            yield {"type": "error", "code": ChatService._upstream_error_status(e),
                    "message": f"LLM 服务调用失败: {e}"}
             yield {"type": "done"}
 
@@ -986,17 +1117,22 @@ class ChatService:
                 pending_sends=[],
             )
             messages: list = []
-            metadata: dict = {}
+            metadata = ChatService._checkpoint_metadata()
             new_versions: dict = {"messages": "1"}
         else:
             checkpoint = tup.checkpoint
             messages = list(checkpoint.get("channel_values", {}).get("messages", []))
-            metadata = tup.metadata or {}
-            new_versions = checkpoint.get("channel_versions", {})
+            metadata = ChatService._checkpoint_metadata(tup.metadata)
+            new_versions = dict(checkpoint.get("channel_versions", {}))
+        checkpoint["channel_versions"] = new_versions
 
         messages.append(HumanMessage(content=user_message))
         messages.append(AIMessage(content="知识库中没有相关信息。"))
         checkpoint["channel_values"]["messages"] = messages
+        cur_ver = str(new_versions.get("messages", "0"))
+        new_versions["messages"] = (
+            str(int(cur_ver) + 1) if cur_ver.isdigit()
+            else f"{cur_ver}.{datetime.now(timezone.utc).timestamp()}")
         await cp.aput(config, checkpoint, metadata, new_versions)
 
     @staticmethod

@@ -41,12 +41,12 @@
 
       <div v-for="(msg, idx) in messages" :key="idx" class="msg-row" :class="msg.role">
         <div class="msg-bubble" :class="msg.role">
-          <!-- 当前等待/生成中的助手消息：气泡内直接显示加载状态 -->
-          <template v-if="isPendingMsg(msg)">
-            <span class="stage-text">{{ loadingText }}</span>
-          </template>
+          <AgentProcessTimeline
+            v-if="msg.role === 'assistant' && msg.turnState"
+            :state="msg.turnState"
+          />
           <!-- 正常内容：分段渲染（文本 + [N] 可点击引用标注） -->
-          <template v-else>
+          <template v-if="!isPendingMsg(msg) || msg.content">
           <!-- Phase 4.10：意图标签（轻量/完整模式） -->
           <div v-if="msg.intentLabel" class="intent-tag-row">
             <n-tag size="tiny" :type="msg.intentLabel === 'simple' ? 'success' : 'warning'" :bordered="false">
@@ -187,6 +187,20 @@
             </n-collapse>
           </div>
           </template>
+          <AgentDebugPanel
+            v-if="msg.role === 'assistant' && msg.turnState"
+            :state="msg.turnState"
+            :show="debugMode"
+          />
+          <n-button
+            v-if="msg.role === 'assistant' && (msg.traceId || msg.turnState?.traceId)"
+            text
+            size="tiny"
+            class="trace-link"
+            @click="router.push(`/agent-traces/${encodeURIComponent(msg.traceId || msg.turnState!.traceId!)}`)"
+          >
+            查看完整链路日志
+          </n-button>
         </div>
       </div>
     </n-card>
@@ -300,6 +314,9 @@ import {
   type ConversationItem,
 } from '@/api/conversation'
 import { stripUnboundSourceMarkers } from '@/utils/citations'
+import { createTurnState, reduceTurnEvent, type TurnState } from '@/chat-core/stage-reducer'
+import AgentProcessTimeline from './components/AgentProcessTimeline.vue'
+import AgentDebugPanel from './components/AgentDebugPanel.vue'
 
 interface DisplayMessage extends ChatMessage {
   /** 检索调试信息（Debug 模式） */
@@ -323,6 +340,9 @@ interface DisplayMessage extends ChatMessage {
   plan?: string | null
   /** reflect 工具输出（反思建议） */
   reflect?: string | null
+  /** AgentEvent v2 累积状态；Debug 开关只影响展示，不影响采集。 */
+  turnState?: TurnState
+  traceId?: string | null
 }
 
 const route = useRoute()
@@ -341,8 +361,6 @@ const streaming = ref(false)
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
 const debugMode = ref(false)
-// 当前阶段：retrieving=检索中（加载圈），generating=生成中（打字机）
-const currentStage = ref<'idle' | 'retrieving' | 'generating'>('idle')
 let abortCtrl: AbortController | null = null
 
 // ── 会话状态 ────────────────────────────
@@ -488,7 +506,13 @@ async function send() {
   }
 
   // 占位助手消息（reactive：push 的是代理本身，流式增量修改实时触发视图更新）
-  const assistantMsg = reactive<DisplayMessage>({ role: 'assistant', content: '', citations: [], uid: ++msgUid })
+  const assistantMsg = reactive<DisplayMessage>({
+    role: 'assistant',
+    content: '',
+    citations: [],
+    uid: ++msgUid,
+    turnState: createTurnState(),
+  })
   messages.value.push(assistantMsg)
   scrollBottom()
 
@@ -506,28 +530,25 @@ async function doRequest(
 ) {
   streaming.value = true
   sending.value = true
-  currentStage.value = 'retrieving'
   abortCtrl = new AbortController()
-  startLoadingText()
 
   // 非流式：一次性返回 answer + citations
   if (!streamMode.value) {
     try {
-      const res = await chatAgent(agentId, { message: text, conversation_id: conversationId, debug: debugMode.value })
+      const res = await chatAgent(agentId, { message: text, conversation_id: conversationId })
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
       assistantMsg.citationBindings = res.citation_bindings || []
       assistantMsg.debug = res.debug || null
       assistantMsg.intentLabel = res.debug?.intent || null
+      assistantMsg.traceId = res.trace_id || null
     } catch (e) {
       const err = e as Error & { suggestion?: ChatSuggestion | null }
       handleChatError(assistantMsg, err.message, err.suggestion, text, conversationId)
     } finally {
       streaming.value = false
       sending.value = false
-      currentStage.value = 'idle'
       abortCtrl = null
-      stopLoadingText()
     }
     return
   }
@@ -535,42 +556,33 @@ async function doRequest(
   try {
     await chatAgentStream(
       agentId,
-      { message: text, conversation_id: conversationId, stream: true, debug: debugMode.value },
+      { message: text, conversation_id: conversationId, stream: true },
       (event) => {
-        if (event.type === 'delta') {
-          // 首个 delta 到达 → 检索完成，进入生成阶段（打字机）
-          if (currentStage.value === 'retrieving') {
-            currentStage.value = 'generating'
-          }
-          assistantMsg.content += event.content
+        assistantMsg.turnState = reduceTurnEvent(assistantMsg.turnState || createTurnState(), event)
+        if (event.type === 'answer.delta') {
+          assistantMsg.content = assistantMsg.turnState.content
           scrollBottom()
-        } else if (event.type === 'intent') {
-          // Phase 4.10：意图判定结果展示
-          assistantMsg.intentLabel = event.intent
-        } else if (event.type === 'plan') {
-          // Phase 4.10：规划过程展示
-          assistantMsg.plan = event.plan
-          scrollBottom()
-        } else if (event.type === 'reflect') {
-          // Phase 4.10：反思过程展示
-          assistantMsg.reflect = event.suggestions
-          scrollBottom()
-        } else if (event.type === 'citations') {
-          // 新协议提供服务端校验后的 [S#] 绑定；保留旧编号协议作历史兼容。
-          assistantMsg.citationBindings = event.bindings || []
+        } else if (event.type === 'answer.revision_started') {
+          assistantMsg.content = ''
+        } else if (event.type === 'citations.completed') {
+          const bindings = Array.isArray(event.detail.bindings)
+            ? event.detail.bindings as unknown as CitationBinding[]
+            : []
+          assistantMsg.citationBindings = bindings
           assistantMsg.rawCitations = event.citations
           const used = extractRefIndexes(assistantMsg.content)
-          assistantMsg.citations = assistantMsg.citationBindings.length
+          assistantMsg.citations = bindings.length
             ? []
             : event.citations.filter((_, i) => used.has(i + 1))
           assistantMsg.content = stripUnboundSourceMarkers(
             assistantMsg.content,
-            assistantMsg.citationBindings.map(binding => binding.source_id),
+            bindings.map(binding => binding.source_id),
           )
-        } else if (event.type === 'debug') {
-          assistantMsg.debug = event.debug
-        } else if (event.type === 'error') {
-          handleChatError(assistantMsg, event.message, event.suggestion, text, conversationId)
+        } else if (event.type === 'stage.completed' && event.stage === 'intent') {
+          const intent = event.detail.intent
+          if (intent === 'simple' || intent === 'general') assistantMsg.intentLabel = intent
+        } else if (event.type === 'turn.failed') {
+          handleChatError(assistantMsg, event.summary || event.code || 'Agent 处理失败', null, text, conversationId)
         }
       },
       abortCtrl.signal,
@@ -585,9 +597,7 @@ async function doRequest(
   } finally {
     streaming.value = false
     sending.value = false
-    currentStage.value = 'idle'
     abortCtrl = null
-    stopLoadingText()
   }
 }
 
@@ -657,29 +667,6 @@ function onInputKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     send()
-  }
-}
-
-// ── AI 加载状态文字（多文案轮换）────────────────────
-const loadingTexts = ['正在思考…', '正在查阅资料…', '正在组织语言…', '正在生成回答…']
-const loadingText = ref(loadingTexts[0])
-let loadingTimer: number | null = null
-
-/** 开始轮换加载文案（每 2 秒切换一条） */
-function startLoadingText() {
-  loadingText.value = loadingTexts[0]
-  if (loadingTimer) window.clearInterval(loadingTimer)
-  loadingTimer = window.setInterval(() => {
-    const idx = loadingTexts.indexOf(loadingText.value)
-    loadingText.value = loadingTexts[(idx + 1) % loadingTexts.length]
-  }, 2000)
-}
-
-/** 停止轮换（发送完成/出错/停止时调用） */
-function stopLoadingText() {
-  if (loadingTimer) {
-    window.clearInterval(loadingTimer)
-    loadingTimer = null
   }
 }
 

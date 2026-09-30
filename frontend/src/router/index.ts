@@ -9,6 +9,8 @@ const KnowledgeListView = () => import('@/views/knowledge/KnowledgeListView.vue'
 const KnowledgeDetailView = () => import('@/views/knowledge/KnowledgeDetailView.vue')
 const AgentListView = () => import('@/views/agent/AgentListView.vue')
 const AgentChatView = () => import('@/views/agent/AgentChatView.vue')
+const AgentTraceListView = () => import('@/views/agent/AgentTraceListView.vue')
+const AgentTraceDetailView = () => import('@/views/agent/AgentTraceDetailView.vue')
 const ModelConfigView = () => import('@/views/settings/ModelConfigView.vue')
 const SystemSettingsView = () => import('@/views/settings/SystemSettingsTab.vue')
 
@@ -53,6 +55,18 @@ const routes: RouteRecordRaw[] = [
         name: 'AgentChat',
         component: AgentChatView,
         meta: { title: '对话', requiresAuth: true },
+      },
+      {
+        path: 'agent-traces',
+        name: 'AgentTraces',
+        component: AgentTraceListView,
+        meta: { title: 'Agent Trace', requiresAuth: true },
+      },
+      {
+        path: 'agent-traces/:traceId',
+        name: 'AgentTraceDetail',
+        component: AgentTraceDetailView,
+        meta: { title: 'Trace 详情', requiresAuth: true },
       },
       {
         path: 'settings/model-config',

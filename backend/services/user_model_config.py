@@ -68,6 +68,7 @@ class UserModelConfigService:
                     temperature=data.temperature if data.temperature is not None else 0.7,
                     top_p=data.top_p if data.top_p is not None else 0.9,
                     max_tokens=data.max_tokens,
+                    purpose="connection_test",
                 )
                 return ModelConfigTestResponse(
                     ok=True,
@@ -223,6 +224,20 @@ class UserModelConfigService:
             kbs, agents = await UserModelConfigService._find_references(db, cfg_id)
             if kbs or agents:
                 raise UserModelConfigService._ref_error(kbs, agents)
+
+        submitted = data.model_dump(exclude_unset=True)
+        vector_space_fields = {"provider", "model_name", "dimension", "protocol"}
+        changes_vector_space = any(
+            field in submitted and submitted[field] != getattr(cfg, field)
+            for field in vector_space_fields
+        )
+        if cfg.model_type == 1 and changes_vector_space:
+            kbs, _ = await UserModelConfigService._find_references(db, cfg_id)
+            if kbs:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该 Embedding 配置已被知识库引用，不能修改厂商、模型、维度或协议",
+                )
 
         cfg = await UserModelConfigRepo.update(
             db, cfg,

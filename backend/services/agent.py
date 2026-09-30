@@ -40,6 +40,7 @@ from backend.schemas.agent import (
     ToolConfig,
 )
 from backend.schemas.knowledge import BatchResult, PaginatedResponse
+from backend.services.rag_policy import resolve_rag_mode
 
 
 class AgentService:
@@ -72,7 +73,11 @@ class AgentService:
             await AgentService._ensure_rerank_config(
                 db, user, data.rerank_config_id)
         # 开启 Rerank 必须显式选择模型
-        if getattr(data, "rerank_enabled", None) is True \
+        requested_rerank_mode = resolve_rag_mode(
+            getattr(data, "rerank_mode", None),
+            getattr(data, "rerank_enabled", None),
+        )
+        if requested_rerank_mode == "always" \
                 and getattr(data, "rerank_config_id", None) is None:
             raise HTTPException(
                 status_code=400, detail="开启 Rerank 必须选择 Rerank 模型（可在模型配置页创建 Rerank 类型配置）")
@@ -200,11 +205,14 @@ class AgentService:
             await AgentService._ensure_rerank_config(
                 db, user, data.rerank_config_id)
         # 开启 Rerank 必须显式选择模型（按最终值校验，兼容部分更新）
-        final_rerank = (data.rerank_enabled if data.rerank_enabled is not None
-                        else getattr(agent, "rerank_enabled", False))
+        final_rerank_mode = resolve_rag_mode(
+            data.rerank_mode,
+            data.rerank_enabled,
+            default=getattr(agent, "rerank_mode", "off"),
+        )
         final_cfg = (data.rerank_config_id if data.rerank_config_id is not None
                      else getattr(agent, "rerank_config_id", None))
-        if final_rerank and final_cfg is None:
+        if final_rerank_mode == "always" and final_cfg is None:
             raise HTTPException(
                 status_code=400, detail="开启 Rerank 必须选择 Rerank 模型（可在模型配置页创建 Rerank 类型配置）")
 
@@ -225,10 +233,19 @@ class AgentService:
                 welcome_message=data.welcome_message,
                 status=data.status,
                 summary_llm_config_id=data.summary_llm_config_id,
-                mqe_enabled=data.mqe_enabled,
-                hyde_enabled=data.hyde_enabled,
+                mqe_enabled=(data.mqe_enabled if data.mqe_enabled is not None else
+                             (data.mqe_mode != "off" if data.mqe_mode is not None else None)),
+                hyde_enabled=(data.hyde_enabled if data.hyde_enabled is not None else
+                              (data.hyde_mode != "off" if data.hyde_mode is not None else None)),
                 mqe_query_count=data.mqe_query_count,
-                rerank_enabled=data.rerank_enabled,
+                rerank_enabled=(data.rerank_enabled if data.rerank_enabled is not None else
+                                (data.rerank_mode != "off" if data.rerank_mode is not None else None)),
+                mqe_mode=(resolve_rag_mode(data.mqe_mode, data.mqe_enabled)
+                          if data.mqe_mode is not None or data.mqe_enabled is not None else None),
+                hyde_mode=(resolve_rag_mode(data.hyde_mode, data.hyde_enabled)
+                           if data.hyde_mode is not None or data.hyde_enabled is not None else None),
+                rerank_mode=(resolve_rag_mode(data.rerank_mode, data.rerank_enabled)
+                             if data.rerank_mode is not None or data.rerank_enabled is not None else None),
                 enhance_llm_config_id=data.enhance_llm_config_id,
                 rerank_config_id=data.rerank_config_id,
                 max_tokens=data.max_tokens,
@@ -242,7 +259,7 @@ class AgentService:
                 name=data.name,
                 description=data.description,
                 llm_config_id=data.llm_config_id,
-                tools=([t.model_dump(mode="json", exclude={"kb_name"}) for t in data.tools]
+                tools=(AgentService._dump_tools(data.tools)
                        if data.tools is not None else None),
                 system_prompt=data.system_prompt,
                 temperature=data.temperature,
@@ -352,10 +369,13 @@ class AgentService:
             top_p=data.top_p,
             welcome_message=data.welcome_message,
             summary_llm_config_id=data.summary_llm_config_id,
-            mqe_enabled=data.mqe_enabled if data.mqe_enabled is not None else settings.tools.default_mqe_enabled,
-            hyde_enabled=data.hyde_enabled if data.hyde_enabled is not None else settings.tools.default_hyde_enabled,
+            mqe_enabled=resolve_rag_mode(data.mqe_mode, data.mqe_enabled) != "off",
+            hyde_enabled=resolve_rag_mode(data.hyde_mode, data.hyde_enabled) != "off",
             mqe_query_count=data.mqe_query_count or settings.tools.default_mqe_query_count,
-            rerank_enabled=data.rerank_enabled if data.rerank_enabled is not None else settings.tools.default_rerank_enabled,
+            rerank_enabled=resolve_rag_mode(data.rerank_mode, data.rerank_enabled) != "off",
+            mqe_mode=resolve_rag_mode(data.mqe_mode, data.mqe_enabled),
+            hyde_mode=resolve_rag_mode(data.hyde_mode, data.hyde_enabled),
+            rerank_mode=resolve_rag_mode(data.rerank_mode, data.rerank_enabled),
             enhance_llm_config_id=data.enhance_llm_config_id,
             rerank_config_id=data.rerank_config_id,
             max_tokens=data.max_tokens,
@@ -384,7 +404,7 @@ class AgentService:
             name=data.name,
             description=data.description,
             llm_config_id=data.llm_config_id,
-            tools=[t.model_dump(mode="json", exclude={"kb_name"}) for t in data.tools],
+            tools=AgentService._dump_tools(data.tools),
             system_prompt=prompt,
             temperature=data.temperature,
             top_p=data.top_p,
@@ -538,6 +558,9 @@ class AgentService:
             resp.hyde_enabled = agent.hyde_enabled
             resp.mqe_query_count = agent.mqe_query_count
             resp.rerank_enabled = agent.rerank_enabled
+            resp.mqe_mode = resolve_rag_mode(getattr(agent, "mqe_mode", None), agent.mqe_enabled)
+            resp.hyde_mode = resolve_rag_mode(getattr(agent, "hyde_mode", None), agent.hyde_enabled)
+            resp.rerank_mode = resolve_rag_mode(getattr(agent, "rerank_mode", None), agent.rerank_enabled)
         else:
             from backend.tools import ToolRegistry
 
@@ -545,12 +568,35 @@ class AgentService:
             ref_names: dict = {}
             if refs.get("kb_id"):
                 ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
-            resp.tools = ToolRegistry.enrich_tools(agent.tools, ref_names)
+            enriched = ToolRegistry.enrich_tools(agent.tools, ref_names)
+            resp.tools = [
+                ToolConfig.model_validate(item)
+                for item in AgentService._dump_tools(
+                    [ToolConfig.model_validate(item) for item in enriched]
+                )
+            ]
             resp.intent_rules = IntentRules.model_validate(agent.intent_rules or {})
             resp.intent_routing = agent.intent_routing
             resp.plan_enabled = agent.plan_enabled
             resp.reflect_enabled = agent.reflect_enabled
         return resp
+
+    @staticmethod
+    def _dump_tools(tools: list[ToolConfig]) -> list[dict]:
+        """序列化工具并将旧布尔开关稳定映射到三态字段。"""
+        result: list[dict] = []
+        for tool in tools:
+            item = tool.model_dump(mode="json", exclude={"kb_name"})
+            if tool.type == "rag":
+                for name in ("mqe", "hyde", "rerank"):
+                    mode_key = f"{name}_mode"
+                    enabled_key = f"{name}_enabled"
+                    item[mode_key] = resolve_rag_mode(
+                        item.get(mode_key), item.get(enabled_key)
+                    )
+                    item[enabled_key] = item[mode_key] != "off"
+            result.append(item)
+        return result
 
     @staticmethod
     async def _kb_name_map(

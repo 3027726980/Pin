@@ -3,9 +3,13 @@
  * 事件委托 + 局部更新；样式完全隔离在 shadow root 内
  */
 import { PublicApi } from '../core/api'
-import { extractRefIndexes, splitRefs } from '../core/refs'
-import { getToken, getUser, setToken, setUser, type ConvItem, type Msg } from '../core/state'
+import { extractRefIndexes, filterUsedCitations, splitRefs } from '../core/refs'
+import { getToken, getUser, setToken, setUser, type CitationBinding, type ConvItem, type Msg } from '../core/state'
+import { widgetStageText, widgetVisibleStages } from '../core/stage-view'
 import { themeVars, type WidgetTheme } from '../core/theme'
+import { formatDuration } from '../../chat-core/formatters'
+import { createTurnState, reduceTurnEvent } from '../../chat-core/stage-reducer'
+import { stripUnboundSourceMarkers } from '../../utils/citations'
 
 const STYLE = `
 :host { all: initial; }
@@ -98,8 +102,14 @@ const STYLE = `
 }
 .pin-toast.show { display: block; }
 
-/* AI 加载状态文字 */
-.pin-loading { color: #999; font-size: 13px; }
+/* Agent 真实执行阶段 */
+.pin-process { color: #777; font-size: 12px; margin-bottom: 6px; }
+.pin-process-head { display: flex; align-items: center; gap: 6px; }
+.pin-process-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pin-primary); animation: pin-pulse 1.2s infinite; }
+.pin-process-stages { margin: 6px 0 0 3px; padding-left: 9px; border-left: 1px solid #e5e5e5; }
+.pin-process-stage { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.pin-process-time { color: #aaa; font-variant-numeric: tabular-nums; }
+@keyframes pin-pulse { 50% { opacity: .35; } }
 
 .pin-stop {
   border: none; border-radius: 8px; background: #ff4d4f; color: #fff;
@@ -167,10 +177,6 @@ export class ChatWidget {
   private destroyed = false
   /** 两段式删除确认：记录处于「确认删除」态的会话 id（null = 无） */
   private pendingDelConvId: string | null = null
-  /** AI 加载状态文字（多文案轮换，每 2 秒切换） */
-  private static readonly LOADING_TEXTS = ['正在思考…', '正在查阅资料…', '正在组织语言…', '正在生成回答…']
-  private loadingIdx = 0
-  private loadingTimer: number | null = null
   /** toast 轻提示元素 + 自动消失计时器 */
   private toastEl: HTMLElement | null = null
   private toastTimer: number | null = null
@@ -393,7 +399,10 @@ export class ChatWidget {
     if (!text || this.streaming || !this.activeConv) return
     this.inputEl.value = ''
     this.msgs.push({ role: 'user', content: text, citations: [], rawCitations: [], citationBindings: [] })
-    const assistantMsg: Msg = { role: 'assistant', content: '', citations: [], rawCitations: [], citationBindings: [], pending: true }
+    const assistantMsg: Msg = {
+      role: 'assistant', content: '', citations: [], rawCitations: [], citationBindings: [],
+      pending: true, turnState: createTurnState(),
+    }
     this.msgs.push(assistantMsg)
     this.renderBody()
     this.scrollBottom()
@@ -401,41 +410,56 @@ export class ChatWidget {
     this.streaming = true
     this.abortCtrl = new AbortController()
     this.renderInputRow()
-    this.startLoadingText()
     try {
       await this.api.chatStream(
         this.agentId,
         this.activeConv.id,
         text,
         (e) => {
-          if (e.type === 'delta' && e.content !== undefined) {
-            assistantMsg.content += e.content
+          assistantMsg.turnState = reduceTurnEvent(assistantMsg.turnState || createTurnState(), e)
+          if (e.type === 'answer.delta') {
+            assistantMsg.content = assistantMsg.turnState.content
             assistantMsg.pending = false
-            this.updateLastAssistant()
-          } else if (e.type === 'done') {
-            assistantMsg.content = e.content || assistantMsg.content
-            assistantMsg.citations = e.citations || []
-            // 完整列表优先（保留原始编号供引用面板渲染）；兼容无 rawCitations 的旧事件
-            assistantMsg.rawCitations = e.rawCitations || assistantMsg.citations
-            assistantMsg.citationBindings = e.bindings || []
+          } else if (e.type === 'answer.revision_started') {
+            assistantMsg.content = ''
+            assistantMsg.pending = true
+          } else if (e.type === 'citations.completed') {
+            assistantMsg.rawCitations = e.citations
+            assistantMsg.citationBindings = readCitationBindings(e.detail.bindings)
+            assistantMsg.citations = assistantMsg.citationBindings.length
+              ? []
+              : filterUsedCitations(e.citations, assistantMsg.content)
+            assistantMsg.content = stripUnboundSourceMarkers(
+              assistantMsg.content,
+              assistantMsg.citationBindings.map(binding => binding.source_id),
+            )
+          } else if (e.type === 'turn.completed') {
             assistantMsg.pending = false
-            this.updateLastAssistant()
             // 首轮命名同步（后端一致：前 10 字 + 省略号）
             if (!this.activeConv!.title || this.activeConv!.title === '新会话') {
               this.activeConv!.title = text.length > 10 ? text.slice(0, 10) + '...' : text
             }
-          } else if (e.type === 'error') {
+          } else if (e.type === 'turn.failed') {
             assistantMsg.error = true
             const sep = assistantMsg.content ? '\n' : ''
-            assistantMsg.content += sep + `[错误] ${e.message}`
+            assistantMsg.content += sep + `[错误] ${e.summary || e.code || 'Agent 处理失败'}`
             assistantMsg.pending = false
-            this.updateLastAssistant()
+          } else if (e.type === 'turn.cancelled') {
+            assistantMsg.pending = false
           }
+          this.updateLastAssistant()
         },
         this.abortCtrl.signal,
       )
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
+      if ((e as Error).name === 'AbortError') {
+        assistantMsg.pending = false
+        if (assistantMsg.turnState) {
+          assistantMsg.turnState.status = 'cancelled'
+          assistantMsg.turnState.terminalReceived = true
+        }
+        this.updateLastAssistant()
+      } else {
         assistantMsg.error = true
         const sep = assistantMsg.content ? '\n' : ''
         assistantMsg.content += sep + `[错误] ${(e as Error).message}`
@@ -445,7 +469,6 @@ export class ChatWidget {
     } finally {
       this.streaming = false
       this.abortCtrl = null
-      this.stopLoadingText()
       this.renderInputRow()
       this.scrollBottom()
     }
@@ -528,9 +551,7 @@ export class ChatWidget {
   }
 
   private renderMsg(m: Msg, idx: number): string {
-    if (m.pending) {
-      return `<div class="pin-msg assistant"><div class="pin-bubble-msg"><span class="pin-loading">${escapeHtml(ChatWidget.LOADING_TEXTS[this.loadingIdx])}</span></div></div>`
-    }
+    const process = m.turnState ? this.renderProcess(m) : (m.pending ? '<div class="pin-process">正在准备回答</div>' : '')
     const parts = splitRefs(m.content)
       .map(p => p.type === 'ref'
         ? `<span class="pin-ref" data-action="cite" data-msg="${idx}" data-idx="${escapeHtml(p.sourceId || String(p.index))}">${escapeHtml(p.value)}</span>`
@@ -581,7 +602,16 @@ export class ChatWidget {
         </div>`
     })()
     const errCls = m.error ? ' err' : ''
-    return `<div class="pin-msg ${m.role}"><div class="pin-bubble-msg${errCls}">${parts}</div>${cites}</div>`
+    return `<div class="pin-msg ${m.role}"><div class="pin-bubble-msg${errCls}">${process}${parts}</div>${cites}</div>`
+  }
+
+  /** Widget 只渲染 public 进度，debug/internal 数据不会进入 DOM。 */
+  private renderProcess(m: Msg): string {
+    const state = m.turnState!
+    const stages = widgetVisibleStages(state)
+    const rows = stages.map(stage => `<div class="pin-process-stage"><span>${escapeHtml(stage.summary || stage.stage)}</span><span class="pin-process-time">${escapeHtml(formatDuration(stage.durationMs))}</span></div>`).join('')
+    const active = state.status === 'running' ? '<span class="pin-process-dot"></span>' : ''
+    return `<details class="pin-process" ${state.content || state.terminalReceived ? '' : 'open'}><summary class="pin-process-head">${active}<span>${escapeHtml(widgetStageText(state))}</span></summary>${rows ? `<div class="pin-process-stages">${rows}</div>` : ''}</details>`
   }
 
   /** 流式打字机：更新最后一条助手消息（气泡 + 引用面板一起整条替换） */
@@ -702,26 +732,6 @@ export class ChatWidget {
     }, 3000)
   }
 
-  /**
-   * 开始轮换 AI 加载文案（每 2 秒切换一条，并刷新最后一条 pending 消息）
-   * 发送开始调用；done/error/停止时由 stopLoadingText 清理。
-   */
-  private startLoadingText() {
-    this.loadingIdx = 0
-    this.stopLoadingText()
-    this.loadingTimer = window.setInterval(() => {
-      this.loadingIdx = (this.loadingIdx + 1) % ChatWidget.LOADING_TEXTS.length
-      this.updateLastAssistant()
-    }, 2000)
-  }
-
-  private stopLoadingText() {
-    if (this.loadingTimer) {
-      window.clearInterval(this.loadingTimer)
-      this.loadingTimer = null
-    }
-  }
-
   private scrollBottom() {
     if (this.destroyed) return
     this.bodyEl.scrollTop = this.bodyEl.scrollHeight
@@ -738,7 +748,6 @@ export class ChatWidget {
       window.clearTimeout(this.toastTimer)
       this.toastTimer = null
     }
-    this.stopLoadingText()
     this.abortCtrl?.abort()
     if (this.outsideClickHandler) {
       document.removeEventListener('click', this.outsideClickHandler)
@@ -746,6 +755,22 @@ export class ChatWidget {
     }
     this.hostEl.remove()
   }
+}
+
+/** 对 debug detail 中的绑定做最小运行时校验，避免不可信字段进入 Shadow DOM。 */
+function readCitationBindings(value: unknown): CitationBinding[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is CitationBinding => {
+    if (!item || typeof item !== 'object') return false
+    const binding = item as Record<string, unknown>
+    return typeof binding.source_id === 'string'
+      && /^S[1-9]\d*$/.test(binding.source_id)
+      && typeof binding.chunk_id === 'string'
+      && typeof binding.document_name === 'string'
+      && typeof binding.claim === 'string'
+      && typeof binding.quote === 'string'
+      && typeof binding.score === 'number'
+  })
 }
 
 /** HTML 转义（防 XSS） */

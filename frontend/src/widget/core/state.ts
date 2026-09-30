@@ -1,4 +1,5 @@
 /** widget 状态：访客身份 + 会话 + 消息（localStorage 持久化） */
+import type { TurnState } from '../../chat-core/stage-reducer'
 
 export interface ConvItem {
   id: string
@@ -18,6 +19,7 @@ export interface Msg {
   citationBindings: CitationBinding[]
   error?: boolean
   pending?: boolean
+  turnState?: TurnState
 }
 
 export interface Citation {

@@ -335,9 +335,9 @@ const rerankOptions = computed<SelectOption[]>(() =>
 // rag 工具定义（simple_rag 强制启用；找不到时 simple_rag 表单提示无可用工具）
 const ragDef = computed(() => toolDefs.value.find(d => d.type === 'rag') || null)
 
-// Rerank 模型选择器显隐：两种类型都看 rag 工具参数 rerank_enabled
+// Rerank 模型选择器显隐：auto/always 都允许选择，always 必须选择。
 const showRerankModel = computed(() =>
-  !!(toolValues.value['rag'] as any)?.rerank_enabled,
+  (toolValues.value['rag'] as any)?.rerank_mode !== 'off',
 )
 
 // ── 表单状态 ────────────────────────────
@@ -517,8 +517,8 @@ const rules: FormRules = {
   llm_config_id: { required: true, message: '请选择 LLM 模型', trigger: 'change' },
   rerank_config_id: {
     validator: () => {
-      if (showRerankModel.value && !formData.value.rerank_config_id) {
-        return new Error('开启 Rerank 必须选择 Rerank 模型')
+      if ((toolValues.value['rag'] as any)?.rerank_mode === 'always' && !formData.value.rerank_config_id) {
+        return new Error('Rerank 设为始终开启时必须选择模型')
       }
       return true
     },
@@ -660,10 +660,10 @@ async function handleSubmit() {
     payload.kb_id = values.kb_id
     payload.top_k = values.top_k ?? null
     payload.score_threshold = values.score_threshold ?? null
-    payload.mqe_enabled = values.mqe_enabled ?? false
-    payload.hyde_enabled = values.hyde_enabled ?? false
+    payload.mqe_mode = values.mqe_mode ?? 'auto'
+    payload.hyde_mode = values.hyde_mode ?? 'auto'
     payload.mqe_query_count = values.mqe_query_count ?? 3
-    payload.rerank_enabled = values.rerank_enabled ?? false
+    payload.rerank_mode = values.rerank_mode ?? 'auto'
   } else {
     // Schema 驱动组装：仅提交启用的工具（含必填参数校验）
     const tools: ToolConfig[] = []

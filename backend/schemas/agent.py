@@ -15,6 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+RagMode = Literal["off", "auto", "always"]
+
 
 # ── 工具配置（general Agent 用）─────────
 
@@ -30,6 +32,9 @@ class ToolConfig(BaseModel):
     hyde_enabled: bool | None = Field(None, description="假设文档嵌入（HyDE），不传用 config.yaml tools.default_hyde_enabled")
     mqe_query_count: int | None = Field(None, ge=2, le=5, description="MQE 改写子问题数，不传用 config.yaml tools.default_mqe_query_count")
     rerank_enabled: bool | None = Field(None, description="Rerank 精排开关，不传用 config.yaml tools.default_rerank_enabled")
+    mqe_mode: RagMode | None = Field(None, description="MQE 模式；优先于旧 enabled 字段")
+    hyde_mode: RagMode | None = Field(None, description="HyDE 模式；优先于旧 enabled 字段")
+    rerank_mode: RagMode | None = Field(None, description="Rerank 模式；优先于旧 enabled 字段")
     kb_name: str | None = Field(None, description="响应补全：知识库名称（请求时忽略）")
 
     # 允许未声明字段（未来新工具的自有参数自动透传，前端 schema 驱动提交）
@@ -74,6 +79,9 @@ class SimpleRagAgentCreate(BaseModel):
     hyde_enabled: bool | None = Field(None, description="假设文档嵌入（HyDE），不传用 config.yaml tools.default_hyde_enabled")
     mqe_query_count: int | None = Field(None, ge=2, le=5, description="MQE 改写子问题数，不传用 config.yaml tools.default_mqe_query_count")
     rerank_enabled: bool | None = Field(None, description="Rerank 精排开关，不传用 config.yaml tools.default_rerank_enabled")
+    mqe_mode: RagMode | None = Field(None, description="MQE 模式；新建默认 auto")
+    hyde_mode: RagMode | None = Field(None, description="HyDE 模式；新建默认 auto")
+    rerank_mode: RagMode | None = Field(None, description="Rerank 模式；新建默认 auto")
     enhance_llm_config_id: UUID | None = Field(
         None, description="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2）；空 = 跟随对话模型")
     rerank_config_id: UUID | None = Field(
@@ -134,6 +142,9 @@ class AgentUpdate(BaseModel):
     hyde_enabled: bool | None = None
     mqe_query_count: int | None = Field(None, ge=2, le=5)
     rerank_enabled: bool | None = None
+    mqe_mode: RagMode | None = None
+    hyde_mode: RagMode | None = None
+    rerank_mode: RagMode | None = None
     enhance_llm_config_id: UUID | None = Field(
         None, description="增强 LLM 配置 ID（model_type=2）；空 = 跟随对话模型")
     rerank_config_id: UUID | None = Field(
@@ -180,6 +191,9 @@ class AgentResponse(BaseModel):
     hyde_enabled: bool = False
     mqe_query_count: int = 3
     rerank_enabled: bool = False
+    mqe_mode: RagMode = "auto"
+    hyde_mode: RagMode = "auto"
+    rerank_mode: RagMode = "auto"
     enhance_llm_config_id: UUID | None = None
     rerank_config_id: UUID | None = None
     tools: list[ToolConfig] = []
@@ -240,7 +254,11 @@ class ChatRequest(BaseModel):
     conversation_id: UUID | None = Field(
         None, description="会话 ID;缺省时后端自动创建并随响应返回")
     stream: bool = Field(False, description="true=SSE 流式返回")
-    debug: bool = Field(False, description="true=返回检索调试信息（拓展 query / rerank 分数等）")
+    debug: bool = Field(
+        False,
+        deprecated=True,
+        description="已废弃：后端始终采集安全 Trace；该字段不再影响执行或日志",
+    )
 
 
 class Citation(BaseModel):
@@ -266,6 +284,14 @@ class CitationBinding(BaseModel):
     original_score: float | None = None
 
 
+class VerifyResult(BaseModel):
+    """主答案后的结构化核验结果。"""
+
+    passed: bool
+    reasons: list[str] = []
+    revision_required: bool = False
+
+
 class ChatResponse(BaseModel):
     """非流式对话响应"""
     conversation_id: UUID
@@ -273,4 +299,5 @@ class ChatResponse(BaseModel):
     citations: list[Citation] = []
     citation_bindings: list[CitationBinding] = []
     debug: dict | None = Field(
-        None, description="调试信息（请求 debug=true 时返回）：queries/rerank 等")
+        None, description="管理端可见的安全调试详情；公开接口固定不返回")
+    trace_id: str | None = Field(None, description="本轮统一 Trace 标识")

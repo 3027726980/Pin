@@ -94,6 +94,8 @@ class PlanTool(BaseTool):
                 temperature=settings.intent.classify_temperature,
                 top_p=0.9,
                 protocol=getattr(llm_cfg, "protocol", None),
+                max_tokens=getattr(llm_cfg, "max_tokens", None),
+                purpose="plan",
             )
         except Exception as e:
             from backend.services.chat import ChatService
@@ -109,5 +111,7 @@ class PlanTool(BaseTool):
                     temperature=1.0,
                     top_p=0.9,
                     protocol=getattr(llm_cfg, "protocol", None),
+                    max_tokens=getattr(llm_cfg, "max_tokens", None),
+                    purpose="plan",
                 )
             raise

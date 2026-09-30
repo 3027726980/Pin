@@ -6,13 +6,14 @@
 - thread_id = conversations.id,由会话系统分配
 - prune_checkpoints:每轮对话后清理旧快照(仅保留最近 N 轮),防 O(N²) 膨胀
 """
-from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from backend.core.config import settings
 
 _checkpointer: AsyncPostgresSaver | None = None
+_checkpoint_pool: AsyncConnectionPool | None = None
 
 
 def _count_user_messages(t) -> int:
@@ -57,8 +58,8 @@ async def prune_checkpoints(thread_id: str, keep_rounds: int) -> int:
     if not delete_ids:
         return 0
 
-    conn = await AsyncConnection.connect(settings.checkpoint.url, autocommit=True)
-    try:
+    pool = await get_checkpoint_pool()
+    async with pool.connection() as conn:
         async with conn.cursor() as cur:
             for cid in delete_ids:
                 await cur.execute(
@@ -71,21 +72,41 @@ async def prune_checkpoints(thread_id: str, keep_rounds: int) -> int:
                     "WHERE thread_id = %s AND checkpoint_id = %s",
                     (str(thread_id), cid),
                 )
-    finally:
-        await conn.close()
     return len(delete_ids)
 
 
+async def get_checkpoint_pool() -> AsyncConnectionPool:
+    """获取 checkpoint 专用异步连接池。"""
+    global _checkpoint_pool
+    if _checkpoint_pool is None:
+        _checkpoint_pool = AsyncConnectionPool(
+            conninfo=settings.checkpoint.url,
+            min_size=1,
+            max_size=5,
+            open=False,
+            kwargs={
+                "autocommit": True,
+                "prepare_threshold": 0,
+                "row_factory": dict_row,
+            },
+        )
+        await _checkpoint_pool.open()
+    return _checkpoint_pool
+
+
 async def get_checkpointer() -> AsyncPostgresSaver:
-    """获取全局 AsyncPostgresSaver(懒加载单例,首次调用时建连 + setup)"""
+    """获取全局 AsyncPostgresSaver（底层连接池复用）。"""
     global _checkpointer
     if _checkpointer is None:
-        conn = await AsyncConnection.connect(
-            settings.checkpoint.url,
-            autocommit=True,
-            prepare_threshold=0,
-            row_factory=dict_row,
-        )
-        _checkpointer = AsyncPostgresSaver(conn=conn)
+        _checkpointer = AsyncPostgresSaver(conn=await get_checkpoint_pool())
         await _checkpointer.setup()
     return _checkpointer
+
+
+async def close_checkpointer() -> None:
+    """关闭 checkpoint 连接池并清空进程单例。"""
+    global _checkpointer, _checkpoint_pool
+    _checkpointer = None
+    if _checkpoint_pool is not None:
+        await _checkpoint_pool.close()
+        _checkpoint_pool = None

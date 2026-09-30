@@ -9,24 +9,59 @@
 - SQL：事件监听记录语句（截断 200 字符）/参数/耗时 → sql.log
 """
 import asyncio
+import json
 import logging
 import logging.handlers
 import os
 import re
 import shutil
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+class TraceJsonFormatter(logging.Formatter):
+    """把 ``record.structured_data`` 直接输出为单行安全 JSON。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """序列化结构化字段，并统一补充时间、事件名与日志来源。"""
+        from backend.core.observability.events import sanitize_event_detail
+
+        raw = getattr(record, "structured_data", None)
+        if isinstance(raw, dict):
+            payload = dict(raw)
+        else:
+            payload = {"message": record.getMessage()}
+        payload.setdefault("event", record.getMessage())
+        payload.setdefault(
+            "timestamp",
+            datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+        )
+        payload.setdefault("level", record.levelname.lower())
+        payload.setdefault("logger", record.name)
+        safe_payload = sanitize_event_detail(payload)
+        return json.dumps(
+            safe_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+
 # 模块短名 → 分文件后缀
 _FILE_MODULES = {
     "backend.llm": "llm",
-    "backend.http": "http",
     "sqlalchemy.engine": "sql",
+}
+
+_STRUCTURED_FILES = {
+    "backend.http": "access.jsonl",
+    "backend.agent.trace": "agent-trace.jsonl",
+    "backend.llm.metrics": "llm.jsonl",
+    "backend.tool.trace": "tool.jsonl",
 }
 
 
@@ -35,17 +70,22 @@ def _sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "-", name)
 
 
+def _current_date_text() -> str:
+    """返回当前本地日期，独立函数便于跨日轮转测试。"""
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def _render_template(module_short: str) -> str:
     """渲染文件名模板：{{date}} / {{module}}"""
     tpl = getattr(settings.logging, "filename_template", "{{date}}-{{module}}.log")
     return _sanitize_filename(
-        tpl.replace("{{date}}", datetime.now().strftime("%Y-%m-%d"))
+        tpl.replace("{{date}}", _current_date_text())
            .replace("{{module}}", module_short))
 
 
 def _today_dir() -> Path:
     base = Path(getattr(settings.logging, "dir", "logs"))
-    return base / datetime.now().strftime("%Y-%m-%d")
+    return base / _current_date_text()
 
 
 class InfiniteRotatingFileHandler(logging.handlers.RotatingFileHandler):
@@ -71,6 +111,46 @@ class InfiniteRotatingFileHandler(logging.handlers.RotatingFileHandler):
         # backupCount == 0：截断重写（不保留备份）
         if not self.delay:
             self.stream = self._open()
+
+
+class DailyDirectoryRotatingFileHandler(InfiniteRotatingFileHandler):
+    """写入前检查日期，并把文件句柄切换到当天目录。"""
+
+    def __init__(
+        self,
+        module_short: str,
+        max_bytes: int,
+        backup_count: int,
+        filename: str | None = None,
+    ):
+        self.module_short = module_short
+        self.filename = filename
+        self.active_date = _current_date_text()
+        _today_dir().mkdir(parents=True, exist_ok=True)
+        super().__init__(
+            str(_today_dir() / self._render_filename()),
+            maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+
+    def _render_filename(self) -> str:
+        """返回固定文件名或旧版模板文件名。"""
+        if self.filename is not None:
+            return _sanitize_filename(self.filename)
+        return _render_template(self.module_short)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        current_date = _current_date_text()
+        if current_date != self.active_date:
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+            target_dir = Path(getattr(settings.logging, "dir", "logs")) / current_date
+            target_dir.mkdir(parents=True, exist_ok=True)
+            self.baseFilename = os.path.abspath(
+                str(target_dir / self._render_filename()))
+            self.active_date = current_date
+            if not self.delay:
+                self.stream = self._open()
+        super().emit(record)
 
 
 class RedactFilter(logging.Filter):
@@ -143,20 +223,18 @@ class RedactFilter(logging.Filter):
         return True
 
 
-def _build_file_handler(module_short: str, level: str) -> logging.Handler:
+def _build_file_handler(
+    module_short: str,
+    level: str,
+    *,
+    filename: str | None = None,
+) -> logging.Handler:
     """按 config 构造文件 handler（含轮转 -1 支持）"""
     rot = getattr(settings.logging, "rotation", None)
     max_bytes = (getattr(rot, "max_bytes_mb", 10) or 10) * 1024 * 1024
     backup = getattr(rot, "backup_count", -1) if rot else -1
-    _today_dir().mkdir(parents=True, exist_ok=True)
-    if backup == -1:
-        h: logging.Handler = InfiniteRotatingFileHandler(
-            str(_today_dir() / _render_template(module_short)),
-            maxBytes=max_bytes, backupCount=-1, encoding="utf-8")
-    else:
-        h = logging.handlers.RotatingFileHandler(
-            str(_today_dir() / _render_template(module_short)),
-            maxBytes=max_bytes, backupCount=backup, encoding="utf-8")
+    h: logging.Handler = DailyDirectoryRotatingFileHandler(
+        module_short, max_bytes, backup, filename=filename)
     h.setLevel(getattr(logging, level))
     return h
 
@@ -204,6 +282,13 @@ def setup_logging() -> None:
     app_handler.setFormatter(_file_fmt)
     root.addHandler(app_handler)
 
+    # WARNING/ERROR 独立文件，便于不扫描 app.log 即可定位故障。
+    error_handler = _build_file_handler(
+        "error", "WARNING", filename="error.log"
+    )
+    error_handler.setFormatter(_file_fmt)
+    root.addHandler(error_handler)
+
     # 控制台（分模块级别已由 logger 层控制；此处仅总开关 + 颜色）
     console_cfg = getattr(lg, "console", None)
     if getattr(console_cfg, "enabled", True):
@@ -248,6 +333,27 @@ def setup_logging() -> None:
             fh = _build_file_handler(short, module_levels.get(mod, base_level))
             fh.setFormatter(_file_fmt)
             logging.getLogger(mod).addHandler(fh)
+
+    # 结构化日志使用固定 JSONL 文件名。重复初始化时只移除本模块管理的
+    # handler，不干扰测试或宿主进程自行挂载的 handler。
+    json_formatter = TraceJsonFormatter()
+    for logger_name, filename in _STRUCTURED_FILES.items():
+        target_logger = logging.getLogger(logger_name)
+        for old_handler in list(target_logger.handlers):
+            if getattr(old_handler, "_pin_structured_handler", False):
+                target_logger.removeHandler(old_handler)
+                old_handler.close()
+        structured_handler = _build_file_handler(
+            filename.removesuffix(".jsonl"),
+            module_levels.get(logger_name, base_level),
+            filename=filename,
+        )
+        structured_handler.setFormatter(json_formatter)
+        structured_handler._pin_structured_handler = True
+        target_logger.addHandler(structured_handler)
+        target_logger.setLevel(
+            getattr(logging, module_levels.get(logger_name, base_level))
+        )
 
     _register_sql_listener()
 

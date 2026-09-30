@@ -1,7 +1,7 @@
 # 对话可靠性与 Embedding 一致性待办
 
 > 记录时间：2026-09-24
-> 状态：待设计、待实施
+> 状态：可靠性修复已实施；真实低 RPM 链路与性能基准待联调验收
 > 范围：仅记录 2026-09-23 至 2026-09-24 联调中已经确认的问题，不代表本轮已实施。
 
 ## 1. 当前已完成的临时处理
@@ -186,3 +186,15 @@ Kimi 账号组织级限制为 3 RPM。一次完整 general + RAG 对话可能包
 7. 核查日志跨日轮转。
 
 每一项应独立编写回归测试、实施和验收，避免把可靠性修复与性能重构一次性混合提交。
+
+## 10. 2026-09-27 实施记录
+
+- checkpoint：手动写入统一补齐 `source/step/parents`，旧 checkpoint 在下次调用前原位修复；消息 channel 版本递增，保留历史消息。
+- 模型参数：LLM 统一入口、主 Agent 和总结模型均在请求前执行模型能力归一化；`kimi-k2.6` 固定为 `temperature=1/top_p=0.95`。
+- RPM：按供应商与 API Key 共享进程内滑动窗口；Kimi k2.6 默认 3 RPM；OpenAI SDK 内建重试关闭，避免与平台节流叠加形成重试风暴。
+- 429：主 Agent、simple 与流式链路均保留 429 语义，不再统一包装为 502。
+- Embedding：知识库更新禁止实际改变配置但兼容原值回传；被知识库引用的配置禁止修改向量空间关键字段；检索前校验模型名和维度快照，不一致返回 409。
+- 会话历史：流式 error 轮次不写入 messages JSONB，已输出的失败片段同样不作为完整回答持久化。
+- 性能：AgentGraph 的 intent/simple/plan/draft/reflect/main_agent 节点均记录 `duration_ms`；LLM 层继续记录首 Token 与总耗时。
+- 日志：文件 handler 每次写入检查本地日期，跨日时关闭旧句柄并切换 app/http/llm/sql 到新日期目录。
+- 自动化回归新增于 `tests/test_reliability_followups.py`；真实 3 RPM 账号、SSE 前端提示和同模型基准仍需在实际服务联调时验收。

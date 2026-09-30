@@ -4,10 +4,13 @@
 import request from './request'
 import { storage } from '@/utils/storage'
 import { TOKEN_KEY } from './request'
+import { createSseParser } from '@/chat-core/sse-parser'
+import type { AgentEvent } from '@/chat-core/events'
 
 // ── 类型定义 ────────────────────────────
 
 export type AgentType = 'simple_rag' | 'general'
+export type RagMode = 'off' | 'auto' | 'always'
 
 export interface ToolConfig {
   type: string
@@ -19,6 +22,9 @@ export interface ToolConfig {
   hyde_enabled?: boolean | null
   mqe_query_count?: number | null
   rerank_enabled?: boolean | null
+  mqe_mode?: RagMode | null
+  hyde_mode?: RagMode | null
+  rerank_mode?: RagMode | null
   kb_name?: string | null
   // Phase 4.10：动态工具自有参数（schema 驱动，额外字段透传）
   [key: string]: unknown
@@ -98,6 +104,9 @@ export interface AgentDetail extends AgentListItem {
   hyde_enabled: boolean
   mqe_query_count: number
   rerank_enabled: boolean
+  mqe_mode: RagMode
+  hyde_mode: RagMode
+  rerank_mode: RagMode
   enhance_llm_config_id: string | null
   rerank_config_id: string | null
   // ── 嵌入治理参数（agent_index 表）──
@@ -132,6 +141,9 @@ export interface AgentCreatePayload {
   hyde_enabled?: boolean
   mqe_query_count?: number
   rerank_enabled?: boolean
+  mqe_mode?: RagMode
+  hyde_mode?: RagMode
+  rerank_mode?: RagMode
   enhance_llm_config_id?: string | null
   rerank_config_id?: string | null
   // ── Phase 4.10 意图路由 + 内置推理工具 ──
@@ -198,47 +210,29 @@ export interface ChatSuggestion {
   value?: number | string
 }
 
-export type ChatEvent =
-  | { type: 'delta'; content: string }
-  | { type: 'citations'; citations: ChatCitation[]; bindings?: CitationBinding[] }
-  | { type: 'debug'; debug: ChatDebug }
-  | { type: 'intent'; intent: 'simple' | 'general' }
-  | { type: 'plan'; plan: string }
-  | { type: 'reflect'; suggestions: string }
-  | { type: 'done' }
-  | { type: 'error'; code: number; message: string; suggestion?: ChatSuggestion | null }
+export type ChatEvent = AgentEvent
 
-export function isCitationBinding(value: unknown): value is CitationBinding {
-  if (!value || typeof value !== 'object') return false
-  const item = value as Record<string, unknown>
-  return typeof item.source_id === 'string'
-    && /^S[1-9]\d*$/.test(item.source_id)
-    && typeof item.chunk_id === 'string'
-    && typeof item.document_name === 'string'
-    && typeof item.claim === 'string'
-    && typeof item.quote === 'string'
-    && typeof item.score === 'number'
+export interface AgentTraceSummary {
+  trace_id: string
+  turn_id?: string | null
+  conversation_id?: string | null
+  agent_id?: string | null
+  status: string
+  timestamp?: string | null
+  model?: string | null
+  feedback_latency_ms?: number | null
+  answer_first_token_ms?: number | null
+  total_duration_ms?: number | null
+  queue_wait_ms?: number | null
+  llm_calls?: number
+  tool_calls?: number
+  stage_durations?: Record<string, number>
 }
 
-/** 对不可信 SSE JSON 进行运行时收口，避免异常帧污染引用展示。 */
-export function isChatEvent(value: unknown): value is ChatEvent {
-  if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') return false
-  const event = value as Record<string, unknown>
-  if (event.type === 'delta') return typeof event.content === 'string'
-  if (event.type === 'citations') {
-    return Array.isArray(event.citations)
-      && (event.bindings === undefined || (Array.isArray(event.bindings) && event.bindings.every(isCitationBinding)))
-  }
-  if (event.type === 'debug') return !!event.debug && typeof event.debug === 'object'
-  if (event.type === 'intent') return event.intent === 'simple' || event.intent === 'general'
-  if (event.type === 'plan') return typeof event.plan === 'string'
-  if (event.type === 'reflect') return typeof event.suggestions === 'string'
-  if (event.type === 'done') return true
-  return event.type === 'error' && typeof event.code === 'number' && typeof event.message === 'string'
-}
-
-export function isCitationEvent(value: unknown): value is Extract<ChatEvent, { type: 'citations' }> {
-  return isChatEvent(value) && value.type === 'citations'
+export interface AgentTraceDetail {
+  trace_id: string
+  summary: AgentTraceSummary | null
+  events: Array<Record<string, unknown>>
 }
 
 // ── Agent CRUD ──────────────────────────
@@ -296,7 +290,7 @@ export function batchAgents(ids: string[], action: 'enable' | 'disable' | 'delet
 // ── 对话 ────────────────────────────────
 
 /** 非流式对话(记忆由服务端 checkpoint 管理,前端不传 history) */
-export function chatAgent(agentId: string, body: { message: string; conversation_id?: string | null; stream?: boolean; debug?: boolean }): Promise<ChatResult & { conversation_id: string }> {
+export function chatAgent(agentId: string, body: { message: string; conversation_id?: string | null; stream?: boolean }): Promise<ChatResult & { conversation_id: string; trace_id?: string | null }> {
   return request.post(`/v1/agents/${agentId}/chat`, body)
 }
 
@@ -306,7 +300,7 @@ export function chatAgent(agentId: string, body: { message: string; conversation
  */
 export async function chatAgentStream(
   agentId: string,
-  body: { message: string; conversation_id?: string | null; stream: true; debug?: boolean },
+  body: { message: string; conversation_id?: string | null; stream: true },
   onEvent: (e: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -334,26 +328,44 @@ export async function chatAgentStream(
 
   const reader = res.body!.getReader()
   const decoder = new TextDecoder()
-  let buffer = ''
+  const parser = createSseParser()
 
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    const frames = buffer.split('\n\n')
-    buffer = frames.pop() ?? ''
-
-    for (const frame of frames) {
-      if (frame.startsWith('data: ')) {
-        try {
-          const event: unknown = JSON.parse(frame.slice(6))
-          if (isChatEvent(event)) onEvent(event)
-          else console.warn('忽略格式不合法的 Agent SSE 事件')
-        } catch {
-          console.warn('忽略无法解析的 Agent SSE 事件')
-        }
-      }
+    for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+      onEvent(event)
     }
   }
+  for (const event of parser.finish()) onEvent(event)
+  if (!parser.terminalReceived) {
+    throw new Error('连接已中断，未收到 Agent 终态')
+  }
+}
+
+// ── Agent Trace ─────────────────────────
+
+export function listAgentTraces(params: {
+  date_from?: string
+  date_to?: string
+  page?: number
+  page_size?: number
+  agent_id?: string
+  status?: string
+  model?: string
+}): Promise<{ items: AgentTraceSummary[]; total: number; page: number; page_size: number }> {
+  return request.get('/v1/debug/agent-traces', { params })
+}
+
+export function getAgentTrace(traceId: string, params?: { date_from?: string; date_to?: string }): Promise<AgentTraceDetail> {
+  return request.get(`/v1/debug/agent-traces/${encodeURIComponent(traceId)}`, { params })
+}
+
+export async function downloadAgentTrace(traceId: string): Promise<Blob> {
+  const token = storage.get<string>(TOKEN_KEY)
+  const response = await fetch(`/api/v1/debug/agent-traces/${encodeURIComponent(traceId)}/export`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!response.ok) throw new Error(`导出失败（HTTP ${response.status}）`)
+  return response.blob()
 }

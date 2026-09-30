@@ -204,6 +204,8 @@ class IntentService:
                 temperature=temperature,
                 top_p=0.9,
                 protocol=getattr(llm_cfg, "protocol", None),
+                max_tokens=getattr(llm_cfg, "max_tokens", None),
+                purpose="intent",
             )
 
         temperature = getattr(settings.intent, "classify_temperature", 0.2)
