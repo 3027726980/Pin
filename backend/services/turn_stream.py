@@ -98,9 +98,27 @@ async def execute_turn_stream(
     trace_sink = TraceLogSink(metrics=metrics)
     terminal_emitted = False
     started_at = datetime.now(timezone.utc)
+    stage_starts: dict[str, tuple[datetime, float]] = {}
 
     async def make_event(**fields: Any) -> AgentEvent:
         """创建事件并在返回 SSE 前写入 Trace。"""
+        now = datetime.now(timezone.utc)
+        event_type = fields["event_type"]
+        if event_type.startswith("stage."):
+            stage_id = fields["stage_id"]
+            if event_type == "stage.started" and stage_id not in stage_starts:
+                stage_starts[stage_id] = (now, perf_counter())
+            begin = stage_starts.get(stage_id)
+            fields["started_at"] = begin[0] if begin else now
+            if event_type in {"stage.completed", "stage.failed"} and fields.get("duration_ms") is None:
+                fields["duration_ms"] = round((perf_counter() - begin[1]) * 1000) if begin else 0
+        elif event_type in {"answer.delta", "answer.revision_started"} or event_type.startswith("turn.") and event_type != "turn.started":
+            fields["started_at"] = now
+        if event_type in {"turn.completed", "turn.failed", "turn.cancelled"}:
+            fields["detail"] = {
+                **fields.get("detail", {}),
+                "answer_first_token_ms": metrics.answer_first_token_ms,
+            }
         event = await factory.create(**fields)
         await trace_sink.emit(event)
         return event
@@ -202,7 +220,8 @@ async def execute_turn_stream(
                               if legacy.get("visibility") == "debug"
                               else EventVisibility.PUBLIC)
                 return await make_event(
-                    event_type=("stage.started" if stage_status is EventStatus.RUNNING
+                    event_type=("stage.progress" if legacy.get("progress")
+                                else "stage.started" if stage_status is EventStatus.RUNNING
                                 else "stage.failed" if stage_status is EventStatus.FAILED
                                 else "stage.completed"),
                     stage=str(legacy.get("stage", "agent")),

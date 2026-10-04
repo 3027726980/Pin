@@ -197,7 +197,7 @@
             text
             size="tiny"
             class="trace-link"
-            @click="router.push(`/agent-traces/${encodeURIComponent(msg.traceId || msg.turnState!.traceId!)}`)"
+            @click="selectedTraceId = msg.traceId || msg.turnState!.traceId!"
           >
             查看完整链路日志
           </n-button>
@@ -280,11 +280,16 @@
         </n-scrollbar>
       </n-drawer-content>
     </n-drawer>
+    <n-drawer :show="!!selectedTraceId" :width="Math.min(900, viewportWidth)" @update:show="(show: boolean) => { if (!show) selectedTraceId = null }">
+      <n-drawer-content title="完整链路日志" closable>
+        <AgentTraceDetail v-if="selectedTraceId" :trace-id="selectedTraceId" />
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, onDeactivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   AddOutline,
@@ -314,9 +319,15 @@ import {
   type ConversationItem,
 } from '@/api/conversation'
 import { stripUnboundSourceMarkers } from '@/utils/citations'
-import { createTurnState, reduceTurnEvent, type TurnState } from '@/chat-core/stage-reducer'
+import { createTurnState, reduceTurnEvent, interruptTurn, type TurnState } from '@/chat-core/stage-reducer'
 import AgentProcessTimeline from './components/AgentProcessTimeline.vue'
 import AgentDebugPanel from './components/AgentDebugPanel.vue'
+import AgentTraceDetail from './components/AgentTraceDetail.vue'
+
+defineOptions({ name: 'AgentChatView' })
+const selectedTraceId = ref<string | null>(null)
+const viewportWidth = window.innerWidth
+onDeactivated(() => { selectedTraceId.value = null })
 
 interface DisplayMessage extends ChatMessage {
   /** 检索调试信息（Debug 模式） */
@@ -362,6 +373,7 @@ const streaming = ref(false)
 const streamMode = ref(true)
 const debugMode = ref(false)
 let abortCtrl: AbortController | null = null
+onUnmounted(() => abortCtrl?.abort())
 
 // ── 会话状态 ────────────────────────────
 const drawerShow = ref(false)
@@ -534,6 +546,7 @@ async function doRequest(
 
   // 非流式：一次性返回 answer + citations
   if (!streamMode.value) {
+    assistantMsg.turnState = undefined
     try {
       const res = await chatAgent(agentId, { message: text, conversation_id: conversationId })
       assistantMsg.content = res.answer
@@ -590,7 +603,9 @@ async function doRequest(
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
       // 用户主动停止：保留已输出内容
+      if (assistantMsg.turnState) assistantMsg.turnState = interruptTurn(assistantMsg.turnState, 'cancelled')
     } else {
+      if (assistantMsg.turnState) assistantMsg.turnState = interruptTurn(assistantMsg.turnState, 'failed')
       const err = e as Error & { suggestion?: ChatSuggestion | null }
       handleChatError(assistantMsg, err.message, err.suggestion, text, conversationId)
     }

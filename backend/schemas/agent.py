@@ -48,7 +48,7 @@ class IntentRule(BaseModel):
     id: UUID | None = None
     name: str = Field(..., min_length=1, max_length=100)
     kind: Literal["keyword", "regex", "length"]
-    keywords: list[str] | None = Field(None, description="kind=keyword 时必填（任一命中即中）")
+    keywords: list[str] | None = Field(None, description="kind=keyword 时必填；轻量路由需关键词覆盖整句（忽略标点/空白），业务路由为包含匹配")
     pattern: str | None = Field(None, description="kind=regex 时必填（正则表达式）")
     max_length: int | None = Field(None, ge=1, le=10000, description="kind=length 时必填（消息长度上限）")
     target: Literal["simple", "general"]

@@ -51,6 +51,21 @@ export function createTurnState(turnId = ''): TurnState {
   }
 }
 
+/** abort/网络断流后客户端收口；仅用于展示，不伪造服务端成功或日志。 */
+export function interruptTurn(state: TurnState, status: 'failed' | 'cancelled', now = Date.now()): TurnState {
+  if (state.terminalReceived) return state
+  const started = state.metrics.startedAt || state.stages[state.stageOrder[0]]?.startedAt
+  const elapsed = started ? now - Date.parse(started) : 0
+  return reduceTurnEvent(state, {
+    protocol_version: 2, event_id: `local-${state.lastSequence + 1}`, request_id: 'local',
+    trace_id: state.traceId || '', turn_id: state.turnId, sequence: state.lastSequence + 1,
+    type: status === 'failed' ? 'turn.failed' : 'turn.cancelled', status,
+    stage: 'request', stage_id: 'request.1', visibility: 'public', sensitivity: 'normal',
+    started_at: new Date(now).toISOString(), duration_ms: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0,
+    detail: {},
+  })
+}
+
 /** 纯 reducer：sequence 去重、stage_id 更新、终态后冻结普通事件。 */
 export function reduceTurnEvent(state: TurnState, event: AgentEvent): TurnState {
   if (event.sequence <= state.lastSequence || state.terminalReceived) return state
@@ -96,7 +111,7 @@ export function reduceTurnEvent(state: TurnState, event: AgentEvent): TurnState 
       stageId: event.stage_id,
       status: event.status,
       visibility: event.visibility,
-      startedAt: event.started_at,
+      startedAt: next.stages[event.stage_id]?.startedAt ?? event.started_at,
       durationMs: event.duration_ms
         ?? (event.status === 'running' || event.status === 'waiting' ? null : 0),
       summary: event.summary ?? null,
@@ -114,6 +129,19 @@ export function reduceTurnEvent(state: TurnState, event: AgentEvent): TurnState 
     next.status = event.type === 'turn.completed'
       ? 'completed'
       : event.type === 'turn.cancelled' ? 'cancelled' : 'failed'
+    if (typeof event.detail.answer_first_token_ms === 'number') {
+      next.metrics.answerFirstTokenMs = event.detail.answer_first_token_ms
+    }
+    for (const id of next.stageOrder) {
+      const stage = next.stages[id]
+      if (stage.status !== 'running' && stage.status !== 'waiting') continue
+      const elapsed = Date.parse(event.started_at) - Date.parse(stage.startedAt)
+      next.stages[id] = {
+        ...stage,
+        status: next.status,
+        durationMs: stage.durationMs ?? (Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0),
+      }
+    }
   }
   return next
 }

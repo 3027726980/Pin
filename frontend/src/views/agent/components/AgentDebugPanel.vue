@@ -3,8 +3,9 @@
     <n-collapse-item title="调试详情与耗时" name="debug">
       <AgentWaterfall :state="state" />
       <div v-for="stage in debugStages" :key="stage.stageId" class="detail">
-        <div class="title">{{ stage.summary || stage.stage }} · {{ formatDuration(stage.durationMs) }}</div>
-        <pre>{{ JSON.stringify(stage.detail, null, 2) }}</pre>
+        <div class="title">{{ STAGE_LABELS[stage.stage] || stage.stage }} · {{ STATUS_LABELS[stage.status] }} · {{ stage.durationMs == null ? '计时中' : formatDuration(stage.durationMs) }}</div>
+        <div v-if="stage.summary">{{ stage.summary }}</div>
+        <AgentDetailFields :detail="stage.detail" />
       </div>
     </n-collapse-item>
   </n-collapse>
@@ -15,11 +16,13 @@ import { computed } from 'vue'
 import { formatDuration } from '@/chat-core/formatters'
 import type { TurnState } from '@/chat-core/stage-reducer'
 import AgentWaterfall from './AgentWaterfall.vue'
+import AgentDetailFields from './AgentDetailFields.vue'
+import { STAGE_LABELS, STATUS_LABELS } from '@/chat-core/trace-view'
 
 const props = defineProps<{ state: TurnState; show: boolean }>()
 const debugStages = computed(() => props.state.stageOrder
   .map(id => props.state.stages[id])
-  .filter(stage => stage.visibility === 'debug'))
+  .filter(stage => stage.visibility !== 'internal'))
 </script>
 
 <style scoped>

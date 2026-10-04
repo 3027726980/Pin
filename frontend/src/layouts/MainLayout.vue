@@ -43,7 +43,11 @@
 
       <!-- 内容区 -->
       <n-layout-content class="content">
-        <router-view />
+        <router-view v-slot="{ Component, route: currentRoute }">
+          <keep-alive include="AgentChatView">
+            <component :is="Component" :key="currentRoute.path" />
+          </keep-alive>
+        </router-view>
       </n-layout-content>
     </n-layout>
 

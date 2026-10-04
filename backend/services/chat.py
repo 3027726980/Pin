@@ -928,7 +928,7 @@ class ChatService:
                                    orchestration_guidance: str = "",
                                    event_queue: asyncio.Queue[tuple[str, object]] | None = None,
                                    ) -> AsyncIterator[dict]:
-        """流式:create_agent.astream(stream_mode='messages',工具轮自动跳过)（埋点：耗时/错误）
+        """同时消费消息与节点更新，实时展示模型轮、工具选择和执行状态。
 
         ``pending_events`` 仅保留为旧调用方兼容；规划和反思已迁移到 AgentGraph 节点，
         不再作为主 Agent 工具事件。
@@ -938,7 +938,7 @@ class ChatService:
         """
         import time as _time
 
-        from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+        from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
         await ChatService._repair_checkpoint(conv)
         lc_agent = await ChatService._build_agent(
@@ -946,11 +946,86 @@ class ChatService:
         t0 = _time.perf_counter()
         try:
             async def chunks():
-                async for item in lc_agent.astream(
+                """模型 Token 与节点更新并行消费，工具选择不等待最终答案。"""
+                round_number = 1
+                model_started = _time.perf_counter()
+                model_open = True
+                first_model_token_ms: int | None = None
+                announced_tools: set[str] = set()
+                tool_starts: dict[str, float] = {}
+
+                def model_event(status: str) -> dict:
+                    return {
+                        "type": "stage", "stage": "model", "stage_id": f"model.{round_number}",
+                        "status": status, "visibility": "public",
+                        "summary": (f"第 {round_number} 次模型调用：等待输出（含供应商排队）"
+                                    if status == "running" else f"第 {round_number} 次模型调用完成"),
+                        "duration_ms": None if status == "running" else round((_time.perf_counter() - model_started) * 1000),
+                        "detail": {"model": llm_cfg.model_name, "first_token_ms": first_model_token_ms},
+                    }
+
+                yield model_event("running"), None
+                async for mode, item in lc_agent.astream(
                         {"messages": [HumanMessage(content=user_content)]},
                         config=ChatService._thread_config(conv),
-                        stream_mode="messages"):
-                    yield item
+                        stream_mode=["messages", "updates"]):
+                    if mode == "messages":
+                        chunk, metadata = item
+                        if metadata.get("langgraph_node") not in {None, "model"}:
+                            continue
+                        if first_model_token_ms is None and (getattr(chunk, "content", None) or getattr(chunk, "tool_call_chunks", None)):
+                            first_model_token_ms = round((_time.perf_counter() - model_started) * 1000)
+                            yield {"type": "stage", "stage": "model", "stage_id": f"model.{round_number}",
+                                   "status": "running", "progress": True,
+                                   "summary": f"第 {round_number} 次模型调用已开始输出",
+                                   "detail": {"model": llm_cfg.model_name, "first_token_ms": first_model_token_ms}}, None
+                        for call in getattr(chunk, "tool_call_chunks", []) or []:
+                            name = call.get("name")
+                            if name and name not in announced_tools:
+                                announced_tools.add(name)
+                                yield {"type": "stage", "stage": "model", "stage_id": f"model.{round_number}",
+                                       "status": "running", "progress": True,
+                                       "summary": f"模型正在选择工具：{name}",
+                                       "detail": {"model": llm_cfg.model_name, "tool": name, "first_token_ms": first_model_token_ms}}, None
+                        yield chunk, metadata
+                        continue
+                    if mode != "updates" or not isinstance(item, dict):
+                        continue
+                    for node, update in item.items():
+                        if not isinstance(update, dict) or node not in {"model", "tools"}:
+                            continue
+                        for msg in update.get("messages", []):
+                            if isinstance(msg, AIMessage) and model_open:
+                                yield model_event("completed"), None
+                                model_open = False
+                                for call in msg.tool_calls:
+                                    call_id = str(call.get("id") or uuid4().hex)
+                                    tool_starts[call_id] = _time.perf_counter()
+                                    yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{call_id}",
+                                           "status": "running", "visibility": "public",
+                                           "summary": f"正在调用工具：{call['name']}",
+                                           "detail": {"tool": call["name"]}}, None
+                                    yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{call_id}.params",
+                                           "status": "completed", "visibility": "debug", "duration_ms": 0,
+                                           "summary": f"工具参数：{call['name']}",
+                                           "detail": {"tool": call["name"], "args": call.get("args", {})}}, None
+                            elif isinstance(msg, ToolMessage):
+                                begin = tool_starts.pop(msg.tool_call_id, _time.perf_counter())
+                                failed = getattr(msg, "status", None) == "error"
+                                yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{msg.tool_call_id}",
+                                       "status": "degraded" if failed else "completed", "visibility": "public",
+                                       "summary": f"工具{'执行失败，交由 Agent 处理' if failed else '已返回结果'}：{msg.name or 'tool'}",
+                                       "duration_ms": round((_time.perf_counter() - begin) * 1000),
+                                       "detail": {"tool": msg.name or "tool", "content_length": len(str(msg.content))}}, None
+                        if node == "tools" and not tool_starts:
+                            round_number += 1
+                            model_started = _time.perf_counter()
+                            model_open = True
+                            first_model_token_ms = None
+                            announced_tools.clear()
+                            yield model_event("running"), None
+                if model_open:
+                    yield model_event("completed"), None
 
             if event_queue is None:
                 stream = chunks()
@@ -967,15 +1042,20 @@ class ChatService:
                 producer = asyncio.create_task(produce())
 
                 async def merged():
-                    while True:
-                        kind, item = await event_queue.get()
-                        if kind == "done":
-                            break
-                        if kind == "event":
-                            yield item, None
-                        else:
-                            yield item
-                    await producer
+                    try:
+                        while True:
+                            kind, item = await event_queue.get()
+                            if kind == "done":
+                                break
+                            if kind == "event":
+                                yield item, None
+                            else:
+                                yield item
+                        await producer
+                    finally:
+                        if not producer.done():
+                            producer.cancel()
+                        await asyncio.gather(producer, return_exceptions=True)
 
                 stream = merged()
 
@@ -988,7 +1068,12 @@ class ChatService:
                     while pending_events:
                         yield pending_events.pop(0)
                 if isinstance(chunk, (AIMessage, AIMessageChunk)) and chunk.content:
-                    yield {"type": "delta", "content": chunk.content}
+                    content = chunk.content
+                    if isinstance(content, list):
+                        content = "".join(block if isinstance(block, str) else str(block.get("text", ""))
+                                          for block in content if isinstance(block, str) or isinstance(block, dict) and block.get("type") == "text")
+                    if content:
+                        yield {"type": "delta", "content": content}
             _llm_logger.info(
                 "agent=%s type=%s conversation=%s duration_ms=%d error=None",
                 getattr(agent, "name", "?"), getattr(agent, "type", "?"),

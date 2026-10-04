@@ -160,7 +160,7 @@
                     v-if="rule.kind === 'keyword'"
                     v-model:value="rule.keywordsText"
                     size="small"
-                    placeholder="关键词，逗号分隔，任一命中即中（如：你好,hi,早上好）"
+                    placeholder="逗号分隔；轻量模式需整句匹配，完整模式为包含匹配（如：你好,hi,早上好）"
                     style="flex: 1"
                   />
                   <n-input

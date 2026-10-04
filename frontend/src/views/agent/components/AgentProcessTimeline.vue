@@ -5,6 +5,7 @@
       <span>{{ headline }}</span>
       <span class="elapsed">{{ formatDuration(turnElapsedMs(state, now)) }}</span>
     </summary>
+    <div v-if="state.metrics.answerFirstTokenMs !== null" class="token-metric">首答案 Token：{{ formatDuration(state.metrics.answerFirstTokenMs) }}</div>
     <div class="stages">
       <div v-for="stage in publicStages" :key="stage.stageId" class="stage">
         <span class="dot" :class="stage.status" />
@@ -57,5 +58,6 @@ onUnmounted(() => {
 .cancelled, .skipped { background: #999; }
 .degraded { background: #f0a020; }
 .elapsed { margin-left: auto; color: var(--n-text-color-3); font-variant-numeric: tabular-nums; }
+.token-metric { margin-top: 5px; font-size: 12px; color: var(--n-text-color-3); }
 @keyframes pulse { 50% { opacity: .35; } }
 </style>

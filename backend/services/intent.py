@@ -7,6 +7,7 @@ LLM 根据最近语义消息和当前问题输出 JSON，再由动态 Pydantic �
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from types import SimpleNamespace
@@ -144,17 +145,28 @@ class IntentService:
                  if isinstance(intent_rules, dict) else [])
         enabled = [rule for rule in rules if rule.get("enabled", True)]
         enabled.sort(key=lambda rule: rule.get("priority", 100))
+        simple_targets = {policy.code for policy in IntentService.configured_categories()
+                          if policy.route == "simple"} | {"simple"}
         for rule in enabled:
-            if IntentService._rule_hit(rule, message):
+            if IntentService._rule_hit(rule, message, whole_keyword_message=rule.get("target") in simple_targets):
                 target = rule.get("target")
                 return str(target) if target else None
         return None
 
     @staticmethod
-    def _rule_hit(rule: dict, message: str) -> bool:
-        """单条 keyword / regex / length 规则判定。"""
+    def _rule_hit(rule: dict, message: str, *, whole_keyword_message: bool = False) -> bool:
+        """轻量 keyword 必须覆盖整句；业务关键词保持包含匹配。"""
         kind = rule.get("kind")
         if kind == "keyword":
+            if whole_keyword_message:
+                normalized = IntentService._normalize_short_phrase(message)
+                words = {IntentService._normalize_short_phrase(word)
+                         for word in (rule.get("keywords") or []) if word}
+                words.discard("")
+                if not normalized or not words:
+                    return False
+                pattern = "(?:" + "|".join(re.escape(word) for word in sorted(words, key=len, reverse=True)) + ")+"
+                return re.fullmatch(pattern, normalized) is not None
             return any(word and word.lower() in message.lower()
                        for word in (rule.get("keywords") or []))
         if kind == "regex":
@@ -166,6 +178,12 @@ class IntentService:
         if kind == "length":
             return len(message) <= int(rule.get("max_length") or 0)
         return False
+
+    @staticmethod
+    def _normalize_short_phrase(text: str) -> str:
+        """统一大小写和全角字符，忽略问候周边标点/空白，保留实际请求文字。"""
+        return "".join(char for char in unicodedata.normalize("NFKC", text).casefold()
+                       if not char.isspace() and not unicodedata.category(char).startswith("P"))
 
     @staticmethod
     async def _llm_classify(llm_cfg: object, message: str, tools_desc: str,
@@ -186,6 +204,11 @@ class IntentService:
         ) or "（无历史消息）"
         prompt = (
             "你是对话意图分类器。根据最近对话和当前问题选择一个已配置类别。\n\n"
+            "优先判断整句话的实际请求，不要只看开头的问候、感谢或肯定。"
+            "只有纯问候、纯感谢或无需业务资料/工具的闲聊才选择 simple 路由。"
+            "只要同时询问课程、产品、政策等业务信息，或要求查询、解释、办理，"
+            "应按实际请求选择 general 路由中的合适类别；省略主语的追问结合历史判断。"
+            "例如‘你好，我想了解一点这个课程的事情’是课程咨询，不是纯问候。\n\n"
             f"可用类别：\n{category_text}\n\n"
             f"业务工具：\n{tools_desc or '（无业务工具）'}\n\n"
             f"最近对话（最多 5 条）：\n{history_text}\n\n"
