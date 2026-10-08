@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from backend.core.config import settings
 from backend.core.observability.context import current_trace
+from backend.core.observability.events import diagnostic_preview
 from backend.services.model_policy import (
     current_turn_budget,
     model_requests_per_minute,
@@ -84,7 +85,7 @@ async def _acquire_request_slot(provider: str, model_name: str, api_key: str) ->
 
 
 def _log_llm_metric(event: str, **payload: object) -> None:
-    """写入不含 Prompt、回答和 API Key 的结构化模型指标。"""
+    """写入模型指标及脱敏限长的诊断输出，不记录 Prompt 或 API Key。"""
     trace = current_trace()
     structured = {
         "event": event,
@@ -171,6 +172,7 @@ class LLMService:
                 total_ms=call_metrics.total_ms,
                 chars=call_metrics.chars,
                 attempt=call_metrics.attempt,
+                **diagnostic_preview(content),
             )
             return content
         except Exception as error:
@@ -184,6 +186,7 @@ class LLMService:
                 total_ms=call_metrics.total_ms,
                 attempt=call_metrics.attempt,
                 error_type=error.__class__.__name__,
+                **diagnostic_preview(str(error)),
             )
             raise
 
@@ -226,6 +229,7 @@ class LLMService:
                 (time.perf_counter() - queue_started) * 1000
             )
             generation_started = time.perf_counter()
+            output_preview = ""
             async for delta in impl.chat_stream(
                 model_name, api_key, base_url, messages, temperature, top_p,
                 timeout, max_tokens,
@@ -235,6 +239,8 @@ class LLMService:
                         (time.perf_counter() - generation_started) * 1000
                     )
                 call_metrics.chars += len(delta)
+                if len(output_preview) < 4001:
+                    output_preview += delta[:4001 - len(output_preview)]
                 yield delta
             call_metrics.generation_ms = round(
                 (time.perf_counter() - generation_started) * 1000
@@ -252,6 +258,7 @@ class LLMService:
                 total_ms=call_metrics.total_ms,
                 chars=call_metrics.chars,
                 attempt=call_metrics.attempt,
+                **diagnostic_preview(output_preview),
             )
         except Exception as error:
             call_metrics.total_ms = round(
@@ -265,6 +272,7 @@ class LLMService:
                 total_ms=call_metrics.total_ms,
                 attempt=call_metrics.attempt,
                 error_type=error.__class__.__name__,
+                **diagnostic_preview(str(error)),
             )
             raise
 

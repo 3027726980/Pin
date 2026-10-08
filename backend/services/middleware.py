@@ -37,11 +37,13 @@ def _build_summary_model(summary_llm_cfg, llm_cfg):
 def build_middlewares(summary_llm_cfg, llm_cfg) -> list:
     """按 config.yaml + Agent 配置构建中间件列表"""
     from langchain.agents.middleware import SummarizationMiddleware
+    from backend.core.observability.tool_logging import ToolLoggingMiddleware
 
     sc = settings.checkpoint.summarization
     if not getattr(sc, "enabled", True):
-        return []
+        return [ToolLoggingMiddleware()]
     return [
+        ToolLoggingMiddleware(),
         SummarizationMiddleware(
             model=_build_summary_model(summary_llm_cfg, llm_cfg),
             trigger=("messages", sc.trigger_message_count),

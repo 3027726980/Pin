@@ -5,12 +5,14 @@ from backend.services.knowledge import KnowledgeBaseService
 from backend.services.provider import ProviderService
 from backend.services.user_model_config import UserModelConfigService
 from backend.services.document_process import DocumentProcessService
+from backend.services.conversation_memory import ConversationMemoryService
 
 __all__ = [
     "AgentApiKeyService",
     "AgentService",
     "AuthService",
     "DocumentProcessService",
+    "ConversationMemoryService",
     "KnowledgeBaseService",
     "ProviderService",
     "UserModelConfigService",

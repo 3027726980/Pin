@@ -42,6 +42,9 @@ class TraceLogSink:
                 for citation in citations
             ]
         self._write("agent_event", payload)
+        if event.visibility.value == "debug" and event.stage in {"tool", "model", "model_output"}:
+            target = "backend.tool.trace" if event.stage == "tool" else "backend.llm.metrics"
+            logging.getLogger(target).info("execution.detail", extra={"structured_data": payload})
 
         if is_terminal_event(event):
             self._write("trace_summary", self._summary_payload(event))

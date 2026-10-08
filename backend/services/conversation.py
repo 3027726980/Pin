@@ -132,4 +132,6 @@ class ConversationService:
         from backend.core.checkpointer import get_checkpointer
 
         cp = await get_checkpointer()
+        from backend.services.conversation_memory import ConversationMemoryService
+        await cp.adelete_thread(ConversationMemoryService.config(conv_id)["configurable"]["thread_id"])
         await cp.adelete_thread(str(conv_id))

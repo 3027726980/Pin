@@ -9,6 +9,7 @@
 - SQL：事件监听记录语句（截断 200 字符）/参数/耗时 → sql.log
 """
 import asyncio
+import copy
 import json
 import logging
 import logging.handlers
@@ -22,6 +23,67 @@ from pathlib import Path
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class ConsoleEventFilter(logging.Filter):
+    """控制台忽略高频增量；完整事件仍交给文件 handler。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """保留故障及阶段边界，过滤正常进度与重复 Turn 终态。"""
+        payload = getattr(record, "structured_data", None)
+        if record.name != "backend.agent.trace" or not isinstance(payload, dict):
+            return True
+        if payload.get("status") in {"failed", "degraded", "cancelled"}:
+            return True
+        return payload.get("event") not in {
+            "answer.delta", "stage.progress", "turn.completed",
+        } and payload.get("visibility") not in {"debug", "internal"}
+
+
+class ConsoleEventFormatter(logging.Formatter):
+    """为结构化事件生成简短摘要，保留彩色格式且不修改原始 LogRecord。"""
+
+    def __init__(self, delegate: logging.Formatter):
+        """绑定普通或彩色 formatter。"""
+        super().__init__()
+        self.delegate = delegate
+
+    def format(self, record: logging.LogRecord) -> str:
+        """仅显示关联标识和执行指标，不输出正文、工具参数或凭据。"""
+        payload = getattr(record, "structured_data", None)
+        if not isinstance(payload, dict):
+            return self.delegate.format(record)
+
+        def value(key: str, default="-") -> str:
+            """限制字段长度并转义换行，避免日志注入。"""
+            raw = payload.get(key)
+            return str(default if raw is None else raw).replace("\r", "\\r").replace("\n", "\\n")[:200]
+
+        if record.name == "backend.http":
+            message = (f"{value('method')} {value('path')} status={value('status')} "
+                       f"duration={value('duration_ms')}ms request={value('request_id')}")
+        elif record.name == "backend.agent.trace":
+            if payload.get("event") == "trace.summary":
+                message = (f"Turn 汇总 status={value('status')} total={value('total_duration_ms')}ms "
+                           f"first_answer={value('answer_first_token_ms')}ms "
+                           f"llm_calls={value('llm_calls')} tool_calls={value('tool_calls')}")
+            else:
+                message = (f"{value('event')} stage={value('stage_id')} "
+                           f"status={value('status')} duration={value('duration_ms')}ms")
+                if payload.get("code"):
+                    message += f" code={value('code')}"
+            message += f" trace={value('trace_id')}"
+        elif record.name == "backend.tool.trace" and str(payload.get("event", "")).startswith("tool."):
+            message = (f"{value('event')} tool={value('tool')} call={value('tool_call_id')} "
+                       f"status={value('status')} duration={value('duration_ms')}ms trace={value('trace_id')}")
+            if payload.get("error_type"):
+                message += f" error_type={value('error_type')}"
+        else:
+            return self.delegate.format(record)
+        console_record = copy.copy(record)
+        console_record.msg = message
+        console_record.args = ()
+        return self.delegate.format(console_record)
 
 
 class TraceJsonFormatter(logging.Formatter):
@@ -306,6 +368,8 @@ def setup_logging() -> None:
             ch = logging.StreamHandler()
             ch.setFormatter(logging.Formatter(
                 "%(levelname)-7s | %(name)s | %(message)s"))
+        ch.setFormatter(ConsoleEventFormatter(ch.formatter))
+        ch.addFilter(ConsoleEventFilter())
         # 分模块控制台开关（modules 中为 false 的模块不上控制台，文件照写）
         modules_ns = getattr(console_cfg, "modules", None)
         off_modules = [m for m, v in vars(modules_ns).items() if not v] \

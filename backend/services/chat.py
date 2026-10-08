@@ -2,13 +2,14 @@
 对话编排服务:按 Agent 类型分发对话(记忆由 checkpoint 持久化)
 
 - 所有类型统一 create_agent + checkpointer(thread_id = conversation_id)
-- simple_rag:预检索(代码控制)→ 命中注入引用块;无命中短路 + 手动写 checkpoint
+- simple_rag:每轮首次模型调用强制选择 RAG 工具，命中/无命中均走 Agent 自动保存
 - general:LLM 自主决策工具调用(LangGraph 多轮)
 - 每轮对话原子追加到会话 JSON(user 原始问题 + assistant 回答含 citations)
 - 短期记忆:SummarizationMiddleware(参数走 config.yaml,总结模型 Agent 级配置)
 """
 import asyncio
 import logging
+import sys
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -32,20 +33,15 @@ from backend.services.citation_bindings import (
     strip_unbound_source_markers,
 )
 from backend.services.conversation import ConversationService
+from backend.services.conversation_memory import ConversationMemoryService
 from backend.services.middleware import build_middlewares
-from backend.tools import RAGTool, ToolRegistry
+from backend.tools import ToolRegistry
 from backend.core.config import settings
+from backend.core.observability.events import diagnostic_preview
+from backend.core.observability.preparation import bind_preparation_sink, preparation_stage
 
 logger = logging.getLogger(__name__)
 _llm_logger = logging.getLogger("backend.llm")  # 链路日志：LLM 调用（写 llm.log）
-
-# ── simple_rag 提示词模板（引用块组装用，见 _build_user_prompt）──────────
-_RAG_PROMPT_HEADER = "以下是知识库中可能与问题相关的资料片段："
-_RAG_PROMPT_FOOTER = (
-    "请基于以上资料回答用户问题。回答中引用资料时必须标注对应的 [S#] 来源标签。\n"
-    '如果资料不足以回答，请直接说明"知识库中没有相关信息"。'
-)
-
 
 class ChatService:
     """对话编排:checkpoint 记忆 + 双写留痕"""
@@ -229,118 +225,34 @@ class ChatService:
                     build_citation_bindings(sanitized_answer, source_map))
 
     # ═══════════════════════════════════════════════
-    # simple_rag(预检索 + create_agent)
+    # simple_rag：RAG 工具由 Agent 执行并自动保存
     # ═══════════════════════════════════════════════
 
     @staticmethod
-    async def _chat_simple_rag(
-        db: AsyncSession,
-        user: Users,
-        agent: object,
-        llm_cfg: object,
-        conv: object,
-        request: ChatRequest,
-        debug_store: dict | None = None,
-    ) -> tuple[str, list[Citation]]:
-        """预检索 → 命中注入引用块走 create_agent;无命中短路 + 手动写 checkpoint"""
-        config = {"type": "rag", "kb_id": str(agent.kb_id),
-                  "top_k": agent.top_k, "score_threshold": agent.score_threshold,
-                  "mqe_enabled": agent.mqe_enabled, "hyde_enabled": agent.hyde_enabled,
-                  "mqe_mode": getattr(agent, "mqe_mode", None),
-                  "hyde_mode": getattr(agent, "hyde_mode", None),
-                  "mqe_query_count": agent.mqe_query_count,
-                  "rerank_enabled": agent.rerank_enabled,
-                  "rerank_mode": getattr(agent, "rerank_mode", None)}
-        enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
-        if enhance_cfg is None:
-            enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
-        rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
-        citations = await RAGTool.execute(
-            db, user, config, request.message,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg, debug_store=debug_store)
-
-        if not citations:
-            await ChatService._persist_turn_without_llm(conv.id, request.message)
-            return "知识库中没有相关信息。", []
-
-        user_content = ChatService._build_user_prompt(citations, request.message)
-        answer = await ChatService._invoke_agent(
-            db, user, agent, llm_cfg, conv, tools=[], user_content=user_content)
-        return answer, citations
+    def _rag_tool_configs(agent: object) -> list[dict]:
+        """把 simple_rag 的绑定字段转换为现有工具配置，保留增强与精排参数。"""
+        config = {"type": "rag", "kb_id": str(agent.kb_id)}
+        for key in ("top_k", "score_threshold", "mqe_enabled", "hyde_enabled",
+                    "mqe_mode", "hyde_mode", "mqe_query_count", "rerank_enabled", "rerank_mode"):
+            config[key] = getattr(agent, key, None)
+        return [config]
 
     @staticmethod
-    async def _chat_simple_rag_stream(
-        db: AsyncSession,
-        user: Users,
-        agent: object,
-        llm_cfg: object,
-        conv: object,
-        request: ChatRequest,
-        full_answer: list[str],
-        citations: list[Citation],
-        debug_store: dict | None = None,
-    ) -> AsyncIterator[dict]:
-        """simple_rag 流式:预检索 → 命中流式生成;无命中短路 + 持久化"""
-        config = {"type": "rag", "kb_id": str(agent.kb_id),
-                  "top_k": agent.top_k, "score_threshold": agent.score_threshold,
-                  "mqe_enabled": agent.mqe_enabled, "hyde_enabled": agent.hyde_enabled,
-                  "mqe_mode": getattr(agent, "mqe_mode", None),
-                  "hyde_mode": getattr(agent, "hyde_mode", None),
-                  "mqe_query_count": agent.mqe_query_count,
-                  "rerank_enabled": agent.rerank_enabled,
-                  "rerank_mode": getattr(agent, "rerank_mode", None)}
-        enhance_cfg = await ChatService._get_enhance_cfg(db, user, agent)
-        if enhance_cfg is None:
-            enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
-        rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
-        stage_queue: asyncio.Queue[dict] = asyncio.Queue()
+    async def _chat_simple_rag(db, user, agent, llm_cfg, conv, request,
+                               debug_store=None) -> tuple[str, list[Citation]]:
+        """注册 RAG 工具进入 Agent；命中和无命中均由框架保存。"""
+        return await ChatService._chat_general(
+            db, user, agent, llm_cfg, conv, request, debug_store=debug_store,
+            tool_configs=ChatService._rag_tool_configs(agent))
 
-        async def stage_sink(event: dict) -> None:
-            await stage_queue.put(event)
-
-        rag_task = asyncio.create_task(RAGTool.execute(
-            db, user, config, request.message,
-            enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
-            debug_store=debug_store, event_sink=stage_sink))
-        while not rag_task.done():
-            get_task = asyncio.create_task(stage_queue.get())
-            done, _ = await asyncio.wait(
-                {rag_task, get_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if get_task in done:
-                yield get_task.result()
-            else:
-                get_task.cancel()
-        while not stage_queue.empty():
-            yield stage_queue.get_nowait()
-        refs = await rag_task
-        if not refs:
-            await ChatService._persist_turn_without_llm(conv.id, request.message)
-            full_answer.append("知识库中没有相关信息。")
-            yield {"type": "delta", "content": "知识库中没有相关信息。"}
-            yield {"type": "citations", "bindings": [], "citations": []}
-            yield {"type": "done"}
-            return
-        citations.extend(refs)
-        user_content = ChatService._build_user_prompt(refs, request.message)
-        answer_started = datetime.now(timezone.utc)
-        answer_perf = time.perf_counter()
-        yield {"type": "stage", "stage": "answer", "stage_id": "answer.1",
-               "status": "running", "summary": "正在生成回答", "visibility": "public"}
-        async for event in ChatService._invoke_agent_stream(
-                db, user, agent, llm_cfg, conv, tools=[],
-                user_content=user_content):
-            if event.get("type") == "delta":
-                full_answer.append(event["content"])
+    @staticmethod
+    async def _chat_simple_rag_stream(db, user, agent, llm_cfg, conv, request,
+                                      full_answer, citations, debug_store=None) -> AsyncIterator[dict]:
+        """复用 Agent 工具事件、流式回答及引用收集，不在 Service 提前检索。"""
+        async for event in ChatService._chat_general_stream(
+            db, user, agent, llm_cfg, conv, request, full_answer, citations,
+            debug_store=debug_store, tool_configs=ChatService._rag_tool_configs(agent)):
             yield event
-        yield {"type": "stage", "stage": "answer", "stage_id": "answer.1",
-               "status": "completed", "summary": "回答生成完成", "visibility": "public",
-               "duration_ms": round((time.perf_counter() - answer_perf) * 1000),
-               "detail": {"started_at": answer_started.isoformat()}}
-        if debug_store is not None:
-            yield {"type": "debug", "debug": debug_store}
-        yield ChatService._citation_event("".join(full_answer), refs)
-        yield {"type": "done"}
 
     # ═══════════════════════════════════════════════
     # general(LLM 自主决策)
@@ -356,6 +268,7 @@ class ChatService:
         request: ChatRequest,
         debug_store: dict | None = None,
         orchestration_guidance: str = "",
+        tool_configs: list[dict] | None = None,
     ) -> tuple[str, list[Citation]]:
         """general:最终主 Agent 节点执行业务工具（计划/反思不再注册为工具）。"""
         citations_store: list[Citation] = []
@@ -364,7 +277,7 @@ class ChatService:
             enhance_cfg = llm_cfg  # 跟随对话模型（设计：增强 LLM 空 = 用对话模型）
         rerank_cfg = await ChatService._get_rerank_cfg(db, user, agent)
         tools = ToolRegistry.build_langchain_tools(
-            db, user, agent.tools, citations_store=citations_store,
+            db, user, tool_configs if tool_configs is not None else agent.tools, citations_store=citations_store,
             enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
             debug_store=debug_store)
         answer = await ChatService._invoke_agent(
@@ -385,6 +298,7 @@ class ChatService:
         citations: list[Citation],
         debug_store: dict | None = None,
         orchestration_guidance: str = "",
+        tool_configs: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
         """general 流式：仅注册业务工具，计划/反思由外层 LangGraph 节点负责。"""
         citations_store: list[Citation] = []
@@ -398,7 +312,7 @@ class ChatService:
             await event_queue.put(("event", event))
 
         tools = ToolRegistry.build_langchain_tools(
-            db, user, agent.tools, citations_store=citations_store,
+            db, user, tool_configs if tool_configs is not None else agent.tools, citations_store=citations_store,
             enhance_cfg=enhance_cfg, rerank_cfg=rerank_cfg,
             debug_store=debug_store, event_sink=event_sink)
         answer_perf = time.perf_counter()
@@ -435,15 +349,9 @@ class ChatService:
         request: ChatRequest,
         debug_store: dict | None = None,
     ) -> tuple[str, list[Citation]]:
-        """simple 档：零工具直接回答（LLMService 调用 + checkpoint 手动读写）
-
-        历史纯文本化（过滤 tool_calls/ToolMessage，防 API 400）+ 最近检索残留注入。
-        """
-        messages = await ChatService._build_simple_messages(
-            agent, conv, request.message)
-        answer = await ChatService._invoke_llm_direct(
-            llm_cfg, agent, conv, messages)
-        await ChatService._persist_simple_turn(conv.id, request.message, answer)
+        """轻量直答也执行零工具 Agent，由框架自动保存原始问答。"""
+        answer = await ChatService._invoke_agent(
+            db, user, agent, llm_cfg, conv, [], request.message, lightweight=True)
         return answer, []
 
     @staticmethod
@@ -458,85 +366,12 @@ class ChatService:
         citations: list[Citation],
         debug_store: dict | None = None,
     ) -> AsyncIterator[dict]:
-        """simple 档流式：LLMService.chat_stream 逐段产出 delta"""
-        from backend.services.llm import LLMService
-
-        messages = await ChatService._build_simple_messages(
-            agent, conv, request.message)
-        from backend.services.model_policy import build_model_invocation_config
-
-        invocation = build_model_invocation_config(llm_cfg, agent=agent)
-        try:
-            async for delta in LLMService.chat_stream(
-                    provider=invocation.provider,
-                    model_name=invocation.model_name,
-                    api_key=invocation.api_key,
-                    base_url=invocation.base_url,
-                    messages=messages,
-                    temperature=invocation.temperature,
-                    top_p=invocation.top_p,
-                    protocol=invocation.protocol,
-                    timeout=invocation.timeout,
-                    max_tokens=invocation.max_tokens,
-                    purpose="answer"):
-                full_answer.append(delta)
-                yield {"type": "delta", "content": delta}
-            await ChatService._persist_simple_turn(
-                conv.id, request.message, "".join(full_answer))
-        except Exception as e:
-            if ChatService._is_temperature_error(e):
-                yield {"type": "error", "code": 400,
-                       "message": (
-                           f"模型 {llm_cfg.model_name} 仅支持 temperature=1（推理模型），"
-                           f"当前 Agent 配置为 {getattr(agent, 'temperature', '?')}"
-                       ),
-                       "suggestion": {"action": "set_temperature", "value": 1.0}}
-            else:
-                logger.error(f"simple 档流式调用失败: {e}")
-                yield {"type": "error", "code": ChatService._upstream_error_status(e),
-                       "message": f"LLM 服务调用失败: {e}"}
-            yield {"type": "done"}
-
-    @staticmethod
-    async def _build_simple_messages(agent: object, conv: object,
-                                     message: str) -> list[dict]:
-        """simple 档消息组装：纯文本历史 + 最近检索残留注入 + 当前问题"""
-        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
-        from backend.core.checkpointer import get_checkpointer
-
-        cp = await get_checkpointer()
-        tup = await cp.aget_tuple(ChatService._thread_config(conv))
-        history: list[dict] = []
-        residual = ""
-        if tup is not None:
-            msgs = list(tup.checkpoint.get("channel_values", {}).get("messages", []))
-            text_msgs: list = []
-            for m in msgs:
-                if isinstance(m, ToolMessage):
-                    residual = m.content or ""  # 覆盖式：保留最近一条检索内容
-                elif isinstance(m, HumanMessage):
-                    text_msgs.append(m)
-                elif isinstance(m, AIMessage) and not m.tool_calls:
-                    text_msgs.append(m)
-            limit = settings.intent.simple_history_limit
-            text_msgs = text_msgs[-limit:] if limit > 0 else text_msgs
-            history = [
-                {"role": "user" if isinstance(m, HumanMessage) else "assistant",
-                 "content": m.content or ""}
-                for m in text_msgs
-            ]
-        # 检索残留注入（最近一轮工具检索内容，供追问场景参考）
-        sys_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
-        user_content = message
-        if residual and settings.intent.simple_context_max_chars > 0:
-            user_content = (
-                f"以下是历史检索过的资料：\n{residual[:settings.intent.simple_context_max_chars]}"
-                f"\n\n当前问题：{message}"
-            )
-            sys_prompt += "\n\n注意：参考资料可能与当前问题无关，请以对话历史为准。"
-        return [{"role": "system", "content": sys_prompt}, *history,
-                {"role": "user", "content": user_content}]
+        """轻量直答复用 Agent 流式执行、错误处理和链路埋点。"""
+        async for event in ChatService._invoke_agent_stream(
+            db, user, agent, llm_cfg, conv, [], request.message, lightweight=True):
+            if event.get("type") == "delta":
+                full_answer.append(event["content"])
+            yield event
 
     @staticmethod
     async def _generate_review_draft(agent: object, llm_cfg: object, conv: object,
@@ -613,50 +448,8 @@ class ChatService:
     async def _persist_simple_turn(conversation_id: UUID,
                                    user_message: str,
                                    assistant_message: str) -> None:
-        """simple 档把 user + assistant 消息追加写入 checkpoint（版本号递增）
-
-        与 _persist_turn_without_llm 同机制；simple 档不走 create_agent，
-        需手动写回保证下一轮（simple 或 general）能读到本轮对话。
-        """
-        from datetime import datetime, timezone
-        from uuid import uuid4
-
-        from langchain_core.messages import AIMessage, HumanMessage
-        from langgraph.checkpoint.base import Checkpoint
-
-        from backend.core.checkpointer import get_checkpointer
-
-        cp = await get_checkpointer()
-        config = {"configurable": {"thread_id": str(conversation_id),
-                                   "checkpoint_ns": ""}}
-        tup = await cp.aget_tuple(config)
-        if tup is None:
-            checkpoint = Checkpoint(
-                v=1,
-                ts=datetime.now(timezone.utc).isoformat(),
-                id=str(uuid4()),
-                channel_values={"messages": []},
-                channel_versions={"messages": "1"},
-                versions_seen={},
-                pending_sends=[],
-            )
-            metadata = ChatService._checkpoint_metadata()
-            new_versions: dict = {"messages": "1"}
-        else:
-            checkpoint = tup.checkpoint
-            metadata = ChatService._checkpoint_metadata(tup.metadata)
-            new_versions = dict(checkpoint.get("channel_versions", {}))
-        checkpoint["channel_versions"] = new_versions
-        messages = list(checkpoint.get("channel_values", {}).get("messages", []))
-        messages.append(HumanMessage(content=user_message))
-        messages.append(AIMessage(content=assistant_message))
-        checkpoint["channel_values"]["messages"] = messages
-        # blob 同版本 DO NOTHING，必须递增版本号
-        cur_ver = str(new_versions.get("messages", "0"))
-        new_versions["messages"] = (
-            str(int(cur_ver) + 1) if cur_ver.isdigit()
-            else f"{cur_ver}.{datetime.now(timezone.utc).timestamp()}")
-        await cp.aput(config, checkpoint, metadata, new_versions)
+        """轻量直答通过统一图状态接口保存成对消息，框架维护版本与 metadata。"""
+        await ConversationMemoryService.append_turn(conversation_id, user_message, assistant_message)
 
     # ═══════════════════════════════════════════════
     # create_agent 统一调用
@@ -703,14 +496,9 @@ class ChatService:
         """从 checkpoint 读取最近语义消息，排除 tool_calls/ToolMessage 后供意图节点使用。"""
         from langchain_core.messages import AIMessage, HumanMessage
 
-        from backend.core.checkpointer import get_checkpointer
-
-        cp = await get_checkpointer()
-        tup = await cp.aget_tuple(ChatService._thread_config(conv))
-        if tup is None:
-            return []
+        messages = await ConversationMemoryService.messages(conv.id)
         semantic: list[dict[str, str]] = []
-        for item in tup.checkpoint.get("channel_values", {}).get("messages", []):
+        for item in messages:
             if isinstance(item, HumanMessage):
                 semantic.append({"role": "user", "content": item.content or ""})
             elif isinstance(item, AIMessage) and not item.tool_calls:
@@ -734,29 +522,47 @@ class ChatService:
     @staticmethod
     async def _build_agent(db: AsyncSession, user: Users, agent: object,
                            llm_cfg: object, tools: list,
-                           orchestration_guidance: str = "") -> object:
+                           orchestration_guidance: str = "", lightweight: bool = False) -> object:
         """构建 create_agent(带 checkpointer + middleware)
 
         采样参数优先级（Phase 4.8）：Agent 配置 > 模型配置 > 默认（0.7 / 0.9）
         延迟 import langchain 系（启动提速：仅首次对话时才加载）。
         """
-        from langchain.agents import create_agent
-        from langchain_openai import ChatOpenAI
+        with preparation_stage("dependencies", "加载 Agent 依赖",
+                               first_import="langchain.agents" not in sys.modules,
+                               openai_first_import="langchain_openai" not in sys.modules):
+            from langchain.agents import create_agent
+            from langchain_openai import ChatOpenAI
 
         from backend.core.checkpointer import get_checkpointer
 
-        summary_cfg = await ChatService._get_summary_cfg(db, user, agent)
-        middlewares = build_middlewares(summary_cfg, llm_cfg)
+        with preparation_stage("summary_config", "读取总结模型配置"):
+            summary_cfg = await ChatService._get_summary_cfg(db, user, agent)
+        with preparation_stage("middleware", "构建 Agent 中间件"):
+            middlewares = build_middlewares(summary_cfg, llm_cfg)
+            if lightweight:
+                from backend.services.simple_context import SimpleContextMiddleware
+                middlewares.append(SimpleContextMiddleware())
+            elif tools and hasattr(agent, "kb_id"):
+                from backend.services.rag_context import RagFirstMiddleware
+                middlewares.append(RagFirstMiddleware())
         system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
+        if tools and hasattr(agent, "kb_id"):
+            system_prompt += (
+                '\n\n每轮必须先检索知识库，再基于本轮工具返回的资料回答。'
+                '引用必须使用结果中的 [S#] 来源标签。检索结果为空或资料不足时，'
+                '明确说明“知识库中没有相关信息”，不得用历史资料冒充本轮命中。'
+            )
         if orchestration_guidance:
             system_prompt = f"{system_prompt}\n\n{orchestration_guidance}"
-        cp = await get_checkpointer()
+        with preparation_stage("checkpointer", "获取 checkpoint 管理器"):
+            cp = await get_checkpointer()
         from backend.services.llm import get_rate_limiter
         from backend.services.model_policy import build_model_invocation_config
 
         invocation = build_model_invocation_config(llm_cfg, agent=agent)
-        return create_agent(
-            model=ChatOpenAI(
+        with preparation_stage("model_client", "初始化模型客户端", model=invocation.model_name):
+            model = ChatOpenAI(
                 model=invocation.model_name, api_key=invocation.api_key,
                 base_url=invocation.base_url or "https://api.openai.com/v1",
                 temperature=invocation.temperature, top_p=invocation.top_p,
@@ -764,23 +570,15 @@ class ChatService:
                 max_retries=invocation.max_retries,
                 rate_limiter=get_rate_limiter(
                     invocation.provider, invocation.model_name,
-                    invocation.api_key)),
-            tools=tools, system_prompt=system_prompt,
-            checkpointer=cp, middleware=middlewares)
+                    invocation.api_key))
+        with preparation_stage("graph", "构建 Agent 执行图", tool_count=len(tools)):
+            return create_agent(model=model, tools=tools, system_prompt=system_prompt,
+                                checkpointer=cp, middleware=middlewares)
 
     @staticmethod
     def _thread_config(conv: object) -> dict:
         """checkpoint thread 配置(thread_id = conversation_id)"""
-        return {"configurable": {"thread_id": str(conv.id), "checkpoint_ns": ""}}
-
-    @staticmethod
-    def _checkpoint_metadata(metadata: dict | None = None) -> dict:
-        """补齐 LangGraph 恢复 checkpoint 所需的标准 metadata。"""
-        result = dict(metadata or {})
-        result.setdefault("source", "update")
-        result.setdefault("step", 0)
-        result.setdefault("parents", {})
-        return result
+        return ConversationMemoryService.config(conv.id)
 
     @staticmethod
     def _upstream_error_status(error: Exception) -> int:
@@ -791,35 +589,9 @@ class ChatService:
 
     @staticmethod
     async def _repair_checkpoint(conv: object) -> None:
-        """对话前修复 checkpoint 消息序列:孤立 tool_calls 补 ToolMessage(防 LLM 400)
-
-        场景:流式对话被中断(abort)时,LangGraph 可能已写入带 tool_calls 的
-        AIMessage 但未写入 ToolMessage,下次对话 OpenAI 兼容 API 会报
-        "assistant message with tool_calls must be followed by tool messages"。
-
-        注意:checkpoint_blobs 按 (thread_id, checkpoint_ns, channel, version)
-        UNIQUE 且 DO NOTHING(同版本不可变),因此修复后必须递增 messages
-        的版本号,否则新内容不会落库。
-        """
-        from backend.core.checkpointer import get_checkpointer
-
-        cp = await get_checkpointer()
-        config = ChatService._thread_config(conv)
-        tup = await cp.aget_tuple(config)
-        if tup is None:
-            return
-        msgs = list(tup.checkpoint.get("channel_values", {}).get("messages", []))
-        fixed = ChatService._repair_messages(msgs)
-        metadata = ChatService._checkpoint_metadata(tup.metadata)
-        if fixed != msgs or metadata != (tup.metadata or {}):
-            # 递增 messages 版本号(blob 同版本 DO NOTHING,必须换新版本)
-            cur_ver = str(tup.checkpoint.get("channel_versions", {}).get("messages", "0"))
-            new_ver = (str(int(cur_ver) + 1) if cur_ver.isdigit()
-                       else f"{cur_ver}.{datetime.now(timezone.utc).timestamp()}")
-            tup.checkpoint["channel_versions"]["messages"] = new_ver
-            tup.checkpoint["channel_values"]["messages"] = fixed
-            await cp.aput(config, tup.checkpoint, metadata,
-                          {"messages": new_ver})
+        """对话前通过图状态接口修复孤立工具结果，不修改 checkpoint 内部结构。"""
+        with preparation_stage("checkpoint_repair_state", "读取并校验会话状态"):
+            await ConversationMemoryService.repair(conv.id, ChatService._repair_messages)
 
     @staticmethod
     def _repair_messages(msgs: list) -> list:
@@ -855,9 +627,10 @@ class ChatService:
                     result.insert(
                         i + 1 + inserted,
                         ToolMessage(
-                            content="工具调用已被中断，未执行。请直接回答用户或重新调用工具。",
+                            content="工具调用已被中断，执行结果未知。不要假定未执行或自动重试有副作用的操作。",
                             tool_call_id=tc_id,
                             name=tc.get("name") or "tool",
+                            status="error",
                         ),
                     )
                     inserted += 1
@@ -874,7 +647,7 @@ class ChatService:
                             llm_cfg: object, conv: object, tools: list,
                             user_content: str,
                             citations_store: list | None = None,
-                            orchestration_guidance: str = "") -> str:
+                            orchestration_guidance: str = "", lightweight: bool = False) -> str:
         """非流式:create_agent.ainvoke(thread_id = conversation_id)（埋点：耗时/错误）
 
         推理模型（Kimi K3 / o1 等）仅支持 temperature=1：检测到 temperature 限制错误时
@@ -884,9 +657,12 @@ class ChatService:
 
         from langchain_core.messages import HumanMessage
 
-        await ChatService._repair_checkpoint(conv)
-        lc_agent = await ChatService._build_agent(
-            db, user, agent, llm_cfg, tools, orchestration_guidance)
+        with preparation_stage("total", "Agent 执行准备"):
+            with preparation_stage("checkpoint_repair", "检查并修复会话 checkpoint"):
+                await ChatService._repair_checkpoint(conv)
+            lc_agent = await ChatService._build_agent(
+                db, user, agent, llm_cfg, tools, orchestration_guidance,
+                **({"lightweight": True} if lightweight else {}))
         t0 = _time.perf_counter()
         try:
             result = await lc_agent.ainvoke(
@@ -927,6 +703,7 @@ class ChatService:
                                    pending_events: list[dict] | None = None,
                                    orchestration_guidance: str = "",
                                    event_queue: asyncio.Queue[tuple[str, object]] | None = None,
+                                   lightweight: bool = False,
                                    ) -> AsyncIterator[dict]:
         """同时消费消息与节点更新，实时展示模型轮、工具选择和执行状态。
 
@@ -940,9 +717,30 @@ class ChatService:
 
         from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
-        await ChatService._repair_checkpoint(conv)
-        lc_agent = await ChatService._build_agent(
-            db, user, agent, llm_cfg, tools, orchestration_guidance)
+        preparation_events = asyncio.Queue()
+
+        async def prepare():
+            """保持准备事件与原始异常顺序，并给整段准备计时。"""
+            with bind_preparation_sink(preparation_events.put_nowait):
+                with preparation_stage("total", "Agent 执行准备"):
+                    with preparation_stage("checkpoint_repair", "检查并修复会话 checkpoint"):
+                        await ChatService._repair_checkpoint(conv)
+                    return await ChatService._build_agent(
+                        db, user, agent, llm_cfg, tools, orchestration_guidance,
+                **({"lightweight": True} if lightweight else {}))
+
+        preparation_task = asyncio.create_task(prepare())
+        try:
+            while not preparation_task.done() or not preparation_events.empty():
+                if not preparation_events.empty():
+                    yield preparation_events.get_nowait()
+                else:
+                    await asyncio.wait({preparation_task}, timeout=0.02)
+            lc_agent = await preparation_task
+        finally:
+            if not preparation_task.done():
+                preparation_task.cancel()
+            await asyncio.gather(preparation_task, return_exceptions=True)
         t0 = _time.perf_counter()
         try:
             async def chunks():
@@ -953,6 +751,34 @@ class ChatService:
                 first_model_token_ms: int | None = None
                 announced_tools: set[str] = set()
                 tool_starts: dict[str, float] = {}
+                tool_names: dict[str, str] = {}
+
+                async def observed_stream():
+                    """记录未捕获异常并收口失败阶段，保留原异常供上层处理。"""
+                    try:
+                        async for item in lc_agent.astream(
+                                {"messages": [HumanMessage(content=user_content)]},
+                                config=ChatService._thread_config(conv),
+                                stream_mode=["messages", "updates"]):
+                            yield item
+                    except Exception as error:
+                        logger.exception("Agent 执行异常 conversation=%s active_tools=%s", conv.id, tool_names)
+                        for call_id, begin in list(tool_starts.items()):
+                            yield "updates", {"diagnostic_failure": {
+                                "type": "stage", "stage": "tool", "stage_id": f"tool.{call_id}",
+                                "status": "failed", "visibility": "debug", "code": "TOOL_EXECUTION_FAILED",
+                                "duration_ms": round((_time.perf_counter() - begin) * 1000),
+                                "summary": f"工具执行中断：{tool_names.get(call_id, 'tool')}",
+                                "detail": {"tool": tool_names.get(call_id), "tool_call_id": call_id,
+                                           "error_type": type(error).__name__, **diagnostic_preview(str(error))},
+                            }}
+                        if model_open:
+                            yield "updates", {"diagnostic_failure": {
+                                **model_event("failed"), "visibility": "debug", "code": "MODEL_EXECUTION_FAILED",
+                                "detail": {"model": llm_cfg.model_name, "error_type": type(error).__name__,
+                                           **diagnostic_preview(str(error))},
+                            }}
+                        raise
 
                 def model_event(status: str) -> dict:
                     return {
@@ -965,10 +791,7 @@ class ChatService:
                     }
 
                 yield model_event("running"), None
-                async for mode, item in lc_agent.astream(
-                        {"messages": [HumanMessage(content=user_content)]},
-                        config=ChatService._thread_config(conv),
-                        stream_mode=["messages", "updates"]):
+                async for mode, item in observed_stream():
                     if mode == "messages":
                         chunk, metadata = item
                         if metadata.get("langgraph_node") not in {None, "model"}:
@@ -992,15 +815,28 @@ class ChatService:
                     if mode != "updates" or not isinstance(item, dict):
                         continue
                     for node, update in item.items():
+                        if node == "diagnostic_failure":
+                            yield update, None
+                            continue
                         if not isinstance(update, dict) or node not in {"model", "tools"}:
                             continue
                         for msg in update.get("messages", []):
                             if isinstance(msg, AIMessage) and model_open:
                                 yield model_event("completed"), None
+                                # 只保存可见正文与工具调用，不保存 additional_kwargs 中的隐藏推理。
+                                visible = msg.content if isinstance(msg.content, str) else [
+                                    block for block in msg.content if isinstance(block, str)
+                                    or isinstance(block, dict) and block.get("type") == "text"]
+                                yield {"type": "stage", "stage": "model_output", "stage_id": f"model.{round_number}.output",
+                                       "status": "completed", "visibility": "debug", "duration_ms": 0,
+                                       "summary": f"第 {round_number} 次模型输出",
+                                       "detail": {"model": llm_cfg.model_name, **diagnostic_preview(visible),
+                                                  "tool_calls": diagnostic_preview(msg.tool_calls), "usage": msg.usage_metadata}}, None
                                 model_open = False
                                 for call in msg.tool_calls:
                                     call_id = str(call.get("id") or uuid4().hex)
                                     tool_starts[call_id] = _time.perf_counter()
+                                    tool_names[call_id] = call["name"]
                                     yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{call_id}",
                                            "status": "running", "visibility": "public",
                                            "summary": f"正在调用工具：{call['name']}",
@@ -1008,15 +844,22 @@ class ChatService:
                                     yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{call_id}.params",
                                            "status": "completed", "visibility": "debug", "duration_ms": 0,
                                            "summary": f"工具参数：{call['name']}",
-                                           "detail": {"tool": call["name"], "args": call.get("args", {})}}, None
+                                           "detail": {"tool": call["name"], "tool_call_id": call_id,
+                                                      "args": diagnostic_preview(call.get("args", {}))}}, None
                             elif isinstance(msg, ToolMessage):
                                 begin = tool_starts.pop(msg.tool_call_id, _time.perf_counter())
                                 failed = getattr(msg, "status", None) == "error"
+                                tool_names.pop(msg.tool_call_id, None)
                                 yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{msg.tool_call_id}",
                                        "status": "degraded" if failed else "completed", "visibility": "public",
                                        "summary": f"工具{'执行失败，交由 Agent 处理' if failed else '已返回结果'}：{msg.name or 'tool'}",
                                        "duration_ms": round((_time.perf_counter() - begin) * 1000),
                                        "detail": {"tool": msg.name or "tool", "content_length": len(str(msg.content))}}, None
+                                yield {"type": "stage", "stage": "tool", "stage_id": f"tool.{msg.tool_call_id}.output",
+                                       "status": "degraded" if failed else "completed", "visibility": "debug", "duration_ms": 0,
+                                       "summary": f"工具{'错误详情' if failed else '返回内容'}：{msg.name or 'tool'}",
+                                       "detail": {"tool": msg.name, "tool_call_id": msg.tool_call_id,
+                                                  "is_error": failed, **diagnostic_preview(msg.content)}}, None
                         if node == "tools" and not tool_starts:
                             round_number += 1
                             model_started = _time.perf_counter()
@@ -1178,49 +1021,6 @@ class ChatService:
         return atype, agent, llm_cfg
 
     @staticmethod
-    async def _persist_turn_without_llm(conversation_id: UUID,
-                                        user_message: str) -> None:
-        """无命中短路:把 user + assistant 消息手动写入 checkpoint"""
-        from langchain_core.messages import AIMessage, HumanMessage
-
-        from backend.core.checkpointer import get_checkpointer
-
-        cp = await get_checkpointer()
-        config = {"configurable": {"thread_id": str(conversation_id),
-                                   "checkpoint_ns": ""}}
-        tup = await cp.aget_tuple(config)
-        if tup is None:
-            from langgraph.checkpoint.base import Checkpoint
-
-            checkpoint = Checkpoint(
-                v=1,
-                ts=datetime.now(timezone.utc).isoformat(),
-                id=str(uuid4()),
-                channel_values={"messages": []},
-                channel_versions={"messages": "1"},
-                versions_seen={},
-                pending_sends=[],
-            )
-            messages: list = []
-            metadata = ChatService._checkpoint_metadata()
-            new_versions: dict = {"messages": "1"}
-        else:
-            checkpoint = tup.checkpoint
-            messages = list(checkpoint.get("channel_values", {}).get("messages", []))
-            metadata = ChatService._checkpoint_metadata(tup.metadata)
-            new_versions = dict(checkpoint.get("channel_versions", {}))
-        checkpoint["channel_versions"] = new_versions
-
-        messages.append(HumanMessage(content=user_message))
-        messages.append(AIMessage(content="知识库中没有相关信息。"))
-        checkpoint["channel_values"]["messages"] = messages
-        cur_ver = str(new_versions.get("messages", "0"))
-        new_versions["messages"] = (
-            str(int(cur_ver) + 1) if cur_ver.isdigit()
-            else f"{cur_ver}.{datetime.now(timezone.utc).timestamp()}")
-        await cp.aput(config, checkpoint, metadata, new_versions)
-
-    @staticmethod
     async def _persist_messages(db: AsyncSession, conv: object,
                                 user_msg: str, assistant_msg: str,
                                 citations: list[Citation],
@@ -1255,22 +1055,9 @@ class ChatService:
             from backend.core.config import settings
             keep = getattr(settings.checkpoint, "keep_rounds", 5)
             if keep > 0:
-                await prune_checkpoints(conv.id, keep)
+                await prune_checkpoints(ConversationMemoryService.config(conv.id)["configurable"]["thread_id"], keep)
         except Exception:
             logger.exception("checkpoint 清理失败")
-
-    @staticmethod
-    def _build_user_prompt(citations: list[Citation], message: str) -> str:
-        """组装带引用块的 user prompt(simple_rag 用)：模板常量 + 引用块 join"""
-        for index, citation in enumerate(citations, 1):
-            citation.source_id = f"S{index}"
-        blocks = "\n\n".join(
-            f"[S{i}] （来源：《{c.document_name}》）\n{c.content}"
-            for i, c in enumerate(citations, 1)
-        )
-        # 空引用时 blocks 为空串，join 时过滤，避免多出空白行
-        parts = [_RAG_PROMPT_HEADER, blocks, _RAG_PROMPT_FOOTER, f"用户问题：{message}"]
-        return "\n\n".join(p for p in parts if p)
 
     @staticmethod
     def _source_map(citations: list[Citation]) -> dict[str, Citation]:

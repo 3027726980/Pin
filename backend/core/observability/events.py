@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import uuid4
@@ -10,6 +11,15 @@ from backend.core.observability.context import TraceContext
 from backend.schemas.agent_event import AgentEvent
 
 logger = logging.getLogger("backend.agent.events")
+
+
+def diagnostic_preview(value: object, limit: int = 4000) -> dict[str, Any]:
+    """生成限长诊断文本，掩码文本中的常见凭据，不记录隐藏推理块。"""
+    safe = sanitize_event_detail(value, max_string=limit + 1)
+    text = str(safe)
+    text = re.sub(r"\b(?:sk-|pin_)[a-zA-Z0-9_-]+|(?i:Bearer)\s+[^\s\"',}]+", "[REDACTED]", text)
+    text = re.sub(r"(?i)(\b(?:api_key|password|token|secret|authorization)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+", r"\1[REDACTED]", text)
+    return {"output": text[:limit], "output_truncated": len(text) > limit}
 
 
 _SENSITIVE_KEYS = {

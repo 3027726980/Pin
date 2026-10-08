@@ -3,8 +3,9 @@ import { createTurnState, reduceTurnEvent, type TurnState } from './stage-reduce
 import { isAgentEvent } from './events'
 
 export const STAGE_LABELS: Record<string, string> = {
+  preparation: '执行准备',
   request: '请求', intent: '意图识别', plan: '执行计划', reflect: '回答反思',
-  agent: 'Agent 执行', model: '模型调用', tool: '工具执行', answer: '回答生成',
+  agent: 'Agent 执行', model: '模型调用', model_output: '模型输出', tool: '工具执行', answer: '回答生成',
   mqe: '多查询扩展', hyde: '假设文档', embedding: '向量生成', retrieval: '知识检索',
   rerank: '候选精排', rag_strategy: '检索策略', verify: '回答核验', citation_binding: '引用绑定',
 }
@@ -13,6 +14,10 @@ export const STATUS_LABELS: Record<string, string> = {
   cancelled: '已取消', degraded: '已降级', skipped: '已跳过',
 }
 const FIELD_LABELS: Record<string, string> = {
+  pid: '后端进程 ID', first_import: '首次加载 Agent 依赖', openai_first_import: '首次加载模型依赖',
+  tool_count: '绑定工具数量', message_count: '历史消息数量',
+  output: '输出或错误详情', output_truncated: '内容已截断', error_type: '异常类型',
+  is_error: '工具返回错误', tool_call_id: '工具调用编号', tool_calls: '模型工具调用', usage: 'Token 用量',
   strategy: '检索策略', queries: '检索问题', original_query: '原始问题',
   hyde: '假设文档', hyde_text: '假设文档', reason_codes: '决策依据',
   candidate_count: '候选数量', result_count: '结果数量', query_count: '问题数量',
