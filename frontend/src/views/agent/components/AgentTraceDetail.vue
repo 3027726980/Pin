@@ -13,7 +13,6 @@
         <n-descriptions-item label="调用次数">LLM {{ detail.summary?.llm_calls ?? '未汇总' }} / 工具 {{ detail.summary?.tool_calls ?? '未汇总' }}</n-descriptions-item>
       </n-descriptions>
       <h3>阶段与耗时</h3><AgentWaterfall :state="turnState" />
-      <AgentDebugPanel :state="turnState" :show="true" />
       <h3>事件日志（连续回答增量已合并）</h3>
       <div class="events">
         <details v-for="(event, index) in events" :key="String(event.event_id || index)">
@@ -35,7 +34,6 @@ import { downloadAgentTrace, getAgentTrace, type AgentTraceDetail } from '@/api/
 import { formatDuration } from '@/chat-core/formatters'
 import { buildTraceState, compactTraceEvents, STAGE_LABELS, STATUS_LABELS } from '@/chat-core/trace-view'
 import AgentWaterfall from './AgentWaterfall.vue'
-import AgentDebugPanel from './AgentDebugPanel.vue'
 import AgentDetailFields from './AgentDetailFields.vue'
 const props = defineProps<{ traceId: string }>()
 const message = useMessage()

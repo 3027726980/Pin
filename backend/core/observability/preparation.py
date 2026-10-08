@@ -31,7 +31,7 @@ def preparation_stage(name: str, summary: str, **detail):
     def emit(status, **extra):
         """发送同 ID 的阶段事件并写结构化关联日志。"""
         event = {"type": "stage", "stage": "preparation", "stage_id": f"preparation.{name}",
-                 "status": status, "visibility": "public", "summary": summary,
+                 "status": status, "visibility": "debug", "summary": summary,
                  "duration_ms": None if status == "running" else round((time.perf_counter() - started) * 1000),
                  "detail": {"pid": os.getpid(), **detail, **extra}}
         if status == "failed":

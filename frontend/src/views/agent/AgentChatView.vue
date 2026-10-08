@@ -19,8 +19,6 @@
         <div class="chat-header-right">
           <span class="stream-option">流式输出</span>
           <n-switch v-model:value="streamMode" size="small" />
-          <span class="stream-option" title="展示检索链路：拓展 Query / Rerank 分数">Debug</span>
-          <n-switch v-model:value="debugMode" size="small" />
           <n-button size="small" :disabled="streaming" @click="newConversation">
             <template #icon><n-icon><AddOutline /></n-icon></template>
             新会话
@@ -140,58 +138,7 @@
               </n-collapse-item>
             </n-collapse>
           </div>
-          <!-- 检索调试信息（Debug 模式，关闭时隐藏） -->
-          <div v-if="msg.role === 'assistant' && msg.debug && debugMode" class="msg-debug">
-            <n-collapse>
-              <n-collapse-item title="🔍 检索调试信息" name="debug">
-                <div v-if="msg.debug.intent || msg.debug.intent_code" class="debug-section">
-                  <div class="debug-title">意图路由</div>
-                  <div class="debug-query">
-                    <n-tag size="tiny" :type="msg.debug.intent === 'simple' ? 'success' : 'warning'" :bordered="false">
-                      {{ msg.debug.intent === 'simple' ? '轻量模式' : '完整模式' }}
-                    </n-tag>
-                    <span>意图代码：{{ msg.debug.intent_code || msg.debug.intent }}</span>
-                  </div>
-                </div>
-                <div v-if="msg.debug.queries && msg.debug.queries.length" class="debug-section">
-                  <div class="debug-title">检索 Query（{{ msg.debug.queries.length }} 路）</div>
-                  <div v-for="(q, i) in msg.debug.queries" :key="i" class="debug-query">
-                    <n-tag size="tiny" :type="i === 0 ? 'default' : 'info'" :bordered="false">
-                      {{ i === 0 ? '原始' : '增强' }}
-                    </n-tag>
-                    <span>{{ q }}</span>
-                  </div>
-                </div>
-                <div v-else class="debug-section">
-                  <div class="debug-title">知识库检索</div>
-                  <div class="debug-query">
-                    {{ msg.debug.intent === 'simple'
-                      ? '本轮为轻量模式，未执行知识库检索。'
-                      : '本轮未调用 RAG 工具，因此没有检索 Query。' }}
-                  </div>
-                </div>
-                <div v-if="msg.debug.rerank" class="debug-section">
-                  <div class="debug-title">Rerank 精排</div>
-                  <div class="debug-query">模型：{{ msg.debug.rerank.provider }} / {{ msg.debug.rerank.model }}</div>
-                </div>
-                <div v-if="hasScoreDiff(msg)" class="debug-section">
-                  <div class="debug-title">分数对比（向量相似度 → Rerank 精排）</div>
-                  <div v-for="(c, i) in msg.citations" :key="i" class="debug-score">
-                    <span>[{{ msg.rawCitations ? msg.rawCitations.indexOf(c) + 1 : i + 1 }}]《{{ c.document_name }}》</span>
-                    <span class="debug-score-val">
-                      向量 {{ c.original_score?.toFixed(4) ?? '-' }} → 精排 {{ c.score.toFixed(4) }}
-                    </span>
-                  </div>
-                </div>
-              </n-collapse-item>
-            </n-collapse>
-          </div>
           </template>
-          <AgentDebugPanel
-            v-if="msg.role === 'assistant' && msg.turnState"
-            :state="msg.turnState"
-            :show="debugMode"
-          />
           <n-button
             v-if="msg.role === 'assistant' && (msg.traceId || msg.turnState?.traceId)"
             text
@@ -321,7 +268,6 @@ import {
 import { stripUnboundSourceMarkers } from '@/utils/citations'
 import { createTurnState, reduceTurnEvent, interruptTurn, type TurnState } from '@/chat-core/stage-reducer'
 import AgentProcessTimeline from './components/AgentProcessTimeline.vue'
-import AgentDebugPanel from './components/AgentDebugPanel.vue'
 import AgentTraceDetail from './components/AgentTraceDetail.vue'
 
 defineOptions({ name: 'AgentChatView' })
@@ -351,7 +297,7 @@ interface DisplayMessage extends ChatMessage {
   plan?: string | null
   /** reflect 工具输出（反思建议） */
   reflect?: string | null
-  /** AgentEvent v2 累积状态；Debug 开关只影响展示，不影响采集。 */
+  /** AgentEvent v2 累积状态；完整诊断始终采集，通过链路抽屉查看。 */
   turnState?: TurnState
   traceId?: string | null
 }
@@ -371,7 +317,6 @@ const sending = ref(false)
 const streaming = ref(false)
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
-const debugMode = ref(false)
 let abortCtrl: AbortController | null = null
 onUnmounted(() => abortCtrl?.abort())
 
@@ -669,12 +614,6 @@ function showTemperatureDialog(
 
 function stopStream() {
   abortCtrl?.abort()
-}
-
-// Debug：是否有 Rerank 分数对比可展示
-function hasScoreDiff(msg: DisplayMessage): boolean {
-  return !!msg.citations?.some(
-    c => c.original_score != null && Math.abs(c.original_score - c.score) > 0.001)
 }
 
 function onInputKeydown(e: KeyboardEvent) {
