@@ -45,7 +45,7 @@
 Pin 是一个**企业自托管**的 AI Agent 平台：
 
 - **零代码嵌入**：在任意网页插入一行 `<script>`，即可获得一个浮窗 AI 助手
-- **知识库问答**：上传文档 → 自动解析/分块/向量化 → 基于检索增强生成（RAG）回答，回答附带可点击的引用来源
+- **知识库问答**：上传文档 → 解析/清洗/分块/向量化 → 基于检索增强生成（RAG）回答，回答附带可点击的引用来源
 - **可编排 Agent**：简单 RAG Agent（绑定知识库直接问答）与综合 Agent（工具注册、LLM 自主决策、任务规划与反思）
 - **厂商无关**：OpenAI 兼容协议统一接入，DeepSeek / Kimi / 通义千问 / 智谱等零代码接入；本地 Embedding 模型开箱即用
 
@@ -54,17 +54,17 @@ Pin 是一个**企业自托管**的 AI Agent 平台：
 | 能力 | 说明 |
 |------|------|
 | 🔐 完整认证 | JWT（Access 30min / Refresh 7天）+ jti 白名单即时失效 + 令牌轮转 |
-| 📚 文档处理链路 | 上传 → 解析（PDF/Office/Markdown/纯文本）→ 递归分块 → 向量化 → pgvector 检索 |
-| 🔍 检索增强 | MQE 多查询扩展、HyDE 假设文档、Rerank 精排（均可独立开关） |
+| 📚 文档处理链路 | 上传 → 解析（PDF/Office/Markdown/纯文本）→ 清洗 → 递归分块 → 向量化 → pgvector 检索 |
+| 🔍 检索增强 | MQE、HyDE、Rerank 独立配置 off / auto / always，自动策略按原始召回和预算决策 |
 | 🤖 双 Agent 类型 | `simple_rag`（知识库直答）+ `general`（工具注册、LLM 自主决策） |
 | ⚡ 意图路由 | 简单问题零工具直接回答（省 token / 降延迟），复杂问题完整 ReAct 循环 |
-| 🧠 内置推理工具 | plan（任务规划）+ reflect（答案反思），LLM 自主编排 |
+| 🧠 图编排 | 配置化意图 → 可选规划 → 主 Agent → 可选核验与修订 |
 | 🧩 工具注册体系 | 新增工具 = 一个文件（自动发现注册 + Schema 驱动前端动态表单） |
 | 🏭 厂商协议注册表 | OpenAI 兼容协议统一分发，新增厂商 = config.yaml 加一段配置 |
-| 📡 SSE 流式对话 | delta / citations / plan / reflect / intent 事件，打字机体验 |
+| 📡 SSE 流式对话 | AgentEvent v2，模型/工具进度、阶段耗时、首答案 Token 与可靠引用 |
 | 🧠 多轮记忆 | LangGraph checkpoint 持久化 + 长会话自动总结 |
 | 💬 网页嵌入 | 独立构建的 widget.js（Shadow DOM 隔离），API Key 鉴权 + 域名白名单 + 限流 |
-| 🗂 日志体系 | 分文件日志（http / llm / sql / error）+ 统一格式化 + 轮转 |
+| 🗂 日志体系 | 日期目录轮转、脱敏、结构化 Trace 查询与中文完整链路详情 |
 
 ## 技术栈
 
@@ -134,7 +134,7 @@ npm run dev        # → http://localhost:8001（/api 已代理到 8000）
 
 1. 登录 `admin / admin123`
 2. **模型配置**（设置 → 模型配置）：创建 LLM 配置（如 DeepSeek）与 Embedding 配置
-3. **知识库**：新建知识库 → 上传文档（**自动后台处理**：解析 → 分块 → 向量化，处理完即可对话）
+3. **知识库**：新建知识库 → 上传文档 → 预览清洗/切片 → 保存策略并处理至向量化；是否自动处理由知识库开关控制
 4. **Agent**：创建 simple_rag（绑定知识库）或 general（配置工具）→ 进入对话
 
 ## 配置说明
@@ -219,18 +219,18 @@ logging:
 ### 知识库与文档处理
 
 1. **创建知识库**：知识库页面 → 新建（选择 Embedding 模型配置）
-2. **上传文档**：支持 PDF / Word / Office / Markdown / 纯文本，可批量多选；**上传后自动后台处理**（解析 → 分块 → 向量化），前端自动轮询进度，失败显示原因（可手动重试）
+2. **上传文档**：支持 PDF / Word / Office / Markdown / 纯文本，可批量多选；按知识库的自动处理开关决定是否后台入库，也可先预览、调整策略后手动处理。前端轮询进度，失败显示原因。
 3. **处理链路**（每个文档独立状态机）：
 
 ```
-上传 → 解析（is_parsed）→ 分块（is_chunked）→ 向量化（is_vectorized）
+上传 → 解析（is_parsed）→ 清洗（is_cleaned）→ 分块（is_chunked）→ 向量化（is_vectorized）
 状态：-1=失败 0=未完成 1=已完成 2=进行中；失败原因存 last_error
 ```
 
-> 自动处理开关与并发数：系统设置 → 文档处理（动态修改立即生效，无需重启）；
+> 自动处理开关归知识库；系统设置控制新建默认值和处理并发。文件策略可继承知识库或独立覆盖清洗/切片参数。保存策略不自动重建索引，完整处理成功后才替换旧索引。
 > 删除知识库/文档时会级联软删其切片与向量
 
-4. **检索增强**（知识库/Agent 级独立开关，按需开启以节省 token）：
+4. **检索增强**（Agent / RAG 工具独立配置 `off | auto | always`；auto 结合原始召回、问题特征与预算决策，旧 enabled 字段兼容映射 off / always）：
 
 | 增强 | 作用 | 额外消耗 |
 |------|------|----------|
@@ -254,11 +254,11 @@ logging:
 
 | 类型 | 存储 | 能力 | 适用 |
 |------|------|------|------|
-| `simple_rag` | simple_rag_agents | 固定绑定一个知识库，代码控制检索 → 回答 | 客服问答、制度查询 |
+| `simple_rag` | simple_rag_agents | 固定绑定一个知识库，每轮强制先调用 RAG 工具再回答 | 客服问答、制度查询 |
 | `general` | general_agents | 工具注册（rag 等）+ LLM 自主决策多轮调用 | 复杂任务、多知识库、需要规划反思的场景 |
 | `workflow` | （预留） | — | — |
 
-- **simple_rag**：创建时绑定知识库，对话固定走"检索 → 注入引用块 → 生成"；无命中时短路返回"知识库中没有相关信息"
+- **simple_rag**：绑定字段转换为 `rag` 工具配置，与 general 共用 `create_agent`、工具日志、引用收集和自动 checkpoint。`RagFirstMiddleware` 在本轮尚无 RAG 工具结果时强制选择 `rag`，结果返回后恢复自主生成；空结果也由 Agent 回答，提示词要求明确资料不足。供应商必须支持指定 `tool_choice`，真实兼容性仍待验收。
 - **general**：创建时勾选工具（见工具注册体系），对话由 LLM 自主决定调用哪些工具、调用几轮（LangGraph 多轮）
 
 ### 意图路由（降本提速）
@@ -271,25 +271,26 @@ general Agent 可开启「意图路由」（Agent 级开关，默认关闭）：
   ▼
 ① 意图识别（Agent 级规则引擎 → 未命中则 LLM 兜底分类）
   ├── simple  → 零工具直接回答（省 token / 降延迟）
-  └── general → 完整 ReAct 循环（LLM 自主调用工具 / 规划 / 反思）
+  └── general → 可选 plan → 主 Agent 工具循环 → 可选 verify / revision
 ```
 
 - **规则引擎**：Agent 级自定义（预设模板 + 可编辑），支持 `keyword` / `regex` / `length` 三种规则，按优先级从小到大执行、命中即判定
-- **保守原则**：`simple` 规则保持保守（问候/感谢/闲聊），`general` 规则可放宽（误判代价小）；规则判 simple 但消息超过 `intent.simple_max_length`（默认 30 字）自动升级 LLM 兜底，防"你好，帮我查一下报销制度"被误判
-- **LLM 兜底**：无规则命中时低温调用一次分类（`{"intent": "simple"|"general"}`）；分类失败默认走 general（宁多花 token 不答错）
-- **simple 档记忆**：历史纯文本化 + 最近一轮检索残留注入，追问场景（"那差旅标准呢"）也能答对
+- **保守原则**：指向轻量路由的 keyword 必须覆盖整句（忽略标点、空白与大小写），业务路由仍为包含匹配。纯“你好！”直接轻量回答；“你好，我想了解一点这个课程的事情”继续业务规则或 LLM 分类，不再被问候截走。现有规则无需重新保存；自定义 regex / length 语义不变。
+- **长度保护**：规则判 simple 但超过 `intent.simple_max_length`（默认 30 字）仍升级 LLM 兜底。
+- **LLM 兜底**：结合最近语义历史和业务工具选择 `intent.categories` 中的类别码；动态 Pydantic 枚举校验输出，再映射到 `simple/general` 执行路由及规划、核验策略。`complex` 可作为类别码，执行路由本身仍只有两种；分类失败降级到 general 路由。
+- **simple 档**：零工具直答不等于执行知识检索；业务追问需结合上下文分类，不保证仅靠旧上下文回答准确。
 - 对话页气泡顶部会显示 `⚡ 轻量模式` / `🛠 完整模式` 标签
 
 ### 内置推理工具 plan / reflect
 
-general Agent 默认注册两个内置推理工具（Agent 级独立开关，无需任何配置）：
+当前规划与核验由 AgentGraph 节点执行。配置类别的 `use_plan/use_reflect` 与 Agent 的 `plan_enabled/reflect_enabled` 共同决定是否执行；不向主 Agent 注册 plan/reflect 工具。主答案先流式输出，需要时再核验，明确要求修订才进入 revision。
 
 | 工具 | 作用 | 说明 |
 |------|------|------|
-| `plan` | 为复杂任务制定分步执行计划（JSON 步骤数组） | 建议性参考，LLM 在 ReAct 循环中参考执行 |
-| `reflect` | 批评性审查答案草稿（完整性/准确性/证据） | LLM 据此修正最终回答 |
+| `plan` | 为复杂任务制定分步执行计划 | 图节点输出规划，主 Agent 参考执行 |
+| `reflect` / verify | 核验已经生成的主答案 | 需要时触发 revision；旧 draft/reflect 方法未接入当前执行图 |
 
-对话页会以「📋 执行计划」「🔍 反思建议」折叠面板展示过程。
+对话页展示执行过程；详细规划、核验结果和模型/工具诊断通过「查看完整链路日志」查看。
 
 ### 工具注册体系（新增工具 = 一个文件）
 
@@ -348,7 +349,7 @@ class XxxTool(BaseTool):
             return "工具执行结果"
         return xxx
 
-    # execute 仅代码控制场景（如 simple_rag 预检索）需要，纯 LLM 调用型工具可不实现
+    # execute 可供工具内部复用；simple_rag 也通过 build_langchain 构建的工具执行
 ```
 
 ```bash
@@ -388,26 +389,29 @@ POST /api/v1/agents/{agent_id}/chat
 
 请求体：`{ "message": "...", "conversation_id": null, "stream": true, "debug": false }`
 
-流式 SSE 事件：
+流式 SSE 使用 AgentEvent v2；旧 intent / delta / done 等为历史协议，不用于当前事件解析：
 
 | 事件 | 字段 | 说明 |
 |------|------|------|
-| `intent` | `intent` | 意图判定结果（simple / general，路由开启时） |
-| `plan` | `plan` | 规划内容（LLM 调用 plan 工具时） |
-| `reflect` | `suggestions` | 反思建议（LLM 调用 reflect 工具时） |
-| `delta` | `content` | 回答文本增量（打字机） |
-| `citations` | `citations` | 引用来源列表（生成完成后一次推送） |
-| `debug` | `debug` | 检索调试信息（request.debug=true 时） |
-| `error` | `code/message/suggestion` | 错误（如推理模型 temperature 限制） |
-| `done` | — | 结束 |
+| `turn.started` | `trace_id/turn_id` | 本轮开始 |
+| `stage.started/progress/completed/failed` | `stage/stage_id/status/detail/duration_ms` | 意图、MQE、HyDE、模型轮、工具轮等阶段 |
+| `answer.delta` | `content` | 答案增量；不输出隐藏推理内容 |
+| `answer.revision_started` | `detail` | 答案修订开始 |
+| `citations.completed` | `citations/citation_bindings` | 可验证来源与标记绑定 |
+| `turn.completed/failed/cancelled` | `duration_ms/detail` | 唯一终态；服务器首答案耗时用于最终校准 |
 
-引用标注：回答中的 `[N]` 可点击，定位展开对应引用来源（仅展示实际引用的条目）。
+新回答使用稳定 `[S#]` 与 `citation_bindings`，仅展示服务端验证的来源；旧 `[N]` 保留兼容。管理端接收 public/debug 事件，Widget 仅接收 public。
+
+`debug` 请求字段仅为旧客户端兼容。后端始终采集安全 Trace，聊天页使用「查看完整链路日志」作为诊断入口，已移除冗余 Debug 开关。准备阶段保留在完整链路内，常规进度不展示其细节。详情默认中文字段和结构化结果，原始 JSON 折叠；连续 answer.delta 在 UI 合并，但原始日志保留。聊天内查看链路打开抽屉，详情每 2 秒刷新至终态。页面内跨路由保留进行中的聊天，浏览器刷新不支持 SSE 重连。
+
+模型首输出与首答案 Token 是不同指标：Agent 可能先选择/执行工具，再生成答案；阶段进度不代表实际答案延迟已降低。模型耗时包含上游等待，不暴露或推断隐藏思维链。
 
 ### 会话与记忆
 
 - 会话由服务端管理：`conversation_id` 缺省时自动创建
-- **checkpoint 记忆**：LangGraph 持久化（thread_id = conversation_id），多轮对话自动携带上下文
-- **长会话总结**：SummarizationMiddleware 自动压缩（触发/保留条数可配）
+- **checkpoint 记忆**：LangGraph 持久化，新 thread 为 `memory_v2:{conversation_id}`，namespace 为空；前端继续使用原 conversation_id。首次访问按需迁移旧 thread 消息，不恢复旧待执行任务。
+- **长会话总结**：SummarizationMiddleware 自动压缩（触发/保留条数可配）。轻量直答也走零工具 `create_agent`，通过 `SimpleContextMiddleware` 投影模型输入，框架自动保存原始消息。
+- **展示历史**：`conversations.messages` 独立保存页面历史和引用；记忆修复使用公开图状态 API，不手写 checkpoint 版本。当前会话锁只覆盖本进程记忆服务更新，不保证多进程整轮互斥。
 - 会话列表 / 历史消息 / 删除：`/api/v1/conversations` 系列接口
 - 匿名访客（widget）：会话归属 `client_id`
 
@@ -450,7 +454,7 @@ GET    /api/v1/public/conversations/{id}/messages  访客历史消息
 
 ### 日志体系
 
-后端日志按模块分文件输出到 `logs/`（config.yaml `logging.dir`）：
+后端日志输出到 `logs/YYYY-MM-DD/`（config.yaml `logging.dir`，环境变量 `LOG_DIR` 可覆盖），包含日期模板文本日志与结构化 JSONL：
 
 | 文件 | 内容 |
 |------|------|
@@ -459,6 +463,8 @@ GET    /api/v1/public/conversations/{id}/messages  访客历史消息
 | `sql.log` | SQL 执行（调试用） |
 | `error.log` | 异常堆栈 |
 | `app.log` | 应用业务日志 |
+
+上述文本日志实际文件名默认为 `YYYY-MM-DD-模块.log`。结构化文件包括 `access.jsonl`、`agent-trace.jsonl`、`llm.jsonl`、`tool.jsonl`，通过 request_id / trace_id / turn_id 关联。仅超级管理员可通过 `/api/v1/debug/agent-traces` 查询、查看及导出脱敏链路。容器日志与应用文件日志独立轮转；应用 Trace 必须保留 `pin-logs` 卷。
 
 ## API 概览
 
@@ -637,7 +643,7 @@ preset_providers:
 | 3 | 文档处理链路 + 模型配置 | ✅（含上传自动处理，2026-08-24） |
 | 4 | Agent CRUD + RAG 对话 + 意图路由 + 工具体系 | ✅ |
 | 5 | 浮窗嵌入组件（widget.js） | ✅ |
-| 6 | 联调 + Docker 部署 | ⏳ |
+| 6 | 联调 + Docker 部署 | 🔄 Dockerfile/Compose 已有，近期配置更新与 GPU/生产验收待实测 |
 | — | 工具生态（web_search 等更多内置工具） | ⏳ |
 | — | workflow Agent（强制按计划执行） | ⏳ |
 | — | 意图路由数据埋点（simple/general 占比统计） | ⏳ |
