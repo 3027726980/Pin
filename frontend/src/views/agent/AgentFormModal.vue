@@ -9,14 +9,7 @@
   >
     <n-form ref="formRef" :model="formData" :rules="rules" label-placement="left" label-width="120" require-mark-placement="right-hanging">
       <!-- ── 基础选项 ─────────────────────── -->
-      <n-form-item label="类型" path="type">
-        <n-radio-group v-model:value="formData.type" :disabled="!!editing">
-          <n-radio-button value="simple_rag">简单 RAG Agent</n-radio-button>
-          <n-radio-button value="general">综合 Agent</n-radio-button>
-        </n-radio-group>
-      </n-form-item>
-
-      <n-form-item label="名称" path="name">
+<n-form-item label="名称" path="name">
         <n-input v-model:value="formData.name" placeholder="请输入 Agent 名称" />
       </n-form-item>
 
@@ -36,14 +29,11 @@
         </n-select>
       </n-form-item>
 
-      <!-- 工具配置（Schema 驱动动态表单：simple_rag 仅 rag 卡片强制启用，general 全部可选） -->
       <n-form-item label="工具" label-style="align-self: flex-start">
         <div class="tool-config-area">
           <div class="tool-config-header">
             <n-alert type="info" :show-icon="false" style="flex: 1">
-              {{ formData.type === 'simple_rag'
-                ? '绑定知识库检索：在下方 rag 工具中配置知识库与检索参数。'
-                : '工具列表由后端自动发现；启用后按需填写参数，新增工具无需升级前端。' }}
+              工具由后端动态发现；启用后按需填写参数。
             </n-alert>
             <n-button
               size="small"
@@ -56,19 +46,18 @@
             </n-button>
           </div>
           <div
-            v-for="def in (formData.type === 'simple_rag' ? (ragDef ? [ragDef] : []) : toolDefs)"
+            v-for="def in toolDefs"
             :key="def.type"
             class="tool-card"
           >
             <div class="tool-card-head" @click="toggleExpanded(def)">
               <n-switch
-                v-if="formData.type === 'general'"
+
                 v-model:value="enabledTools[def.type]"
                 size="small"
                 @click.stop
                 @update:value="(v: boolean) => toggleTool(def, v)"
               />
-              <n-tag v-else size="small" type="primary" :bordered="false">必选</n-tag>
               <span class="tool-card-name">{{ def.type }}</span>
               <span class="tool-card-desc">{{ def.description }}</span>
               <span class="tool-card-toggle">
@@ -95,26 +84,29 @@
         </div>
       </n-form-item>
 
+      <n-form-item label="技能">
+        <n-select v-model:value="selectedSkills" multiple filterable clearable :options="skillOptions" placeholder="选择本地技能，可在技能管理页上传" />
+      </n-form-item>
+
       <!-- ── 高级选项（默认折叠）────────── -->
       <n-collapse>
 
-        <!-- 意图路由 + 内置推理工具（仅 general） -->
-        <n-collapse-item v-if="formData.type === 'general'" title="意图路由" name="intent">
+        <!-- 意图识别 + 内置推理工具（仅 general） -->
+        <n-collapse-item  title="意图识别" name="intent">
           <n-alert type="info" :show-icon="false" style="margin-bottom: 12px">
-            开启后简单问题（问候/感谢/闲聊）走<b>零工具直接回答</b>，省 token、降低延迟；
-            复杂问题仍由 LLM 自主规划（plan）与反思（reflect）。规则可自定义。
+            全部任务交给同一个 Agent。开启意图识别后，类别策略可触发规划与答案核验。
           </n-alert>
-          <n-form-item label="意图路由">
+          <n-form-item label="意图识别">
             <n-switch v-model:value="formData.intent_routing" />
             <template #feedback>关闭 = 纯 ReAct（所有问题由 LLM 自行判断）</template>
           </n-form-item>
-          <n-form-item label="规划工具 plan">
+          <n-form-item label="任务规划">
             <n-switch v-model:value="formData.plan_enabled" />
             <template #feedback>复杂任务先制定分步计划再执行</template>
           </n-form-item>
-          <n-form-item label="反思工具 reflect">
+          <n-form-item label="答案核验">
             <n-switch v-model:value="formData.reflect_enabled" />
-            <template #feedback>生成答案前自动审查并修正</template>
+            <template #feedback>主答案生成后按类别策略核验并修订</template>
           </n-form-item>
 
           <!-- 意图规则列表 -->
@@ -133,10 +125,7 @@
                     v-model:value="rule.target"
                     size="small"
                     style="width: 92px"
-                    :options="[
-                      { label: '→ 简单', value: 'simple' },
-                      { label: '→ 复杂', value: 'general' },
-                    ]"
+                    :options="intentOptions"
                   />
                   <n-select
                     v-model:value="rule.kind"
@@ -160,7 +149,7 @@
                     v-if="rule.kind === 'keyword'"
                     v-model:value="rule.keywordsText"
                     size="small"
-                    placeholder="逗号分隔；轻量模式需整句匹配，完整模式为包含匹配（如：你好,hi,早上好）"
+                    placeholder="逗号分隔；按关键词包含匹配（如：你好,hi,早上好）"
                     style="flex: 1"
                   />
                   <n-input
@@ -181,7 +170,7 @@
                 <n-button size="small" dashed @click="resetIntentRules">恢复默认</n-button>
               </n-space>
               <div style="color: #888; font-size: 12px; margin-top: 8px">
-                按优先级从小到大执行，命中即判定；简单规则请保持保守（仅问候/感谢等），复杂规则可放宽。
+                按优先级从小到大执行，命中即判定；规则目标为已配置的任务类别。
               </div>
             </div>
           </n-form-item>
@@ -265,6 +254,8 @@
 </template>
 
 <script setup lang="ts">
+/** 作者：LHF；时间：2026-10-25；作用：统一 Agent 配置及文件系统技能绑定。 */
+import { listSkills, getAgentSkills, bindAgentSkills, type SkillInfo } from '@/api/skills'
 import { ref, computed, watch } from 'vue'
 import type { FormInst, FormRules, SelectOption } from 'naive-ui'
 import { ChevronDown, ChevronForward, Refresh } from '@vicons/ionicons5'
@@ -279,7 +270,6 @@ import {
   type ToolDef,
   type IntentRule,
 } from '@/api/agent'
-import { listKnowledgeBases, type KnowledgeBaseListItem } from '@/api/knowledge'
 import { listMyConfigs, type UserModelConfigItem } from '@/api/model-config'
 import ToolParamForm from './ToolParamForm.vue'
 
@@ -301,12 +291,8 @@ const show = computed({
 const message = useMessage()
 
 // ── 选项数据 ────────────────────────────
-const kbs = ref<KnowledgeBaseListItem[]>([])
 const modelConfigs = ref<UserModelConfigItem[]>([])
 
-const kbOptions = computed<SelectOption[]>(() =>
-  kbs.value.filter(k => k.status === 1).map(k => ({ label: k.name, value: k.id })),
-)
 const llmOptions = computed<SelectOption[]>(() =>
   modelConfigs.value
     .filter(c => c.model_type === 2 && c.is_active)
@@ -332,8 +318,6 @@ const rerankOptions = computed<SelectOption[]>(() =>
     .map(c => ({ label: `${c.provider} / ${c.model_name}`, value: c.id })),
 )
 
-// rag 工具定义（simple_rag 强制启用；找不到时 simple_rag 表单提示无可用工具）
-const ragDef = computed(() => toolDefs.value.find(d => d.type === 'rag') || null)
 
 // Rerank 模型选择器显隐：auto/always 都允许选择，always 必须选择。
 const showRerankModel = computed(() =>
@@ -343,9 +327,22 @@ const showRerankModel = computed(() =>
 // ── 表单状态 ────────────────────────────
 const formRef = ref<FormInst>()
 const submitting = ref(false)
+const selectedSkills = ref<string[]>([])
+const skills = ref<SkillInfo[]>([])
+const savedAgentId = ref('')
+const skillOptions = computed(() => skills.value.map(item => ({
+  label: item.enabled ? item.name : item.name + '（已停用）', value: item.name, disabled: !item.valid,
+})))
+
+/** 刷新可绑定的本地技能与已有绑定。 */
+async function fetchSkills() {
+  skills.value = await listSkills()
+  savedAgentId.value = props.editing?.id || ''
+  selectedSkills.value = props.editing ? (await getAgentSkills(props.editing.id)).names : []
+}
 
 const formData = ref<AgentCreatePayload & { description: string; welcome_message: string; system_prompt: string }>({
-  type: 'simple_rag',
+  type: 'general',
   name: '',
   description: '',
   llm_config_id: '',
@@ -357,7 +354,7 @@ const formData = ref<AgentCreatePayload & { description: string; welcome_message
   system_prompt: '',
   enhance_llm_config_id: '',
   rerank_config_id: '',
-  // Phase 4.10 意图路由
+  // Phase 4.10 意图识别
   intent_routing: false,
   plan_enabled: true,
   reflect_enabled: true,
@@ -376,10 +373,6 @@ const DEFAULT_INTENT_RULE_TEMPLATE: Array<Omit<EditableIntentRule, 'keywordsText
   { name: '对比分析', kind: 'keyword', keywords: ['对比', '比较', '分析', '评估', '优缺点', '区别', '差异'], target: 'general', priority: 5, enabled: true },
   { name: '任务规划', kind: 'keyword', keywords: ['规划', '方案', '计划', '步骤', '流程', '怎么做', '如何', '帮我'], target: 'general', priority: 5, enabled: true },
   { name: '数据类', kind: 'keyword', keywords: ['数据', '统计', '报表', '指标', '趋势'], target: 'general', priority: 5, enabled: true },
-  { name: '问候语', kind: 'keyword', keywords: ['你好', '您好', 'hi', 'hello', '嗨', '哈喽', '早上好', '中午好', '下午好', '晚上好'], target: 'simple', priority: 10, enabled: true },
-  { name: '感谢语', kind: 'keyword', keywords: ['谢谢', '感谢', '辛苦了', '多谢'], target: 'simple', priority: 20, enabled: true },
-  { name: '告别语', kind: 'keyword', keywords: ['再见', '拜拜', '晚安'], target: 'simple', priority: 30, enabled: true },
-  { name: '简短肯定', kind: 'keyword', keywords: ['好的', '可以', '明白了', '知道了', 'ok', '嗯'], target: 'simple', priority: 40, enabled: true },
 ]
 
 /** 后端 IntentRules → 编辑态 */
@@ -412,10 +405,10 @@ function addIntentRule() {
     id: null,
     name: '',
     kind: 'keyword',
+    target: 'general',
     keywordsText: '',
     pattern: null,
     max_length: null,
-    target: 'simple',
     enabled: true,
     priority: 100,
   })
@@ -498,10 +491,7 @@ async function refreshToolDefs() {
       }
     }
     toolDefs.value = defs
-    // simple_rag 的 rag 参数兜底初始化（如首次刷新才拿到 rag 定义）
-    if (formData.value.type === 'simple_rag' && ragDef.value && !toolValues.value['rag']) {
-      initToolValues(ragDef.value)
-    }
+
     message.success(removed.length
       ? `工具列表已刷新（已移除失效工具：${removed.join(', ')}）`
       : '工具列表已刷新')
@@ -527,7 +517,8 @@ const rules: FormRules = {
 }
 
 // 默认配置（新建时系统提示词默认填入默认模板）
-const defaults = ref<{ system_prompt: string }>({ system_prompt: '' })
+const defaults = ref<{ system_prompt: string; intent_categories?: Array<{ code: string; description: string }> }>({ system_prompt: '' })
+const intentOptions = computed(() => (defaults.value.intent_categories || [{ code: 'general', description: '常规任务' }, { code: 'complex', description: '复杂任务' }]).map(item => ({ label: item.description, value: item.code })))
 
 async function fetchDefaults() {
   try {
@@ -542,7 +533,7 @@ watch(
   () => props.show,
   async (val) => {
     if (!val) return
-    await Promise.all([fetchKbs(), fetchModelConfigs(), fetchDefaults(), fetchToolDefs()])
+    await Promise.all([fetchModelConfigs(), fetchDefaults(), fetchToolDefs(), fetchSkills()])
     if (props.editing) {
       const e = props.editing
       formData.value = {
@@ -568,20 +559,7 @@ watch(
       expandedTools.value = {}
       toolValues.value = {}
       const unknownTools: string[] = []
-      if (e.type === 'simple_rag') {
-        // simple_rag：表字段映射到 rag 工具参数
-        const def = ragDef.value
-        if (def) {
-          const values: Record<string, any> = {}
-          for (const p of def.params) {
-            const v = (e as any)[p.key]
-            if (v !== undefined && v !== null) values[p.key] = v
-            else if (p.default !== undefined) values[p.key] = p.default
-            else if (p.type === 'boolean') values[p.key] = false
-          }
-          toolValues.value['rag'] = values
-        }
-      } else {
+
         for (const t of e.tools || []) {
           const def = toolDefs.value.find(d => d.type === t.type)
           if (!def) {
@@ -599,13 +577,13 @@ watch(
           }
           toolValues.value[def.type] = values
         }
-      }
+
       if (unknownTools.length) {
         message.warning(`工具已不存在，保存后将移除：${unknownTools.join(', ')}`)
       }
     } else {
       formData.value = {
-        type: 'simple_rag', name: '', description: '', llm_config_id: '',
+        type: 'general', name: '', description: '', llm_config_id: '',
         summary_llm_config_id: '',
         temperature: null, top_p: null, max_tokens: null, welcome_message: '',
         system_prompt: defaults.value.system_prompt || '',
@@ -618,10 +596,6 @@ watch(
       enabledTools.value = {}
       expandedTools.value = {}
       toolValues.value = {}
-      // 新建默认 simple_rag：初始化 rag 工具默认参数（ToolParamForm 也有 default 兑底），卡片默认收起
-      if (ragDef.value) {
-        initToolValues(ragDef.value)
-      }
     }
   },
 )
@@ -650,21 +624,7 @@ async function handleSubmit() {
     rerank_config_id: formData.value.rerank_config_id || null,
   }
 
-  if (formData.value.type === 'simple_rag') {
-    // rag 工具参数 → 表字段映射（kb_id 必填校验）
-    const values = toolValues.value['rag'] || {}
-    if (!values.kb_id) {
-      message.error('请选择绑定的知识库')
-      return
-    }
-    payload.kb_id = values.kb_id
-    payload.top_k = values.top_k ?? null
-    payload.score_threshold = values.score_threshold ?? null
-    payload.mqe_mode = values.mqe_mode ?? 'auto'
-    payload.hyde_mode = values.hyde_mode ?? 'auto'
-    payload.mqe_query_count = values.mqe_query_count ?? 3
-    payload.rerank_mode = values.rerank_mode ?? 'auto'
-  } else {
+
     // Schema 驱动组装：仅提交启用的工具（含必填参数校验）
     const tools: ToolConfig[] = []
     for (const def of toolDefs.value) {
@@ -679,22 +639,22 @@ async function handleSubmit() {
       tools.push({ type: def.type, ...values } as ToolConfig)
     }
     payload.tools = tools
-    // Phase 4.10 意图路由 + 内置推理工具
+    // Phase 4.10 意图识别 + 内置推理工具
     payload.intent_routing = formData.value.intent_routing
     payload.plan_enabled = formData.value.plan_enabled
     payload.reflect_enabled = formData.value.reflect_enabled
     payload.intent_rules = { rules: toPayloadRules() }
-  }
+
 
   submitting.value = true
   try {
-    if (props.editing) {
-      await updateAgent(props.editing.id, payload)
-      message.success('更新成功')
-    } else {
-      await createAgent(payload)
-      message.success('创建成功')
-    }
+    const saved = savedAgentId.value
+      ? await updateAgent(savedAgentId.value, payload)
+      : await createAgent(payload)
+    savedAgentId.value = saved.id
+    try { await bindAgentSkills(saved.id, selectedSkills.value) }
+    catch (error) { message.error('Agent 已保存，技能绑定未保存：' + (error as Error).message); return }
+    message.success('Agent 与技能绑定已保存')
     emit('update:show', false)
     emit('saved')
   } catch (e) {
@@ -708,14 +668,6 @@ function resetForm() {
   formRef.value?.restoreValidation()
 }
 
-async function fetchKbs() {
-  try {
-    const res = await listKnowledgeBases(1, 100)
-    kbs.value = res.items
-  } catch {
-    kbs.value = []
-  }
-}
 
 async function fetchModelConfigs() {
   try {

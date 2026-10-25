@@ -80,4 +80,4 @@ class FetchUrlTool(BaseTool):
 
         return fetch_url
 
-    # execute 可选：仅 simple_rag 代码控制场景需要，纯 LLM 调用型工具可不实现
+    # execute 可选：仅 代码控制场景需要，纯 LLM 调用型工具可不实现

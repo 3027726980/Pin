@@ -8,6 +8,7 @@ from backend.api.v1.public import router as public_router
 from backend.api.v1.debug import router as debug_router
 from backend.api.v1.settings import router as settings_router
 from backend.api.v1.providers import router as provider_router
+from backend.api.v1.skills import router as skills_router
 
 __all__ = [
     "agent_api_key_router",
@@ -19,5 +20,6 @@ __all__ = [
     "provider_router",
     "public_router",
     "settings_router",
+    "skills_router",
     "user_model_config_router",
 ]

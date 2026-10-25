@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator
 from uuid import uuid4
 
@@ -16,6 +16,8 @@ class TraceContext:
     turn_id: str
     conversation_id: str | None = None
     agent_id: str | None = None
+    # 作者：LHF；2026-10-25；同一 Turn 的异步子任务共享实际操作计数，区别于预算额度。
+    operation_counts: dict[str, int] = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
     def new(

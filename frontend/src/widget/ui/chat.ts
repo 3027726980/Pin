@@ -1,9 +1,13 @@
+import { mentionQuery, mentionOptions, insertMention, eventArtifacts, type Capabilities, type CapabilityMention, type SkillArtifact } from '../../chat-core/capabilities'
+/** 作者：LHF；时间：2026-10-25；作用：提供会话上下文手动压缩交互。 */
 /**
  * widget 对话组件：Shadow DOM 渲染（浮球 + 面板 + 会话列表 + 登录表单）
  * 事件委托 + 局部更新；样式完全隔离在 shadow root 内
  */
+import { renderMarkdown } from '../../chat-core/markdown'
+import markdownStyles from '../../chat-core/markdown.css?inline'
 import { PublicApi } from '../core/api'
-import { extractRefIndexes, filterUsedCitations, splitRefs } from '../core/refs'
+import { extractRefIndexes, filterUsedCitations } from '../core/refs'
 import { getToken, getUser, setToken, setUser, type CitationBinding, type ConvItem, type Msg } from '../core/state'
 import { widgetStageText, widgetVisibleStages } from '../core/stage-view'
 import { themeVars, type WidgetTheme } from '../core/theme'
@@ -13,6 +17,13 @@ import { stripUnboundSourceMarkers } from '../../utils/citations'
 
 const STYLE = `
 :host { all: initial; }
+.pin-mention-box { max-height: 180px; overflow: auto; background: #fff; padding: 0 12px; }
+.pin-mention-box button, .pin-artifact { cursor: pointer; border: 1px solid #ddd; border-radius: 5px; padding: 5px 8px; margin: 3px; background: #fff; color: #333; }
+.pin-mention-option { display: block; width: calc(100% - 6px); text-align: left; }
+.pin-mention-option small { display: block; color: #777; }
+.pin-mention-option.active { background: #e6f7ef; }
+.pin-mention-tag { display: inline-block; font-size: 12px; padding: 2px 5px; border: 1px solid #ccc; border-radius: 4px; margin-right: 5px; }
+
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
 .pin-bubble {
   position: fixed; right: 24px; bottom: var(--pin-bubble-bottom, 24px);
@@ -154,7 +165,7 @@ const STYLE = `
    注意：类加在 shadow host 上，必须用 :host() 伪类匹配（普通类选择器选不到 host） */
 :host(.pin-root-full) .pin-panel { position: absolute; inset: 0; right: auto; bottom: auto; width: 100%; height: 100%; max-height: none; border-radius: 0; display: flex; }
 :host(.pin-root-full) .pin-bubble { display: none; }
-`
+` + markdownStyles
 
 export class ChatWidget {
   private api: PublicApi
@@ -166,6 +177,7 @@ export class ChatWidget {
   private convs: ConvItem[] = []
   private activeConv: ConvItem | null = null
   private streaming = false
+  private compacting = false
   private drawerOpen = false
   private loginOpen = false
   private abortCtrl: AbortController | null = null
@@ -186,6 +198,11 @@ export class ChatWidget {
   private bubble!: HTMLElement
   private panel!: HTMLElement
   private bodyEl!: HTMLElement
+  private capabilities: Capabilities = { skills: [], tools: [] }
+  private mentions: CapabilityMention[] = []
+  private mentionIndex = 0
+  private mentionDismissed = false
+  private mentionQueryOpen = false
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
   private stopBtn!: HTMLButtonElement
@@ -220,6 +237,7 @@ export class ChatWidget {
     this.renderShell()
     this.bindEvents()
     this.initConversation()
+    void this.refreshCapabilities()
   }
 
   // ── 外壳渲染 ────────────────────────────
@@ -233,12 +251,14 @@ export class ChatWidget {
           ${t.logo ? `<img src="${escapeHtml(t.logo)}" alt="logo">` : ''}
           <span class="title">${escapeHtml(t.title || '智能助手')}</span>
           <button class="btn" data-action="login" title="登录">👤</button>
+          <button class="btn" data-action="compact" title="压缩上下文" aria-label="压缩上下文">压缩</button>
           <button class="btn" data-action="drawer" title="历史会话">☰</button>
           <button class="btn" data-action="close" title="关闭">✕</button>
         </div>
         <div class="pin-body"></div>
+        <div class="pin-mention-box"></div>
         <div class="pin-input-row">
-          <textarea placeholder="输入消息，Enter 发送" rows="1"></textarea>
+          <textarea placeholder="输入消息，@ 选择技能或工具" rows="1"></textarea>
           <button class="pin-send" data-action="send">发送</button>
           <button class="pin-stop" data-action="stop" style="display:none">停止</button>
         </div>
@@ -273,13 +293,34 @@ export class ChatWidget {
 
   // ── 事件绑定（委托） ─────────────────────
   private bindEvents() {
+    // 来源引用可通过键盘激活，与管理端交互一致。
+    this.shadow.addEventListener('keydown', (event) => {
+      const keyEvent = event as KeyboardEvent
+      if (!['Enter', ' '].includes(keyEvent.key)) return
+      const reference = (event.target as HTMLElement).closest<HTMLElement>('[data-source-ref]')
+      if (reference) { keyEvent.preventDefault(); reference.click() }
+    })
     this.shadow.addEventListener('click', (e) => {
+      const reference = (e.target as HTMLElement).closest<HTMLElement>('[data-source-ref]')
+      if (reference) {
+        const message = reference.closest<HTMLElement>('[data-markdown-msg]')
+        if (message) this.toggleCite(message.dataset.markdownMsg!, reference.dataset.sourceRef!)
+        return
+      }
       const target = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null
       if (!target) return
       const action = target.dataset.action
+      if (action === 'choose-mention') { this.selectMention(Number(target.dataset.index)); return }
+      if (action === 'remove-mention') { this.mentions.splice(Number(target.dataset.index), 1); this.renderMentions(); return }
+      if (action === 'download-artifact') {
+        const artifact = this.msgs[Number(target.dataset.msg)]?.artifacts?.[Number(target.dataset.index)]
+        if (artifact) void this.api.downloadArtifact(this.agentId, artifact).catch(error => this.showToast(error.message))
+        return
+      }
       if (action === 'toggle') this.togglePanel()
       else if (action === 'close') this.panel.classList.remove('open')
       else if (action === 'drawer') this.toggleDrawer()
+      else if (action === 'compact') this.compactContext()
       else if (action === 'close-drawer') this.toggleDrawer(false)
       else if (action === 'new-conv') { this.pendingDelConvId = null; this.newConversation() }
       else if (action === 'login') this.toggleLogin()
@@ -292,7 +333,15 @@ export class ChatWidget {
       else if (action === 'toggle-cite-content') this.toggleCiteContent((target as HTMLElement).dataset.msg!, (target as HTMLElement).dataset.idx!)
       else if (action === 'send') this.send()
     })
+    this.inputEl.addEventListener('input', () => {
+      this.mentionIndex = 0; this.mentionDismissed = false; this.renderMentions()
+      const open = !!mentionQuery(this.inputEl.value, this.inputEl.selectionStart)
+      if (open && !this.mentionQueryOpen) void this.refreshCapabilities()
+      this.mentionQueryOpen = open
+    })
+    this.inputEl.addEventListener('click', () => this.renderMentions())
     this.inputEl.addEventListener('keydown', (e) => {
+      if (e.isComposing || this.handleMentionKey(e)) return
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         this.send()
@@ -360,7 +409,26 @@ export class ChatWidget {
   }
 
   // ── 会话操作 ────────────────────────────
+  /** 作者：LHF；2026-10-25；压缩当前记忆并保留消息展示，忙碌时禁止重复操作。 */
+  private async compactContext() {
+    if (!this.activeConv || this.streaming || this.compacting) return
+    this.compacting = true
+    this.renderInputRow()
+    try {
+      const result = await this.api.compactConversation(this.agentId, this.activeConv.id)
+      this.showToast(result.compressed
+        ? `已压缩：约 ${result.before_tokens} → ${result.after_tokens} token`
+        : '当前上下文无需压缩，已保留原记忆')
+    } catch (error) {
+      this.showToast((error as Error).message || '压缩失败，原记忆已保留')
+    } finally {
+      this.compacting = false
+      this.renderInputRow()
+    }
+  }
+
   private async newConversation() {
+    if (this.streaming || this.compacting) return
     try {
       const conv = await this.api.createConversation(this.agentId)
       this.activeConv = { ...conv, agent_id: this.agentId, message_count: 0, created_at: '', updated_at: '' }
@@ -376,6 +444,7 @@ export class ChatWidget {
   }
 
   private async openConversation(convId: string) {
+    if (this.streaming || this.compacting) return
     try {
       const conv = this.convs.find(c => c.id === convId) || null
       this.activeConv = conv
@@ -393,12 +462,61 @@ export class ChatWidget {
     }
   }
 
+  /** 刷新可用技能和业务工具，不把内部加载工具暴露为用户候选。 */
+  private async refreshCapabilities() {
+    try { const result = await this.api.capabilities(this.agentId); if (!this.destroyed) { this.capabilities = result; this.renderMentions() } }
+    catch { this.capabilities = { skills: [], tools: [] } }
+  }
+
+  /** 两端共用光标查询与候选过滤。 */
+  private mentionCandidates() {
+    const query = this.mentionDismissed ? null : mentionQuery(this.inputEl.value, this.inputEl.selectionStart)
+    return query ? mentionOptions(this.capabilities, query.query, this.mentions) : []
+  }
+
+  /** 使用转义文本渲染候选与可移除偏好标签。 */
+  private renderMentions() {
+    const box = this.shadow.querySelector<HTMLElement>('.pin-mention-box')
+    if (!box || this.destroyed) return
+    const tags = this.mentions.map((item, index) => `<button data-action="remove-mention" data-index="${index}">@${escapeHtml(item.name)} ×</button>`).join('')
+    const options = this.streaming || this.compacting ? [] : this.mentionCandidates()
+    box.innerHTML = tags + options.map((item, index) => `<button class="pin-mention-option ${index === this.mentionIndex ? 'active' : ''}" data-action="choose-mention" data-index="${index}"><strong>${item.kind === 'skill' ? '技能' : '工具'} · ${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description)}</small></button>`).join('')
+  }
+
+  /** 选择后只保存偏好，保留普通消息正文。 */
+  private selectMention(index: number) {
+    const query = mentionQuery(this.inputEl.value, this.inputEl.selectionStart)
+    const item = this.mentionCandidates()[index]
+    if (!query || !item) return
+    this.inputEl.value = insertMention(this.inputEl.value, query)
+    this.mentions.push({ kind: item.kind, name: item.name })
+    this.mentionQueryOpen = false
+    this.inputEl.focus()
+    this.renderMentions()
+  }
+
+  /** 候选打开时 Enter 选择、方向键移动、Escape 收起。 */
+  private handleMentionKey(event: KeyboardEvent): boolean {
+    const items = this.mentionCandidates()
+    if (!items.length) return false
+    if (event.key === 'Escape') { this.mentionDismissed = true; this.renderMentions(); event.preventDefault(); return true }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      this.mentionIndex = (this.mentionIndex + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+      this.renderMentions(); event.preventDefault(); return true
+    }
+    if (event.key === 'Enter' && !event.shiftKey) { this.selectMention(this.mentionIndex); event.preventDefault(); return true }
+    return false
+  }
+
   // ── 发送消息 ────────────────────────────
   private async send() {
     const text = this.inputEl.value.trim()
-    if (!text || this.streaming || !this.activeConv) return
+    if (!text || this.streaming || this.compacting || !this.activeConv) return
+    const mentions = this.mentions.map(item => ({ ...item }))
+    this.mentions = []
     this.inputEl.value = ''
-    this.msgs.push({ role: 'user', content: text, citations: [], rawCitations: [], citationBindings: [] })
+    this.renderMentions()
+    this.msgs.push({ role: 'user', content: text, mentions, citations: [], rawCitations: [], citationBindings: [] })
     const assistantMsg: Msg = {
       role: 'assistant', content: '', citations: [], rawCitations: [], citationBindings: [],
       pending: true, turnState: createTurnState(),
@@ -417,6 +535,7 @@ export class ChatWidget {
         text,
         (e) => {
           assistantMsg.turnState = reduceTurnEvent(assistantMsg.turnState || createTurnState(), e)
+          if (e.stage === 'artifacts') assistantMsg.artifacts = eventArtifacts(e.detail.artifacts)
           if (e.type === 'answer.delta') {
             assistantMsg.content = assistantMsg.turnState.content
             assistantMsg.pending = false
@@ -450,6 +569,7 @@ export class ChatWidget {
           this.updateLastAssistant()
         },
         this.abortCtrl.signal,
+        mentions,
       )
     } catch (e) {
       if ((e as Error).name === 'AbortError') {
@@ -545,18 +665,24 @@ export class ChatWidget {
    */
   private renderInputRow() {
     if (this.destroyed) return
-    this.inputEl.disabled = this.streaming
+    this.inputEl.disabled = this.streaming || this.compacting
+    const compactBtn = this.shadow.querySelector<HTMLButtonElement>('[data-action="compact"]')
+    if (compactBtn) {
+      compactBtn.disabled = this.streaming || this.compacting || !this.activeConv
+      compactBtn.textContent = this.compacting ? '压缩中…' : '压缩'
+    }
     this.sendBtn.style.display = this.streaming ? 'none' : ''
     this.stopBtn.style.display = this.streaming ? '' : 'none'
   }
 
   private renderMsg(m: Msg, idx: number): string {
     const process = m.turnState ? this.renderProcess(m) : (m.pending ? '<div class="pin-process">正在准备回答</div>' : '')
-    const parts = splitRefs(m.content)
-      .map(p => p.type === 'ref'
-        ? `<span class="pin-ref" data-action="cite" data-msg="${idx}" data-idx="${escapeHtml(p.sourceId || String(p.index))}">${escapeHtml(p.value)}</span>`
-        : escapeHtml(p.value))
-      .join('')
+    // 完整累积文本统一解析，避免分割来源标记破坏 Markdown 语法。
+    const references = [...m.citationBindings.map(binding => binding.source_id),
+      ...(m.rawCitations?.length ? m.rawCitations : m.citations).map((_, index) => String(index + 1))]
+    const parts = m.role === 'assistant'
+      ? `<div class="pin-markdown" data-markdown-msg="${idx}">${renderMarkdown(m.content, references)}</div>`
+      : escapeHtml(m.content)
     // 引用来源：仅渲染回答中实际引用的条目（与主站逻辑一致——无 [N] 标注不显示引用面板）
     // 用 rawCitations（完整列表）保留原始编号，避免过滤后编号错位
     const cites = (() => {
@@ -601,8 +727,10 @@ export class ChatWidget {
           </div>
         </div>`
     })()
+    const mentionHtml = (m.mentions || []).map(item => `<span class="pin-mention-tag">@${escapeHtml(item.name)}</span>`).join('')
+    const artifactHtml = (m.artifacts || []).map((file, index) => `<button class="pin-artifact" data-action="download-artifact" data-msg="${idx}" data-index="${index}">下载 ${escapeHtml(file.name)}</button>`).join('')
     const errCls = m.error ? ' err' : ''
-    return `<div class="pin-msg ${m.role}"><div class="pin-bubble-msg${errCls}">${process}${parts}</div>${cites}</div>`
+    return `<div class="pin-msg ${m.role}"><div class="pin-bubble-msg${errCls}">${mentionHtml}${process}${parts}${artifactHtml}</div>${cites}</div>`
   }
 
   /** Widget 只渲染 public 进度，debug/internal 数据不会进入 DOM。 */

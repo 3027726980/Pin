@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """Agent Trace JSONL 的受限查询服务。
 
 只读取日志根目录下合法日期目录，按字节预算流式扫描；损坏行跳过，
@@ -14,7 +15,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from backend.core.config import settings
-from backend.core.observability.events import sanitize_event_detail
+from backend.core.observability.model_context import sanitize_trace_payload
+from backend.core.observability.records import completed_records
 
 _TRACE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -120,8 +122,9 @@ class TraceQueryService:
             return None
         rows.sort(key=lambda row: (int(row.get("sequence", 10**9)), str(row.get("timestamp", ""))))
         summary = next((row for row in rows if row.get("event") == "trace.summary"), None)
-        events = [row for row in rows if row.get("event") != "trace.summary"]
-        return {"trace_id": trace_id, "summary": summary, "events": events}
+        events = [row for row in rows if row.get("event") != "trace.summary" and not row.get("record_version")]
+        return {"trace_id": trace_id, "summary": summary, "events": events,
+                "records": completed_records(rows)}
 
     def export_trace(self, trace_id: str, **kwargs: Any) -> str | None:
         """以安全 JSON 文本导出详情，不返回原始文件内容。"""
@@ -129,11 +132,60 @@ class TraceQueryService:
         if result is None:
             return None
         return json.dumps(
-            sanitize_event_detail(result),
+            {**result, "events": [sanitize_trace_payload(row) for row in result["events"]]},
             ensure_ascii=False,
             indent=2,
             default=str,
         )
+
+    def restore_message_trace_ids(self, conversation_id: object, messages: list[dict]) -> list[dict]:
+        """作者：LHF；2026-10-25；用同会话、正文及 Turn 时间区间唯一匹配旧消息，只补响应不写库。"""
+        pending = [i for i, message in enumerate(messages)
+                   if message.get("role") == "assistant" and not message.get("trace_id")]
+        if not pending:
+            return messages
+        end = date.today()
+        # 扫描失败时整体放弃恢复，不使用未扫描完整的候选，避免误判唯一性。
+        try:
+            rows = [row for row in self._scan(end - timedelta(days=self.max_range_days - 1), end)
+                    if row.get("event") == "trace.summary"
+                    and row.get("conversation_id") == str(conversation_id)
+                    and row.get("trace_id") and row.get("kind") == "request"]
+        except (OSError, TraceQueryError):
+            return messages
+        matches = {}
+        for index in pending:
+            message = messages[index]
+            candidates = set()
+            try:
+                created = datetime.fromisoformat(str(message.get("created_at")))
+                if created.tzinfo is None:
+                    continue
+            except ValueError:
+                continue
+            for row in rows:
+                output = row.get("output")
+                if not isinstance(output, dict) or output.get("answer") != message.get("content"):
+                    continue
+                request = row.get("input")
+                if index > 0 and messages[index - 1].get("role") == "user":
+                    if not isinstance(request, dict) or request.get("message") != messages[index - 1].get("content"):
+                        continue
+                try:
+                    begin = datetime.fromisoformat(str(row.get("started_at")))
+                    finish = datetime.fromisoformat(str(row.get("ended_at")))
+                    if begin <= created <= finish:
+                        candidates.add(self.validate_trace_id(row["trace_id"]))
+                except (ValueError, TypeError):
+                    continue
+            if len(candidates) == 1:
+                matches[index] = candidates.pop()
+        # 同一个 Trace 不能被映射到多条回答，也不能覆盖已持久化的关联。
+        assigned = [message.get("trace_id") for message in messages if message.get("trace_id")]
+        values = list(matches.values()) + assigned
+        return [{**message, "trace_id": matches[index]}
+                if index in matches and values.count(matches[index]) == 1 else message
+                for index, message in enumerate(messages)]
 
     def _rebuild_today_index(self) -> None:
         """启动时仅扫描当天文件，构建有界 summary 索引。"""
@@ -174,7 +226,7 @@ class TraceQueryService:
                             except (UnicodeDecodeError, json.JSONDecodeError):
                                 continue
                             if isinstance(value, dict):
-                                yield sanitize_event_detail(value)
+                                yield sanitize_trace_payload(value)
             current += timedelta(days=1)
 
     @staticmethod

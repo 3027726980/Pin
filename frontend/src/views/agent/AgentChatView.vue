@@ -1,3 +1,4 @@
+<!-- 作者：LHF；时间：2026-10-25；作用：会话手动压缩与模型输入上下文查看。 -->
 <template>
   <div class="chat-page">
     <!-- 页头 -->
@@ -8,8 +9,8 @@
           返回
         </n-button>
         <div class="chat-title">
-          <n-tag size="small" :type="agent?.type === 'simple_rag' ? 'primary' : 'warning'" :bordered="false">
-            {{ agent?.type === 'simple_rag' ? '简单 RAG' : '综合 Agent' }}
+          <n-tag size="small" :type="'primary'" :bordered="false">
+            {{ 'Agent' }}
           </n-tag>
           <span class="chat-name">{{ agent?.name || '加载中...' }}</span>
           <span v-if="activeConv" class="chat-conv-title" :title="activeConv.title || ''">
@@ -17,13 +18,16 @@
           </span>
         </div>
         <div class="chat-header-right">
+          <n-button size="small" :loading="compacting" :disabled="streaming || sending || !activeConv" @click="compactContext">
+            压缩上下文
+          </n-button>
           <span class="stream-option">流式输出</span>
           <n-switch v-model:value="streamMode" size="small" />
-          <n-button size="small" :disabled="streaming" @click="newConversation">
+          <n-button size="small" :disabled="streaming || compacting" @click="newConversation">
             <template #icon><n-icon><AddOutline /></n-icon></template>
             新会话
           </n-button>
-          <n-button size="small" :disabled="streaming" @click="drawerShow = true">
+          <n-button size="small" :disabled="streaming || compacting" @click="drawerShow = true">
             <template #icon><n-icon><ChatbubblesOutline /></n-icon></template>
             会话
           </n-button>
@@ -39,18 +43,15 @@
 
       <div v-for="(msg, idx) in messages" :key="idx" class="msg-row" :class="msg.role">
         <div class="msg-bubble" :class="msg.role">
+          <n-space v-if="msg.mentions?.length" size="small" style="margin-bottom: 6px"><n-tag v-for="item in msg.mentions" :key="item.kind + item.name" size="small">@{{ item.name }}</n-tag></n-space>
+          <n-space v-if="msg.artifacts?.length" size="small" style="margin-bottom: 8px"><n-button v-for="file in msg.artifacts" :key="file.run_id + file.path" size="small" @click="saveArtifact(file)">下载 {{ file.name }}</n-button></n-space>
           <AgentProcessTimeline
             v-if="msg.role === 'assistant' && msg.turnState"
             :state="msg.turnState"
           />
           <!-- 正常内容：分段渲染（文本 + [N] 可点击引用标注） -->
           <template v-if="!isPendingMsg(msg) || msg.content">
-          <!-- Phase 4.10：意图标签（轻量/完整模式） -->
-          <div v-if="msg.intentLabel" class="intent-tag-row">
-            <n-tag size="tiny" :type="msg.intentLabel === 'simple' ? 'success' : 'warning'" :bordered="false">
-              {{ msg.intentLabel === 'simple' ? '⚡ 轻量模式' : '🛠 完整模式' }}
-            </n-tag>
-          </div>
+          <div v-if="msg.intentLabel" class="intent-tag-row"><n-tag size="tiny" :bordered="false">{{ msg.intentLabel === 'complex' ? '复杂任务' : '常规任务' }}</n-tag></div>
           <!-- Phase 4.10：规划 / 反思过程展示（可折叠） -->
           <div v-if="msg.plan || msg.reflect" class="msg-process">
             <n-collapse>
@@ -62,19 +63,14 @@
               </n-collapse-item>
             </n-collapse>
           </div>
-          <div class="msg-content">
-            <template v-for="(part, i) in splitRefs(msg.content)" :key="i">
-              <span v-if="part.type === 'text'">{{ part.value }}</span>
-              <span
-                v-else
-                class="citation-ref"
-                :class="{ disabled: !hasCitationReference(msg, part) }"
-                @click="locateCitationReference(msg, part)"
-              >
-                {{ part.value }}
-              </span>
-            </template>
-          </div>
+          <!-- 助手回答共用安全 Markdown 渲染，用户消息保留原文。 -->
+          <div v-if="msg.role === 'assistant'" class="msg-content pin-markdown"
+            v-html="renderMarkdown(msg.content, citationIds(msg))"
+            @click="onMarkdownCitation(msg, $event)"
+            @keydown.enter="onMarkdownCitation(msg, $event)"
+            @keydown.space="onMarkdownCitation(msg, $event)"
+          />
+          <div v-else class="msg-content">{{ msg.content }}</div>
           <!-- 可靠引用：服务端已校验回答中的 [S#] 与检索候选的对应关系。 -->
           <div v-if="msg.role === 'assistant' && msg.citationBindings?.length" class="msg-citations">
             <n-collapse
@@ -154,21 +150,30 @@
 
     <!-- 输入区 -->
     <n-card class="chat-input-card" :bordered="true">
+      <n-space v-if="selectedMentions.length" size="small" style="margin-bottom: 8px">
+        <n-tag v-for="(item, index) in selectedMentions" :key="item.kind + item.name" closable @close="selectedMentions.splice(index, 1)">@{{ item.name }}</n-tag>
+      </n-space>
+      <div v-if="mentionCandidates.length" class="mention-options" role="listbox">
+        <button v-for="(item, index) in mentionCandidates" :key="item.kind + item.name" :class="{ active: index === mentionIndex }" type="button" @mousedown.prevent="chooseMention(item)">
+          <strong>{{ item.kind === 'skill' ? '技能' : '工具' }} · {{ item.name }}</strong><span>{{ item.description }}</span>
+        </button>
+      </div>
       <div class="chat-input-row">
         <n-input
           v-model:value="inputText"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-          :disabled="streaming"
-          @keydown="onInputKeydown"
+          placeholder="输入消息，@ 选择技能或工具，Enter 发送"
+          :disabled="streaming || compacting"
+          @keydown="onInputKeydown" @keyup="onMentionCursor" @click="onMentionCursor"
         />
         <div class="chat-input-actions">
+          <ContextUsageRing :usage="contextUsage" :loading="contextLoading" :busy="streaming || compacting" />
           <n-button v-if="streaming" type="error" @click="stopStream">
             <template #icon><n-icon><StopOutline /></n-icon></template>
             停止
           </n-button>
-          <n-button v-else type="primary" :loading="sending" :disabled="!inputText.trim()" @click="send">
+          <n-button v-else type="primary" :loading="sending" :disabled="!inputText.trim() || compacting" @click="send">
             <template #icon><n-icon><SendOutline /></n-icon></template>
             发送
           </n-button>
@@ -180,7 +185,7 @@
     <n-drawer v-model:show="drawerShow" :width="340" placement="right">
       <n-drawer-content title="历史会话" closable>
         <div class="conv-toolbar">
-          <n-button size="small" type="primary" :disabled="streaming" @click="newConversation">
+          <n-button size="small" type="primary" :disabled="streaming || compacting" @click="newConversation">
             <template #icon><n-icon><AddOutline /></n-icon></template>
             新会话
           </n-button>
@@ -194,7 +199,7 @@
             :key="conv.id"
             class="conv-item"
             :class="{ active: activeConv && activeConv.id === conv.id }"
-            :disabled="streaming"
+            :disabled="streaming || compacting"
             @click="openConversation(conv)"
           >
             <div class="conv-item-main">
@@ -204,7 +209,7 @@
               </div>
             </div>
             <n-popconfirm
-              :disabled="streaming"
+              :disabled="streaming || compacting"
               @positive-click="deleteConversation(conv)"
             >
               <template #trigger>
@@ -213,7 +218,7 @@
                   circle
                   size="tiny"
                   class="conv-item-del"
-                  :disabled="streaming"
+                  :disabled="streaming || compacting"
                   @click.stop
                 >
                   <template #icon><n-icon><TrashOutline /></n-icon></template>
@@ -236,7 +241,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, onDeactivated } from 'vue'
+/** 作者：LHF；时间：2026-10-25；作用：共享能力提及、临时偏好与脚本产物展示。 */
+import { getCapabilities, downloadArtifact } from '@/api/skills'
+import { mentionQuery, mentionOptions, insertMention, eventArtifacts, type Capability, type CapabilityMention, type Capabilities, type SkillArtifact } from '@/chat-core/capabilities'
+
+import { computed, ref, reactive, watch, onMounted, onUnmounted, onDeactivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   AddOutline,
@@ -260,15 +269,21 @@ import {
 } from '@/api/agent'
 import {
   createConversation,
+  compactConversation,
+  getContextUsage,
   listConversations,
   listConversationMessages,
   deleteConversation as apiDeleteConversation,
   type ConversationItem,
+  type ContextUsage,
 } from '@/api/conversation'
+import { renderMarkdown } from '@/chat-core/markdown'
+import '@/chat-core/markdown.css'
 import { stripUnboundSourceMarkers } from '@/utils/citations'
 import { createTurnState, reduceTurnEvent, interruptTurn, type TurnState } from '@/chat-core/stage-reducer'
 import AgentProcessTimeline from './components/AgentProcessTimeline.vue'
 import AgentTraceDetail from './components/AgentTraceDetail.vue'
+import ContextUsageRing from './components/ContextUsageRing.vue'
 
 defineOptions({ name: 'AgentChatView' })
 const selectedTraceId = ref<string | null>(null)
@@ -291,8 +306,9 @@ interface DisplayMessage extends ChatMessage {
   /** 引用面板是否展开 */
   refPanelExpanded?: boolean
   // ── Phase 4.10 意图路由展示 ──
-  /** 意图判定结果（simple=轻量模式 / general=完整模式） */
-  intentLabel?: 'simple' | 'general' | null
+  /** 意图类别，只影响可选规划和核验。 */
+  intentLabel?: string | null
+  requestMentions?: CapabilityMention[]
   /** plan 工具输出（计划内容） */
   plan?: string | null
   /** reflect 工具输出（反思建议） */
@@ -313,8 +329,55 @@ const agent = ref<AgentDetail | null>(null)
 const messages = ref<DisplayMessage[]>([])
 let msgUid = 0
 const inputText = ref('')
+const capabilities = ref<Capabilities>({ skills: [], tools: [] })
+const selectedMentions = ref<CapabilityMention[]>([])
+const mentionIndex = ref(0)
+const mentionCursor = ref<number | null>(null)
+const mentionDismissed = ref(false)
+const activeMention = computed(() => mentionDismissed.value ? null : mentionQuery(inputText.value, mentionCursor.value ?? inputText.value.length))
+const mentionCandidates = computed(() => activeMention.value ? mentionOptions(capabilities.value, activeMention.value.query, selectedMentions.value) : [])
+watch(inputText, () => { mentionIndex.value = 0; mentionCursor.value = null; mentionDismissed.value = false })
+watch(() => !!activeMention.value, open => { if (open) refreshCapabilities() })
+
+/** 每次开始 @ 时刷新动态候选，加载失败不扩大可用能力。 */
+async function refreshCapabilities() {
+  try { capabilities.value = await getCapabilities(agentId) }
+  catch (error) { capabilities.value = { skills: [], tools: [] }; message.error((error as Error).message) }
+}
+/** 选择仅增加用户偏好，不直接执行对应能力。 */
+function chooseMention(item: Capability) {
+  if (!activeMention.value) return
+  inputText.value = insertMention(inputText.value, activeMention.value)
+  selectedMentions.value.push({ kind: item.kind, name: item.name })
+  mentionCursor.value = null
+}
+/** 光标位于文本中间时仍按当前位置搜索。 */
+function onMentionCursor(event: Event) { const target = event.target as HTMLTextAreaElement; mentionCursor.value = target.selectionStart }
+/** 使用当前会话身份下载脚本产物。 */
+async function saveArtifact(file: SkillArtifact) {
+  try { await downloadArtifact(agentId, file) } catch (error) { message.error((error as Error).message) }
+}
 const sending = ref(false)
 const streaming = ref(false)
+const compacting = ref(false)
+
+/** 作者：LHF；2026-10-25；手动压缩当前会话并开放本次压缩的完整链路。 */
+async function compactContext() {
+  if (!activeConv.value || streaming.value || sending.value || compacting.value) return
+  const convId = activeConv.value.id
+  compacting.value = true
+  try {
+    const result = await compactConversation(convId)
+    message.success(result.compressed
+      ? `上下文已压缩：约 ${result.before_tokens} → ${result.after_tokens} token`
+      : '当前上下文无需压缩，已保留原记忆')
+    selectedTraceId.value = result.trace_id
+  } catch (error) {
+    message.error((error as Error).message || '压缩失败，原记忆已保留')
+  } finally {
+    compacting.value = false
+  }
+}
 // 流式输出开关（默认开启；关闭时走非流式一次性返回）
 const streamMode = ref(true)
 let abortCtrl: AbortController | null = null
@@ -324,6 +387,40 @@ onUnmounted(() => abortCtrl?.abort())
 const drawerShow = ref(false)
 const conversations = ref<ConversationItem[]>([])
 const activeConv = ref<ConversationItem | null>(null)
+const contextUsage = ref<ContextUsage | null>(null)
+const contextLoading = ref(false)
+let contextRequest = 0
+
+/** 作者：LHF；2026-10-25；切换会话及回复/压缩结束后刷新估算，忽略过期请求。 */
+watch([() => activeConv.value?.id, streaming, compacting], async ([convId, isStreaming, isCompacting], old) => {
+  const requestId = ++contextRequest
+  if (convId !== old?.[0]) contextUsage.value = null
+  contextLoading.value = false
+  if (!convId || isStreaming || isCompacting) return
+  contextLoading.value = true
+  try {
+    const usage = await getContextUsage(convId)
+    if (requestId === contextRequest) contextUsage.value = usage
+  } catch {
+    // 容量辅助信息加载失败不影响对话，也不继续展示过期数值。
+    if (requestId === contextRequest) contextUsage.value = null
+  } finally {
+    if (requestId === contextRequest) contextLoading.value = false
+  }
+})
+let previewTimer: ReturnType<typeof setTimeout> | undefined
+watch([inputText, () => selectedMentions.value.map(item => item.kind + ':' + item.name).join(',')], () => {
+  clearTimeout(previewTimer)
+  previewTimer = setTimeout(async () => {
+    if (!activeConv.value || streaming.value || compacting.value) return
+    const requestId = ++contextRequest
+    try {
+      const usage = await getContextUsage(activeConv.value.id, { message: inputText.value, mentions: selectedMentions.value })
+      if (requestId === contextRequest) contextUsage.value = usage
+    } catch { if (requestId === contextRequest) contextUsage.value = null }
+  }, 300)
+})
+onUnmounted(() => clearTimeout(previewTimer))
 const convPage = ref(1)
 const convTotal = ref(0)
 const convLoading = ref(false)
@@ -382,7 +479,7 @@ function onConvScroll(e: Event) {
 
 // ── 会话切换 ────────────────────────────
 async function openConversation(conv: ConversationItem) {
-  if (streaming.value || msgLoading.value) return
+  if (streaming.value || compacting.value || msgLoading.value) return
   activeConv.value = conv
   msgLoading.value = true
   try {
@@ -396,10 +493,14 @@ async function openConversation(conv: ConversationItem) {
       return {
         role: m.role,
         content: m.content,
+        mentions: m.mentions || [],
+        artifacts: m.artifacts || [],
         uid: ++msgUid,
         citations: bindings.length ? [] : raw.filter((_, i) => used.has(i + 1)),
         rawCitations: raw,
         citationBindings: bindings,
+        // 作者：LHF；2026-10-25；重载历史时恢复持久化链路入口，不依赖实时 SSE 内存。
+        traceId: m.trace_id || null,
       }
     })
   } catch (e) {
@@ -412,7 +513,7 @@ async function openConversation(conv: ConversationItem) {
 
 // ── 新会话（自动创建 + 欢迎语）──────────
 async function newConversation() {
-  if (streaming.value) return
+  if (streaming.value || compacting.value) return
   try {
     const conv = await createConversation(agentId)
     activeConv.value = conv
@@ -445,14 +546,16 @@ async function deleteConversation(conv: ConversationItem) {
 // ── 发送 ────────────────────────────────
 async function send() {
   const text = inputText.value.trim()
-  if (!text || streaming.value) return
+  if (!text || streaming.value || compacting.value) return
   // 前置保证：先有会话再对话（新会话由 newConversation 创建）
   if (!activeConv.value) {
     await newConversation()
     if (!activeConv.value) return
   }
 
-  messages.value.push({ role: 'user', content: text, uid: ++msgUid })
+  const mentions = selectedMentions.value.map(item => ({ ...item }))
+  selectedMentions.value = []
+  messages.value.push({ role: 'user', content: text, uid: ++msgUid, mentions })
   inputText.value = ''
   scrollBottom()
 
@@ -469,6 +572,7 @@ async function send() {
     citations: [],
     uid: ++msgUid,
     turnState: createTurnState(),
+    requestMentions: mentions,
   })
   messages.value.push(assistantMsg)
   scrollBottom()
@@ -493,7 +597,8 @@ async function doRequest(
   if (!streamMode.value) {
     assistantMsg.turnState = undefined
     try {
-      const res = await chatAgent(agentId, { message: text, conversation_id: conversationId })
+      const res = await chatAgent(agentId, { mentions: assistantMsg.requestMentions || [], message: text, conversation_id: conversationId })
+      assistantMsg.artifacts = res.artifacts || []
       assistantMsg.content = res.answer
       assistantMsg.citations = res.citations
       assistantMsg.citationBindings = res.citation_bindings || []
@@ -514,9 +619,10 @@ async function doRequest(
   try {
     await chatAgentStream(
       agentId,
-      { message: text, conversation_id: conversationId, stream: true },
+      { mentions: assistantMsg.requestMentions || [], message: text, conversation_id: conversationId, stream: true },
       (event) => {
         assistantMsg.turnState = reduceTurnEvent(assistantMsg.turnState || createTurnState(), event)
+        if (event.stage === 'artifacts') assistantMsg.artifacts = eventArtifacts(event.detail.artifacts)
         if (event.type === 'answer.delta') {
           assistantMsg.content = assistantMsg.turnState.content
           scrollBottom()
@@ -538,7 +644,7 @@ async function doRequest(
           )
         } else if (event.type === 'stage.completed' && event.stage === 'intent') {
           const intent = event.detail.intent
-          if (intent === 'simple' || intent === 'general') assistantMsg.intentLabel = intent
+          if (typeof intent === 'string') assistantMsg.intentLabel = intent
         } else if (event.type === 'turn.failed') {
           handleChatError(assistantMsg, event.summary || event.code || 'Agent 处理失败', null, text, conversationId)
         }
@@ -617,6 +723,14 @@ function stopStream() {
 }
 
 function onInputKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return
+  if (mentionCandidates.value.length) {
+    if (e.key === 'Escape') { mentionDismissed.value = true; e.preventDefault(); return }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); mentionIndex.value = (mentionIndex.value + (e.key === 'ArrowDown' ? 1 : -1) + mentionCandidates.value.length) % mentionCandidates.value.length; return
+    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chooseMention(mentionCandidates.value[mentionIndex.value]!); return }
+  }
   // Enter 发送，Shift+Enter 换行
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -661,20 +775,6 @@ function formatTime(iso: string): string {
 
 // ── 引用标注解析与定位 ───────────────────
 
-/** 拆分消息内容：支持可靠来源标记 [S1]，并兼容历史 [N]。 */
-function splitRefs(content: string): Array<{ type: 'text' | 'ref'; value: string; index?: number; sourceId?: string }> {
-  const parts = content.split(/(\[(?:S\d+|\d+)\])/g)
-  return parts
-    .filter(p => p)
-    .map(p => {
-      const stable = p.match(/^\[(S\d+)\]$/)
-      if (stable) return { type: 'ref' as const, value: p, sourceId: stable[1] }
-      const m = p.match(/^\[(\d+)\]$/)
-      if (m) return { type: 'ref' as const, value: p, index: parseInt(m[1], 10) }
-      return { type: 'text' as const, value: p }
-    })
-}
-
 /** 提取内容中所有 [N] 引用序号 */
 function extractRefIndexes(content: string): Set<number> {
   const set = new Set<number>()
@@ -686,12 +786,20 @@ function extractRefIndexes(content: string): Set<number> {
   return set
 }
 
-function hasCitationReference(
-  msg: DisplayMessage,
-  part: { type: 'text' | 'ref'; value: string; index?: number; sourceId?: string },
-): boolean {
-  if (part.sourceId) return !!msg.citationBindings?.some(binding => binding.source_id === part.sourceId)
-  return !!msg.rawCitations && !!part.index && part.index >= 1 && part.index <= msg.rawCitations.length
+/** 提供本条回答可定位的来源 ID，保留历史数字引用。 */
+function citationIds(msg: DisplayMessage): string[] {
+  return [...(msg.citationBindings || []).map(binding => binding.source_id),
+    ...(msg.rawCitations || []).map((_, index) => String(index + 1))]
+}
+
+/** 委托处理 Markdown 中的来源标记，不拦截普通链接。 */
+function onMarkdownCitation(msg: DisplayMessage, event: Event): void {
+  const element = (event.target as HTMLElement).closest<HTMLElement>('[data-source-ref]')
+  const id = element?.dataset.sourceRef
+  if (!id) return
+  event.preventDefault()
+  if (id.startsWith('S')) locateCitationBinding(msg, id)
+  else locateCitation(msg, Number(id))
 }
 
 /** 点击 [N]：展开历史引用面板 + 展开对应条目 + 滚动定位 */
@@ -725,14 +833,6 @@ function locateCitationBinding(msg: DisplayMessage, sourceId: string) {
   })
 }
 
-function locateCitationReference(
-  msg: DisplayMessage,
-  part: { type: 'text' | 'ref'; value: string; index?: number; sourceId?: string },
-) {
-  if (part.sourceId) locateCitationBinding(msg, part.sourceId)
-  else if (part.index) locateCitation(msg, part.index)
-}
-
 // ── 引用展开/收起 ───────────────────────
 function isCitationExpanded(msg: DisplayMessage, idx: string | number): boolean {
   return !!msg.expandedCitations?.[idx]
@@ -747,6 +847,11 @@ function toggleCitation(msg: DisplayMessage, idx: string | number) {
 </script>
 
 <style scoped>
+.mention-options { display: flex; flex-direction: column; max-height: 220px; overflow: auto; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; }
+.mention-options button { text-align: left; border: 0; background: transparent; padding: 8px 12px; cursor: pointer; color: inherit; }
+.mention-options button.active, .mention-options button:hover { background: rgba(24,160,88,.1); }
+.mention-options span { display: block; font-size: 12px; opacity: .7; }
+
 /* ── Phase 4.10：意图标签 / 规划反思过程展示 ── */
 .intent-tag-row {
   margin-bottom: 6px;
@@ -951,6 +1056,8 @@ function toggleCitation(msg: DisplayMessage, idx: string | number) {
 }
 .chat-input-actions {
   display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* ── 会话抽屉 ─────────────────────── */

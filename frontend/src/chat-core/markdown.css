@@ -1,0 +1,21 @@
+/* 作者：LHF；时间：2026-10-25；作用：管理端与 Shadow DOM 共用 Markdown 排版。 */
+.pin-markdown { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.65; }
+.pin-markdown > :first-child { margin-top: 0; }
+.pin-markdown > :last-child { margin-bottom: 0; }
+.pin-markdown p, .pin-markdown ul, .pin-markdown ol, .pin-markdown blockquote, .pin-markdown pre, .pin-markdown table { margin: .65em 0; }
+.pin-markdown h1, .pin-markdown h2, .pin-markdown h3, .pin-markdown h4, .pin-markdown h5, .pin-markdown h6 { margin: .9em 0 .4em; font-weight: 600; line-height: 1.4; }
+.pin-markdown h1 { font-size: 1.5em; }
+.pin-markdown h2 { font-size: 1.3em; }
+.pin-markdown h3 { font-size: 1.15em; }
+.pin-markdown ul, .pin-markdown ol { padding-left: 1.7em; }
+.pin-markdown li + li { margin-top: .2em; }
+.pin-markdown blockquote { padding-left: 1em; border-left: 3px solid #9996; opacity: .85; }
+.pin-markdown code { padding: .12em .3em; background: #8882; border-radius: 3px; font-family: Consolas, monospace; font-size: .9em; }
+.pin-markdown pre { max-width: 100%; padding: 10px; overflow: auto; white-space: pre; background: #8882; border-radius: 6px; }
+.pin-markdown pre code { padding: 0; background: none; }
+.pin-markdown table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.pin-markdown th, .pin-markdown td { padding: 5px 9px; border: 1px solid #9996; }
+.pin-markdown img { max-width: 100%; height: auto; }
+.pin-markdown a { color: var(--pin-primary, #2080f0); text-decoration: underline; }
+.pin-markdown hr { margin: 1em 0; border: 0; border-top: 1px solid #9996; }
+.pin-markdown .markdown-citation { display: inline-block; padding: 0 3px; color: var(--pin-primary, #2080f0); background: #2080f01f; border-radius: 3px; font-size: 12px; font-weight: 600; cursor: pointer; }

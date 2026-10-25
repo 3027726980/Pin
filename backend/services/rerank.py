@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：记录精排完整输入输出和实际降级方法。
 """
 Rerank 服务 — 按 provider 分发（local / aliyun）
 
@@ -11,6 +12,7 @@ import logging
 from types import SimpleNamespace
 
 from backend.core.config import settings
+from backend.core.observability.operations import Operation
 from backend.core.utils import resolve_local_device
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ class RerankService:
     """
 
     @staticmethod
-    async def rerank(cfg, query: str, candidates: list[dict], top_k: int) -> list[dict]:
+    async def rerank(cfg, query: str, candidates: list[dict], top_k: int, *, diagnostics=None) -> list[dict]:
         """
         精排候选列表，返回 top_k 条（score 字段替换为 reranker 分数）
 
@@ -45,17 +47,33 @@ class RerankService:
                 protocol="local",
             )
         proto = getattr(cfg, "protocol", None) or _PROTOCOL_BY_PROVIDER.get(cfg.provider)
-        impl = RERANK_IMPLEMENTATIONS.get(proto)
-        if impl is None:
-            logger.warning(
-                "未知 rerank 调用模式: %s（provider=%s），降级纯向量排序",
-                proto, cfg.provider)
-            return candidates[:top_k]
-        try:
-            return await impl.rerank(cfg, query, candidates, top_k)
-        except Exception as e:
-            logger.warning("rerank 执行失败（provider=%s）: %s，降级纯向量排序", cfg.provider, e)
-            return candidates[:top_k]
+        with Operation("rerank", "候选资料精排", input={"query": query, "candidates": candidates, "top_k": top_k},
+                       metadata={"provider": cfg.provider, "model": cfg.model_name, "protocol": proto,
+                                 "model_config_id": str(getattr(cfg, "id", ""))}) as operation:
+            impl = RERANK_IMPLEMENTATIONS.get(proto)
+            if impl is None:
+                operation.status = "degraded"
+                operation.error = {"type": "UnsupportedProtocol", "message": str(proto)}
+                ranked = candidates[:top_k]
+            else:
+                try:
+                    ranked = await impl.rerank(cfg, query, candidates, top_k)
+                except Exception as error:
+                    logger.warning("rerank 失败，降级保留候选顺序: %s", error)
+                    operation.status = "degraded"
+                    operation.error = {"type": type(error).__name__, "message": str(error)}
+                    ranked = candidates[:top_k]
+            operation.metadata["ranking_method"] = "model" if operation.status == "completed" else "original_candidate_order"
+            before_ranks = {str(row["chunk_id"]): index for index, row in enumerate(candidates, 1)}
+            operation.output = {"candidates": [{**row, "before_rank": before_ranks.get(str(row["chunk_id"])),
+                "after_rank": index, "rerank_score": row["score"] if operation.status == "completed" else None,
+                "original_score": row.get("original_score", row["score"])} for index, row in enumerate(ranked, 1)],
+                "result_count": len(ranked)}
+            if diagnostics is not None:
+                diagnostics.update({"status": operation.status, "operation_id": operation.operation_id,
+                                    "ranking_method": operation.metadata["ranking_method"], "error": operation.error})
+            return ranked
+
 
 
 class LocalRerank:

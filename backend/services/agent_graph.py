@@ -1,12 +1,4 @@
-"""General Agent 的 LangGraph 编排图。
-
-图本身不持久化 checkpoint；会话记忆仍由主 Agent 的 AsyncPostgresSaver 管理，避免
-编排中间状态（计划、草稿、反思）污染用户可追溯的对话历史。
-
-``intent -> simple`` 用零工具直答；一般请求直接进入 ``main_agent``；仅配置为复杂
-意图时才走 ``plan -> draft -> reflect -> main_agent``。因此规划与反思是确定节点而非
-可被 ReAct 任意调用的工具。
-"""
+"""作者：LHF；时间：2026-10-25；作用：意图策略、可选规划、统一主 Agent 与核验修订图。"""
 import json
 import logging
 import time
@@ -19,11 +11,9 @@ from backend.services.intent import IntentPolicy, IntentService
 logger = logging.getLogger(__name__)
 
 AnswerRunner = Callable[[str], Awaitable[tuple[str, list[Any]]]]
-SimpleRunner = Callable[[], Awaitable[tuple[str, list[Any]]]]
 TextRunner = Callable[[str], Awaitable[str]]
 ClassifyRunner = Callable[..., Awaitable[str]]
 StreamRunner = Callable[[str], AsyncIterator[dict]]
-SimpleStreamRunner = Callable[[], AsyncIterator[dict]]
 
 
 class AgentGraphState(TypedDict, total=False):
@@ -36,7 +26,6 @@ class AgentGraphState(TypedDict, total=False):
     tools_desc: str
     categories: list[IntentPolicy | dict]
     intent: str
-    route: str
     use_plan: bool
     use_reflect: bool
     plan: str
@@ -49,9 +38,7 @@ class AgentGraphState(TypedDict, total=False):
     citations: list[Any]
     events: list[dict]
     stream: bool
-    simple_runner: SimpleRunner | None
     main_runner: AnswerRunner | None
-    simple_stream_runner: SimpleStreamRunner | None
     main_stream_runner: StreamRunner | None
     classify_runner: ClassifyRunner | None
     plan_runner: TextRunner | None
@@ -84,7 +71,6 @@ class AgentGraphService:
         message: str,
         history: list[dict[str, str]],
         tools_desc: str,
-        simple_runner: SimpleRunner | None,
         main_runner: AnswerRunner | None,
         classify_runner: ClassifyRunner | None = None,
         plan_runner: TextRunner | None = None,
@@ -102,7 +88,6 @@ class AgentGraphService:
             "categories": categories or IntentService.configured_categories(),
             "events": [],
             "stream": False,
-            "simple_runner": simple_runner,
             "main_runner": main_runner,
             "classify_runner": classify_runner,
             "plan_runner": plan_runner,
@@ -126,7 +111,6 @@ class AgentGraphService:
         message: str,
         history: list[dict[str, str]],
         tools_desc: str,
-        simple_stream_runner: SimpleStreamRunner | None,
         main_stream_runner: StreamRunner | None,
         classify_runner: ClassifyRunner | None = None,
         plan_runner: TextRunner | None = None,
@@ -145,7 +129,6 @@ class AgentGraphService:
             "categories": categories or IntentService.configured_categories(),
             "events": [],
             "stream": True,
-            "simple_stream_runner": simple_stream_runner,
             "main_stream_runner": main_stream_runner,
             "classify_runner": classify_runner,
             "plan_runner": plan_runner,
@@ -164,17 +147,15 @@ class AgentGraphService:
 
         graph = StateGraph(AgentGraphState)
         graph.add_node("intent", AgentGraphService._intent_node)
-        graph.add_node("simple", AgentGraphService._simple_node)
         graph.add_node("plan", AgentGraphService._plan_node)
         graph.add_node("main_agent", AgentGraphService._main_agent_node)
         graph.add_node("verify", AgentGraphService._verify_node)
         graph.add_node("revision", AgentGraphService._revision_node)
         graph.add_edge(START, "intent")
         graph.add_conditional_edges("intent", AgentGraphService._after_intent, {
-            "simple": "simple", "plan": "plan", "main": "main_agent",
+            "plan": "plan", "main": "main_agent",
         })
         graph.add_edge("plan", "main_agent")
-        graph.add_edge("simple", END)
         graph.add_conditional_edges("main_agent", AgentGraphService._after_main, {
             "verify": "verify", "end": END,
         })
@@ -212,7 +193,7 @@ class AgentGraphService:
         duration_ms = int((time.perf_counter() - started) * 1000)
         event = {
             "type": "intent",
-            "intent": policy.route,
+            "intent": policy.code,
             "intent_code": policy.code,
             "duration_ms": duration_ms,
         }
@@ -220,7 +201,6 @@ class AgentGraphService:
                     duration_ms, policy.code)
         return AgentGraphService._with_event(state, event, {
             "intent": policy.code,
-            "route": policy.route,
             "use_plan": use_plan,
             "use_reflect": use_reflect,
         })
@@ -228,8 +208,6 @@ class AgentGraphService:
     @staticmethod
     def _after_intent(state: AgentGraphState) -> str:
         """按意图和开关选择下一节点。"""
-        if state["route"] == "simple":
-            return "simple"
         if state.get("use_plan"):
             return "plan"
         return "main"
@@ -244,26 +222,6 @@ class AgentGraphService:
         """仅核验明确要求修订时进入 revision。"""
         return "revision" if state.get("revision_required") else "end"
 
-    @staticmethod
-    async def _simple_node(state: AgentGraphState) -> dict:
-        """轻量意图：零工具直接回答节点。"""
-        started = time.perf_counter()
-        if state.get("stream"):
-            runner = state.get("simple_stream_runner")
-            if runner is None:
-                raise RuntimeError("流式 simple 节点缺少执行器")
-            async for event in runner():
-                AgentGraphService._write_stream_event(event)
-            logger.info("agent_graph node=simple duration_ms=%d",
-                        int((time.perf_counter() - started) * 1000))
-            return {}
-        runner = state.get("simple_runner")
-        if runner is None:
-            raise RuntimeError("simple 节点缺少执行器")
-        answer, citations = await runner()
-        logger.info("agent_graph node=simple duration_ms=%d",
-                    int((time.perf_counter() - started) * 1000))
-        return {"answer": answer, "citations": citations}
 
     @staticmethod
     async def _plan_node(state: AgentGraphState) -> dict:
@@ -294,43 +252,7 @@ class AgentGraphService:
                     duration_ms)
         return AgentGraphService._with_event(state, event, {"plan": plan})
 
-    @staticmethod
-    async def _draft_node(state: AgentGraphState) -> dict:
-        """反思前的临时草稿节点；不写入用户会话 checkpoint。"""
-        started = time.perf_counter()
-        runner = state.get("draft_runner")
-        if runner is None:
-            raise RuntimeError("reflect 已启用但缺少草稿执行器")
-        guidance = AgentGraphService._compose_guidance(state, include_reflection=False)
-        draft = await runner(guidance)
-        logger.info("agent_graph node=draft duration_ms=%d",
-                    int((time.perf_counter() - started) * 1000))
-        return {"draft": draft}
 
-    @staticmethod
-    async def _reflect_node(state: AgentGraphState) -> dict:
-        """答案反思节点：审查草稿并把建议交给最终主 Agent 节点。"""
-        started = time.perf_counter()
-        runner = state.get("reflect_runner")
-        try:
-            if runner is None:
-                from backend.tools.agent.reflect import ReflectTool
-
-                reflection = await ReflectTool._review_draft(state["llm_cfg"], state.get("draft", ""))
-            else:
-                reflection = await runner(state.get("draft", ""))
-        except Exception:
-            logger.exception("反思节点失败，继续主 Agent")
-            reflection = ""
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        event = {
-            "type": "reflect",
-            "suggestions": reflection,
-            "duration_ms": duration_ms,
-        }
-        logger.info("agent_graph node=reflect duration_ms=%d",
-                    duration_ms)
-        return AgentGraphService._with_event(state, event, {"reflection": reflection})
 
     @staticmethod
     async def _main_agent_node(state: AgentGraphState) -> dict:

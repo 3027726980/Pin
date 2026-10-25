@@ -1,3 +1,4 @@
+import type { CapabilityMention, SkillArtifact } from '../../chat-core/capabilities'
 /** widget 状态：访客身份 + 会话 + 消息（localStorage 持久化） */
 import type { TurnState } from '../../chat-core/stage-reducer'
 
@@ -11,6 +12,8 @@ export interface ConvItem {
 }
 
 export interface Msg {
+  mentions?: CapabilityMention[]
+  artifacts?: SkillArtifact[]
   role: 'user' | 'assistant'
   content: string
   citations: Citation[]

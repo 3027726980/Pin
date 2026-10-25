@@ -1,8 +1,8 @@
 -- ============================================================
 -- Pin 数据库初始化脚本
 -- 数据库: PostgreSQL 17 + pgvector
--- 版本  : v0.7 (Phase 4.8)
--- 说明  : 本文件为最终结构（含全部增量迁移 001~017 的累积结果）
+-- 版本  : 2026-10-25（统一 general Agent、本地 Skill）
+-- 说明  : 本文件为最终结构（含全部增量迁移 001~026 的累积结果，17 张业务表）
 -- ============================================================
 
 -- 1. 扩展
@@ -367,71 +367,11 @@ BEGIN
 END $$;
 
 -- ============================================================
--- 12. Agent 表（分类分表）
---      Phase 4：Agent 按类型分表存储（字段需求不同）
---      simple_rag_agents：简单 RAG Agent，仅 RAG 功能，知识库直接绑定
+-- 12. Agent 表（只保留 general）
+--      Agent 索引与详情分开存储，Skill 使用本地文件，不创建表
 --      general_agents：综合 Agent，能力以工具列表注册（tools JSONB）
---      workflow：预留，MVP 不做
---      迁移来源：006（建表）→ 007（工具化）→ 008（分类分表）
+--      迁移来源：006（建表）→ 007（工具化）→ 008（分类分表）→ 026（统一 general）
 -- ============================================================
-CREATE TABLE IF NOT EXISTS simple_rag_agents (
-    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id          UUID         NOT NULL REFERENCES users(id),
-    name             VARCHAR(200) NOT NULL,
-    description      TEXT,
-    kb_id            UUID         NOT NULL REFERENCES knowledge_bases(id),
-    llm_config_id    UUID         REFERENCES user_model_config(id) ON DELETE SET NULL,
-    top_k            INT          NOT NULL DEFAULT 5,
-    score_threshold  FLOAT        NOT NULL DEFAULT 0.3,
-    system_prompt    TEXT         NOT NULL,
-    -- 采样参数可空（Phase 4.8）：空 = 跟随模型配置（模型未配置时默认 0.7/0.9）
-    temperature      FLOAT,
-    top_p            FLOAT,
-    max_tokens       INT,
-    welcome_message  VARCHAR(500),
-    -- Phase 4.5：总结模型配置（空 = 跟随对话模型）
-    summary_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
-    -- Phase 4.6：检索增强（独立开关，默认关闭）
-    mqe_enabled          BOOLEAN NOT NULL DEFAULT FALSE,
-    hyde_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
-    mqe_query_count      SMALLINT NOT NULL DEFAULT 3,
-    rerank_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
-    mqe_mode             VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (mqe_mode IN ('off', 'auto', 'always')),
-    hyde_mode            VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (hyde_mode IN ('off', 'auto', 'always')),
-    rerank_mode          VARCHAR(10) NOT NULL DEFAULT 'auto' CHECK (rerank_mode IN ('off', 'auto', 'always')),
-    enhance_llm_config_id UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
-    rerank_config_id     UUID REFERENCES user_model_config(id) ON DELETE SET NULL,
-    status           SMALLINT     NOT NULL DEFAULT 1,
-    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_sra_user   ON simple_rag_agents(user_id);
-CREATE INDEX IF NOT EXISTS idx_sra_kb     ON simple_rag_agents(kb_id);
-CREATE INDEX IF NOT EXISTS idx_sra_status ON simple_rag_agents(status);
-
-COMMENT ON TABLE simple_rag_agents IS '简单 RAG Agent 表：仅 RAG 功能，知识库直接绑定';
-COMMENT ON COLUMN simple_rag_agents.user_id IS '创建者用户 ID';
-COMMENT ON COLUMN simple_rag_agents.name IS 'Agent 名称';
-COMMENT ON COLUMN simple_rag_agents.description IS '描述';
-COMMENT ON COLUMN simple_rag_agents.kb_id IS '绑定的知识库 ID';
-COMMENT ON COLUMN simple_rag_agents.llm_config_id IS 'LLM 模型配置 ID（user_model_config.model_type=2）';
-COMMENT ON COLUMN simple_rag_agents.top_k IS '检索返回块数（默认取 config.yaml tools.default_top_k）';
-COMMENT ON COLUMN simple_rag_agents.score_threshold IS '相似度阈值（默认取 config.yaml tools.default_score_threshold）';
-COMMENT ON COLUMN simple_rag_agents.system_prompt IS '系统提示词（RAG 模板，可编辑）';
-COMMENT ON COLUMN simple_rag_agents.temperature IS 'LLM 温度（空 = 跟随模型配置）';
-COMMENT ON COLUMN simple_rag_agents.top_p IS 'LLM 核采样（空 = 跟随模型配置）';
-COMMENT ON COLUMN simple_rag_agents.max_tokens IS '最大生成 token 数（空 = 跟随模型配置/厂商默认）';
-COMMENT ON COLUMN simple_rag_agents.summary_llm_config_id IS '总结模型配置 ID（SummarizationMiddleware 用，空=跟随对话模型）';
-COMMENT ON COLUMN simple_rag_agents.mqe_enabled IS '多查询扩展（MQE）：LLM 改写多个子问题多路召回（默认取 config.yaml tools.default_mqe_enabled）';
-COMMENT ON COLUMN simple_rag_agents.hyde_enabled IS '假设文档嵌入（HyDE）：LLM 生成假设回答文档作为检索线索';
-COMMENT ON COLUMN simple_rag_agents.mqe_query_count IS 'MQE 改写子问题数（2~5）';
-COMMENT ON COLUMN simple_rag_agents.rerank_enabled IS 'Rerank 精排开关（默认取 config.yaml tools.default_rerank_enabled）';
-COMMENT ON COLUMN simple_rag_agents.enhance_llm_config_id IS '增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2，空=跟随对话模型）';
-COMMENT ON COLUMN simple_rag_agents.rerank_config_id IS 'Rerank 模型配置 ID（model_type=3，空=用 config.yaml tools.rerank 全局默认）';
-COMMENT ON COLUMN simple_rag_agents.welcome_message IS '欢迎语（Phase 5 浮窗使用）';
-COMMENT ON COLUMN simple_rag_agents.status IS '0=禁用, 1=启用, 9=软删除';
-
 CREATE TABLE IF NOT EXISTS general_agents (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id         UUID          NOT NULL REFERENCES users(id),
@@ -506,10 +446,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_index_user   ON agent_index(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_index_type   ON agent_index(type);
 CREATE INDEX IF NOT EXISTS idx_agent_index_status ON agent_index(status);
 
-COMMENT ON TABLE agent_index IS 'Agent 索引表：所有 Agent 的基础信息，id 与类型表共用主键（simple_rag_agents / general_agents）';
 COMMENT ON COLUMN agent_index.id IS 'Agent ID（与类型表主键共用）';
 COMMENT ON COLUMN agent_index.user_id IS '创建者用户 ID';
-COMMENT ON COLUMN agent_index.type IS 'Agent 类型：simple_rag / general / workflow（预留）';
+COMMENT ON COLUMN agent_index.type IS 'Agent 类型：general';
 COMMENT ON COLUMN agent_index.name IS 'Agent 名称（冗余，列表查询免 join 类型表）';
 COMMENT ON COLUMN agent_index.description IS '描述（冗余）';
 COMMENT ON COLUMN agent_index.status IS '0=禁用, 1=启用, 9=软删除';

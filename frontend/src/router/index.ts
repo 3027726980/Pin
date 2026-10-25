@@ -26,6 +26,7 @@ const routes: RouteRecordRaw[] = [
     component: MainLayout,
     redirect: '/dashboard',
     children: [
+      { path: 'skills', name: 'Skills', component: () => import('@/views/skills/SkillListView.vue'), meta: { title: '技能管理', requiresAuth: true } },
       {
         path: 'dashboard',
         name: 'Dashboard',

@@ -10,7 +10,6 @@ from .ModelProviders import ModelProviders
 from .ModelTypes import ModelTypes
 from .DefaultModelConfig import DefaultModelConfig
 from .UserModelConfig import UserModelConfig
-from .SimpleRagAgents import SimpleRagAgents
 from .GeneralAgents import GeneralAgents
 from .AgentIndex import AgentIndex
 from .AgentApiKeys import AgentApiKeys
@@ -32,7 +31,6 @@ __all__ = [
     "ModelProviders",
     "ModelTypes",
     "RefreshTokenWhitelist",
-    "SimpleRagAgents",
     "SystemSettings",
     "UserModelConfig",
     "UserProviders",

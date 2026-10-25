@@ -1,21 +1,19 @@
+<!-- 作者：LHF；时间：2026-10-25；作用：直接展示诊断原始 JSON，保留字段名和值。 -->
 <template>
-  <dl v-if="fields.length" class="fields">
-    <template v-for="field in fields" :key="field.key">
-      <dt>{{ field.label }}</dt><dd>{{ field.value }}</dd>
-    </template>
-  </dl>
-  <div v-else class="empty">此阶段没有额外结果数据</div>
-  <details class="raw"><summary>原始数据（开发排查）</summary><pre>{{ JSON.stringify(detail, null, 2) }}</pre></details>
+  <pre class="raw-json">{{ JSON.stringify(detail, null, 2) }}</pre>
 </template>
 <script setup lang="ts">
-import { computed } from 'vue'
-import { detailFields } from '@/chat-core/trace-view'
-const props = defineProps<{ detail: Record<string, unknown> }>()
-const fields = computed(() => detailFields(props.detail))
+defineProps<{ detail: Record<string, unknown> }>()
 </script>
 <style scoped>
-.fields { display: grid; grid-template-columns: minmax(90px, 140px) minmax(0, 1fr); gap: 7px 12px; margin: 10px 0; }
-dt { color: var(--n-text-color-3); } dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
-.raw, .empty { margin-top: 8px; color: var(--n-text-color-3); }
-summary { cursor: pointer; } pre { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.raw-json {
+  min-width: 0;
+  max-height: 65vh;
+  margin: 10px 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
 </style>

@@ -28,6 +28,8 @@ Thumbs.db
 # Uploaded files (local dev)
 uploads/
 storage/
+output/playwright/
+.playwright-cli/
 
 # Frontend
 frontend/node_modules/

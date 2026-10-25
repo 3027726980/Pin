@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：保留实时事件，聚合完整请求终态日志。
 """Agent 单一 Turn 事件流、旧 runner 适配与 SSE 序列化。"""
 
 import asyncio
@@ -60,6 +61,7 @@ async def execute_turn_stream(
     runner: AsyncIterator[dict[str, Any]],
     agent_id: object | None = None,
     conversation_id: object | None = None,
+    request_input: dict | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """将内部领域事件转换为唯一终态的 AgentEvent v2 流。
 
@@ -67,6 +69,7 @@ async def execute_turn_stream(
     ``turn.completed/failed/cancelled`` 的唯一发布者，并始终写安全 Trace。
     """
     turn_started_perf = perf_counter()
+    request_started_at = datetime.now(timezone.utc)
     iterator = runner.__aiter__()
     pending: list[dict[str, Any]] = []
     initial_error: BaseException | None = None
@@ -95,9 +98,9 @@ async def execute_turn_stream(
         max_tool_calls=int(getattr(budget_cfg, "max_tool_calls", 8)),
         deadline_ms=int(getattr(budget_cfg, "deadline_ms", 120000)),
     )
-    trace_sink = TraceLogSink(metrics=metrics)
+    trace_sink = TraceLogSink(metrics=metrics, request_input=request_input)
     terminal_emitted = False
-    started_at = datetime.now(timezone.utc)
+    started_at = request_started_at
     stage_starts: dict[str, tuple[datetime, float]] = {}
 
     async def make_event(**fields: Any) -> AgentEvent:
@@ -125,8 +128,9 @@ async def execute_turn_stream(
 
     def finish_metrics() -> None:
         """在终态前同步预算计数并结束 Turn 指标。"""
-        metrics.llm_calls = budget.llm_calls_used
-        metrics.tool_calls = budget.tool_calls_used
+        # 真实 HTTP 尝试（含重试）和实际工具执行次数，不以逻辑节点预算代替。
+        metrics.llm_calls = trace.operation_counts.get("model", budget.llm_calls_used)
+        metrics.tool_calls = trace.operation_counts.get("tool", budget.tool_calls_used)
         metrics.finish()
 
     async with bind_trace(trace), bind_turn_budget(budget):
@@ -140,12 +144,13 @@ async def execute_turn_stream(
             started_at=started_at,
             summary="请求已接收",
         )
-        yield started
 
         async def handle_legacy(legacy: dict[str, Any]) -> AgentEvent | None:
             """将一个旧领域事件转换为 v2；done/context 不直接输出。"""
             nonlocal terminal_emitted
             event_type = legacy.get("type")
+            if event_type == "done" and "answer" in legacy:
+                trace_sink.capture_final_answer(legacy["answer"])
             if event_type in {"context", "done"}:
                 return None
             if terminal_emitted:
@@ -173,6 +178,7 @@ async def execute_turn_stream(
                 )
             if event_type == "citations":
                 citations = _as_dict_list(legacy.get("citations"))
+                trace_sink.capture_citations(citations, legacy.get("bindings", []))
                 return await make_event(
                     event_type="citations.completed",
                     stage="citation_binding",
@@ -184,6 +190,12 @@ async def execute_turn_stream(
                     detail={"bindings": legacy.get("bindings", [])},
                     citations=citations,
                 )
+            if event_type == "artifacts":
+                return await make_event(
+                    event_type="stage.completed", stage="artifacts", stage_id="artifacts.1",
+                    status=EventStatus.COMPLETED, visibility=EventVisibility.PUBLIC,
+                    started_at=started_at, summary="脚本产物已就绪",
+                    detail={"artifacts": legacy.get("artifacts", [])})
             if event_type == "error":
                 finish_metrics()
                 terminal_emitted = True
@@ -273,6 +285,7 @@ async def execute_turn_stream(
             )
 
         try:
+            yield started
             if initial_error is not None:
                 raise initial_error
             for legacy in pending:
@@ -283,6 +296,16 @@ async def execute_turn_stream(
                 mapped = await handle_legacy(legacy)
                 if mapped is not None:
                     yield mapped
+        except GeneratorExit:
+            if not terminal_emitted:
+                finish_metrics()
+                terminal_emitted = True
+                await make_event(
+                    event_type="turn.cancelled", stage="request", stage_id="request.1",
+                    status=EventStatus.CANCELLED, visibility=EventVisibility.PUBLIC,
+                    started_at=started_at, duration_ms=metrics.total_duration_ms,
+                    summary="客户端已关闭请求", code="CANCELLED")
+            raise
         except asyncio.CancelledError:
             if not terminal_emitted:
                 finish_metrics()

@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：记录向量化与检索完整终态，并隔离重复工具调用阶段编号。
 """
 Agent 工具：rag（知识库检索）
 
@@ -24,12 +25,13 @@ import functools
 import json
 import logging
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
+from backend.core.observability.operations import Operation
 from backend.core.utils import to_uuid
 from backend.models import Users
 from backend.repositories import DocumentRepo, KnowledgeBaseRepo, UserModelConfigRepo
@@ -226,6 +228,7 @@ class RAGTool(BaseTool):
         debug_store = kwargs.get("debug_store")  # 服务端始终采集，前端开关仅控制展示
         event_sink = kwargs.get("event_sink")
         stage_occurrences: dict[str, int] = {}
+        invocation_id = uuid4().hex[:12]
 
         async def emit_stage(stage: str, status: str, summary: str,
                              *, duration_ms: int | None = None,
@@ -236,7 +239,7 @@ class RAGTool(BaseTool):
                 occurrence = stage_occurrences.get(stage, 1)
                 await event_sink({
                     "type": "stage", "stage": stage, "status": status,
-                    "stage_id": f"{stage}.{occurrence}",
+                    "stage_id": f"{stage}.{invocation_id}.{occurrence}",
                     "summary": summary, "duration_ms": duration_ms,
                     "visibility": visibility, "detail": detail or {},
                 })
@@ -256,7 +259,9 @@ class RAGTool(BaseTool):
         # 3. 原始 query 先召回，策略只依据真实召回质量决策。
         started = time.perf_counter()
         await emit_stage("embedding", "running", "正在生成检索向量")
-        original_vec = (await RAGTool._embed_queries(emb_cfg, [message]))[0]
+        original_vectors, original_embedding_id = await RAGTool._logged_embedding(
+            emb_cfg, [message], kb.id, "original")
+        original_vec = original_vectors[0]
         await emit_stage("embedding", "completed", "检索向量已生成",
                          duration_ms=round((time.perf_counter() - started) * 1000))
         max_dim = settings.embedding.max_dimension
@@ -267,9 +272,9 @@ class RAGTool(BaseTool):
         )
         started = time.perf_counter()
         await emit_stage("retrieval", "running", "正在检索原始问题")
-        original_rows = await DocumentRepo.search_chunks(
-            db, kb.id, original_vec, candidate_limit
-        )
+        original_rows = await RAGTool._logged_retrieval(
+            db, kb.id, [message], [original_vec], candidate_limit, score_threshold,
+            original_embedding_id, emb_cfg, multi=False)
         await emit_stage("retrieval", "completed", "原始检索完成",
                          duration_ms=round((time.perf_counter() - started) * 1000),
                          detail={"candidate_count": len(original_rows)})
@@ -377,17 +382,19 @@ class RAGTool(BaseTool):
         if enhanced_queries:
             started = time.perf_counter()
             await emit_stage("embedding", "running", "正在生成增强检索向量")
+            enhanced_vectors, enhanced_embedding_id = await RAGTool._logged_embedding(
+                emb_cfg, enhanced_queries, kb.id, "enhanced")
             enhanced_vecs = [
                 RAGTool._pad_vector(vec, max_dim)
-                for vec in await RAGTool._embed_queries(emb_cfg, enhanced_queries)
+                for vec in enhanced_vectors
             ]
             await emit_stage("embedding", "completed", "增强向量已生成",
                              duration_ms=round((time.perf_counter() - started) * 1000))
             started = time.perf_counter()
             await emit_stage("retrieval", "running", "正在补充检索")
-            enhanced_rows = await DocumentRepo.search_chunks_multi(
-                db, kb.id, enhanced_vecs, candidate_limit
-            )
+            enhanced_rows = await RAGTool._logged_retrieval(
+                db, kb.id, enhanced_queries, enhanced_vecs, candidate_limit, score_threshold,
+                enhanced_embedding_id, emb_cfg, multi=True)
             await emit_stage("retrieval", "completed", "补充检索完成",
                              duration_ms=round((time.perf_counter() - started) * 1000),
                              detail={"candidate_count": len(enhanced_rows)})
@@ -405,9 +412,12 @@ class RAGTool(BaseTool):
                  "filename": filename, "score": score}
                 for cid, (content, filename, score) in seen.items()
             ]
-            # RerankService 内部降级：模型缺失/异常 → 纯向量排序返回前 top_k
-            ranked = await RerankService.rerank(rerank_cfg, message, candidates, top_k)
-            await emit_stage("rerank", "completed", "候选资料精排完成",
+            # 精排失败保留既有候选顺序，日志明确标记降级而不宣称模型精排成功。
+            rerank_diagnostics = {}
+            ranked = await RerankService.rerank(rerank_cfg, message, candidates, top_k,
+                                               diagnostics=rerank_diagnostics)
+            await emit_stage("rerank", rerank_diagnostics.get("status", "completed"),
+                             "精排已降级" if rerank_diagnostics.get("status") == "degraded" else "候选资料精排完成",
                              duration_ms=round((time.perf_counter() - started) * 1000),
                              detail={"candidate_count": len(candidates), "result_count": len(ranked)})
             result = [
@@ -440,6 +450,49 @@ class RAGTool(BaseTool):
             )
             for cid, (content, filename, score) in ranked
         ]
+
+    @staticmethod
+    def _database_location(kb_id):
+        """作者：LHF；2026-10-25；返回逻辑库表位置，禁止记录带凭据的数据库 URL。"""
+        from sqlalchemy.engine import make_url
+
+        return {"database": make_url(settings.database.url).database, "schema": "public",
+                "vector_table": "embeddings", "chunk_table": "chunks", "document_table": "documents",
+                "knowledge_base_id": str(kb_id)}
+
+    @staticmethod
+    async def _logged_embedding(emb_cfg, queries, kb_id, source):
+        """作者：LHF；2026-10-25；记录完整 query 和维度，query 向量不落库也不进入日志。"""
+        with Operation("embedding", "query 向量化", input={"queries": queries, "source": source},
+                       metadata={"provider": emb_cfg.provider, "model": emb_cfg.model_name,
+                                 "model_config_id": str(getattr(emb_cfg, "id", "")),
+                                 **RAGTool._database_location(kb_id)}) as operation:
+            vectors = await RAGTool._embed_queries(emb_cfg, queries)
+            operation.output = {"query_count": len(queries), "vector_count": len(vectors),
+                                "dimensions": [len(vector) for vector in vectors],
+                                "retrieval_dimension": settings.embedding.max_dimension,
+                                "query_vector_persisted": False}
+            return vectors, operation.operation_id
+
+    @staticmethod
+    async def _logged_retrieval(db, kb_id, queries, vectors, limit, threshold, embedding_id, emb_cfg, *, multi):
+        """作者：LHF；2026-10-25；记录全部召回与阈值/去重结果，输入通过向量化 ID 关联。"""
+        with Operation("retrieval", "向量检索", input={"queries": queries, "embedding_operation_id": embedding_id,
+                       "candidate_limit": limit, "score_threshold": threshold, "multi_query": multi},
+                       metadata={"embedding_model": emb_cfg.model_name, "provider": emb_cfg.provider,
+                                 "algorithm": "1 - cosine_distance", **RAGTool._database_location(kb_id)}) as operation:
+            rows = await (DocumentRepo.search_chunks_multi(db, kb_id, vectors, limit) if multi
+                          else DocumentRepo.search_chunks(db, kb_id, vectors[0], limit))
+            accepted = [row for row in rows if row["score"] >= threshold]
+            unique = {}
+            for row in accepted:
+                key = str(row["chunk_id"])
+                if key not in unique or row["score"] > unique[key]["score"]:
+                    unique[key] = row
+            operation.output = {"candidates": rows, "candidate_count": len(rows),
+                                "accepted": accepted, "rejected": [row for row in rows if row["score"] < threshold],
+                                "deduplicated": list(unique.values()), "result_count": len(unique)}
+            return rows
 
     @staticmethod
     async def _embed_queries(emb_cfg: object, queries: list[str]) -> list[list[float]]:

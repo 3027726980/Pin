@@ -64,6 +64,7 @@ services:
       - pin-uploads:/app/uploads
       - pin-logs:/app/logs
       - pin-models:/app/backend/local_models
+      - pin-skills:/app/storage/skills
     depends_on:
       db:
         condition: service_healthy
@@ -90,3 +91,4 @@ volumes:
   pin-uploads:
   pin-logs:
   pin-models:
+  pin-skills:

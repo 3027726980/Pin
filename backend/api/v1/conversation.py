@@ -1,4 +1,6 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """会话路由:创建/列表/历史消息/删除"""
+import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -15,8 +17,36 @@ from backend.schemas.conversation import (
 )
 from backend.schemas.knowledge import PaginatedResponse
 from backend.services.conversation import ConversationService
+from backend.skills.schemas import ContextPreviewRequest
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["会话"])
+
+
+@router.post("/{conv_id}/context-preview", summary="只读估算草稿和技能上下文")
+async def context_preview(conv_id: UUID, body: ContextPreviewRequest, db=Depends(get_db), user=Depends(get_current_user)):
+    """作者：LHF；2026-10-25；预览不执行工具、不迁移或写入 checkpoint。"""
+    return SuccessResponse(result=await ConversationService.context_usage(db, user, conv_id, body))
+
+
+@router.get("/{conv_id}/context-usage", summary="查询会话上下文容量估算")
+async def get_context_usage(
+    conv_id: UUID,
+    db=Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    """作者：LHF；2026-10-25；返回管理端所属会话的上下文估算和模型输入容量。"""
+    return SuccessResponse(result=await ConversationService.context_usage(db, user, conv_id))
+
+
+@router.post("/{conv_id}/compact", summary="手动压缩会话上下文")
+async def compact_conversation(
+    conv_id: UUID,
+    db=Depends(get_db),
+    user: Users = Depends(get_current_user),
+):
+    """作者：LHF；2026-10-25；压缩当前用户的会话记忆并返回前后统计及 Trace。"""
+    result = await ConversationService.compact(db, user, conv_id)
+    return SuccessResponse(result=result)
 
 
 @router.post("", response_model=SuccessResponse[ConversationResponse],
@@ -59,6 +89,11 @@ async def list_messages(
     """会话历史消息(分页,含 citations)"""
     msgs, total = await ConversationService.get_messages(
         db, user, conv_id, parse_page(page), parse_page_size(page_size))
+    # 作者：LHF；2026-10-25；旧消息仅在管理端按现存日志唯一恢复，扫描在线程执行，不影响公开接口。
+    if user.is_superuser:
+        from backend.services.trace_query import trace_query_service
+
+        msgs = await asyncio.to_thread(trace_query_service.restore_message_trace_ids, conv_id, msgs)
     return SuccessResponse(result=PaginatedResponse(
         items=[MessageResponse.model_validate(m) for m in msgs],
         total=total, page=parse_page(page), page_size=parse_page_size(page_size)))

@@ -37,11 +37,11 @@ router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 
 # ── CRUD ────────────────────────────────
 
-@router.get("", response_model=SuccessResponse[PaginatedResponse], summary="获取当前用户的 Agent 列表", description="自动过滤已删除(status=9)的记录，按创建时间倒序；type 可选：simple_rag / general")
+@router.get("", response_model=SuccessResponse[PaginatedResponse], summary="获取当前用户的 Agent 列表", description="自动过滤已删除(status=9)的记录，按创建时间倒序；type 可选：general")
 async def list_agents(
     page: str = Query("", description="页码，默认 1"),
     page_size: str = Query("", description="每页条数，默认 20"),
-    type: str | None = Query(None, description="Agent 类型筛选：simple_rag / general"),
+    type: str | None = Query(None, description="Agent 类型筛选：general"),
     db: AsyncSession = Depends(get_db),
     user: Users = Depends(get_current_user),
 ):
@@ -51,7 +51,7 @@ async def list_agents(
     return SuccessResponse(result=result)
 
 
-@router.post("", response_model=SuccessResponse[AgentResponse], summary="创建新 Agent", description="type=simple_rag（知识库直接绑定）或 general（工具注册）；校验 LLM 配置与知识库归属")
+@router.post("", response_model=SuccessResponse[AgentResponse], summary="创建新 Agent", description="type=general（统一 Agent）；校验 LLM 配置与知识库归属")
 async def create_agent(
     body: AgentCreate,
     db: AsyncSession = Depends(get_db),
@@ -65,7 +65,11 @@ async def create_agent(
 async def get_agent_defaults(
     user: Users = Depends(get_current_user),
 ):
+    from backend.services.intent import IntentService
     return SuccessResponse(result={
+        "intent_categories": [{"code": item.code, "description": item.description,
+                               "use_plan": item.use_plan, "use_reflect": item.use_reflect}
+                              for item in IntentService.configured_categories()],
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "default_top_k": settings.tools.default_top_k,
         "default_score_threshold": settings.tools.default_score_threshold,
@@ -133,7 +137,7 @@ async def batch_agents(
 
 # ── RAG 对话 ────────────────────────────
 
-@router.post("/{agent_id}/chat", summary="与 Agent 对话", description="按 Agent 类型分发：simple_rag 固定检索知识库回答；general 由 LLM 自主决策调用工具（可多轮）；stream=true 时返回 SSE 流式事件（delta/citations/done）")
+@router.post("/{agent_id}/chat", summary="与 Agent 对话", description="统一 Agent 由 LLM 自主决策调用工具和技能（可多轮）；stream=true 时返回 SSE 流式事件（delta/citations/done）")
 async def chat_agent(
     agent_id: UUID,
     body: ChatRequest,

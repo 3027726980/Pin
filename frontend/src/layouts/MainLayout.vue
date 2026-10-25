@@ -88,6 +88,7 @@ function renderIcon(icon: Component) {
 const menuOptions = [
   { label: '仪表盘', key: '/dashboard', icon: renderIcon(GridOutline) },
   { label: '知识库', key: '/knowledge', icon: renderIcon(BookOutline) },
+  { label: '技能管理', key: '/skills', icon: renderIcon(BookOutline) },
   { label: 'Agent', key: '/agent', icon: renderIcon(HardwareChipOutline) },
   { label: '链路日志', key: '/agent-traces', icon: renderIcon(AnalyticsOutline) },
   { label: '模型配置', key: '/settings/model-config', icon: renderIcon(SettingsOutline) },

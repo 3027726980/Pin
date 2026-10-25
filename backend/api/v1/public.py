@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """公开接口组：/api/v1/public/ —— 嵌入 widget 专用（API Key 鉴权，免登录）
 
 设计：与主站接口隔离，复用 Service 层；访客身份 = JWT（登录）或 client_id（匿名）。
@@ -5,10 +6,9 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.deps import get_current_user
 from backend.api.deps_public import get_optional_user, get_public_agent
 from backend.core.database import get_db
 from backend.core.utils import parse_page, parse_page_size
@@ -27,6 +27,36 @@ from backend.services.turn_stream import (
 )
 
 router = APIRouter(prefix="/api/v1/public", tags=["公开接口"])
+
+
+@router.get("/agents/{agent_id}/capabilities")
+async def public_capabilities(agent_id: UUID, db=Depends(get_db), auth=Depends(get_public_agent("read"))):
+    """作者：LHF；2026-10-25；公开端仅发现 Key 绑定 Agent 的有效技能与业务工具。"""
+    from backend.skills.service import agent_capabilities
+
+    _, owner = auth
+    return SuccessResponse(result=await agent_capabilities(db, owner, agent_id))
+
+
+@router.get("/agents/{agent_id}/skill-runs/{run_id}/artifacts")
+async def public_artifact(agent_id: UUID, run_id: str, path: str = Query(...),
+                          client_id: str | None = Query(None), db=Depends(get_db),
+                          user=Depends(get_optional_user), auth=Depends(get_public_agent("read"))):
+    """作者：LHF；2026-10-25；按 Key、Agent 及访客/登录会话归属下载脚本产物。"""
+    from fastapi import HTTPException
+    from backend.repositories import ConversationRepo
+    from backend.skills import SkillRegistry
+    from backend.skills.runtime import artifact_file
+
+    _, owner = auth
+    target, conversation_id = artifact_file(SkillRegistry(), owner.id, agent_id, run_id, path)
+    conv = await ConversationRepo.get_by_id(db, UUID(conversation_id))
+    anonymous = _resolve_client_id(client_id, user)
+    if (conv is None or conv.status == 9 or conv.agent_id != agent_id
+            or (user is not None and conv.user_id != user.id)
+            or (user is None and (conv.user_id is not None or conv.client_id != anonymous))):
+        raise HTTPException(404, "产物不存在")
+    return FileResponse(target, filename=target.name, media_type="application/octet-stream")
 
 
 def _resolve_client_id(body_client_id: str | None, user: Users | None) -> str | None:
@@ -61,6 +91,7 @@ async def public_chat(
     client_id = _resolve_client_id(body.client_id, user)
     chat_req = ChatRequest(
         message=body.message,
+        mentions=body.mentions,
         conversation_id=body.conversation_id,
         stream=body.stream,
     )
@@ -149,6 +180,27 @@ async def public_delete_conversation(
     await ConversationService.delete(
         db, user if user else owner, conv_id, client_id=resolved)
     return SuccessResponse(result=None)
+
+
+@router.post("/conversations/{conv_id}/compact", response_model=SuccessResponse,
+             summary="公开手动压缩会话上下文")
+async def public_compact_conversation(
+    conv_id: UUID,
+    agent_id: UUID,
+    client_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user: Users | None = Depends(get_optional_user),
+    auth=Depends(get_public_agent("write")),
+):
+    """作者：LHF；2026-10-25；校验 Key、Agent 和访客归属后压缩记忆。"""
+    agent, owner = auth
+    resolved = _resolve_client_id(client_id, user)
+    result = await ConversationService.compact(
+        db, user if user else owner, conv_id, client_id=resolved,
+        exec_user=owner if user else None, agent_id=agent.id)
+    # 公开端不暴露管理端 Trace 标识或详细容量配置。
+    return SuccessResponse(result={key: result[key] for key in (
+        "compressed", "before_tokens", "after_tokens")})
 
 
 @router.get("/conversations/{conv_id}/messages", response_model=SuccessResponse,

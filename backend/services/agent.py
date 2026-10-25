@@ -1,19 +1,6 @@
-"""
-Agent 业务逻辑（分类分表 + 索引表，统一入口）
-
-数据模型：
-  - agent_index：索引表（所有 Agent 基础信息，id 与类型表共用）—— 列表/定位走此表
-  - simple_rag_agents：简单 RAG Agent 类型表（知识库直接绑定）
-  - general_agents：综合 Agent 类型表（工具注册）
-  - workflow：预留，MVP 不做
-
-一致性：创建/编辑/删除时事务内双写（索引表 + 类型表），id 共用。
-校验：LLM 配置归属且 model_type=2；simple_rag 的知识库 / general 工具中的知识库归属当前用户
-默认 system_prompt：不传时使用 RAG 模板（{agent_name} 占位替换）
-默认检索参数：top_k / score_threshold 不传时取 config.yaml tools 节点
-"""
+"""作者：LHF；时间：2026-10-25；作用：统一 Agent 业务与索引一致性管理。"""
 import re
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -21,12 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.constants import DEFAULT_INTENT_RULES, DEFAULT_SYSTEM_PROMPT
-from backend.models import GeneralAgents, KnowledgeBases, SimpleRagAgents, UserModelConfig, Users
+from backend.models import GeneralAgents, KnowledgeBases, UserModelConfig, Users
 from backend.repositories import (
     AgentIndexRepo,
     GeneralAgentRepo,
-    KnowledgeBaseRepo,
-    SimpleRagAgentRepo,
     UserModelConfigRepo,
 )
 from backend.schemas.agent import (
@@ -36,7 +21,6 @@ from backend.schemas.agent import (
     AgentUpdate,
     GeneralAgentCreate,
     IntentRules,
-    SimpleRagAgentCreate,
     ToolConfig,
 )
 from backend.schemas.knowledge import BatchResult, PaginatedResponse
@@ -57,9 +41,9 @@ class AgentService:
         data: AgentCreate,
     ) -> AgentResponse:
         """
-        创建 Agent（按 type 分发到不同类型表，事务内双写索引表）
+        创建 general Agent，在同一事务内写入详情和索引。
 
-        校验：LLM 配置归属且 model_type=2；知识库归属（simple_rag 的 kb_id / general 工具的 kb_id）；
+        校验：LLM 配置归属且 model_type=2；工具绑定的知识库归属；
         总结模型配置（summary_llm_config_id 非空时同 LLM 校验）
         """
         await AgentService._ensure_llm_config(db, user, data.llm_config_id)
@@ -82,8 +66,6 @@ class AgentService:
             raise HTTPException(
                 status_code=400, detail="开启 Rerank 必须选择 Rerank 模型（可在模型配置页创建 Rerank 类型配置）")
 
-        if data.type == "simple_rag":
-            return await AgentService._create_simple_rag(db, user, data)
         return await AgentService._create_general(db, user, data)
 
     @staticmethod
@@ -99,10 +81,8 @@ class AgentService:
 
         展示字段（llm_model / kb_name / tools）按类型批量查类型表补全
         """
-        if type_filter not in (None, "simple_rag", "general"):
-            raise HTTPException(status_code=400, detail=f"不支持的 Agent 类型: {type_filter}")
 
-        items, total = await AgentIndexRepo.list_by_user(db, user.id, page, page_size, type_filter)
+        items, total = await AgentIndexRepo.list_by_user(db, user.id, page, page_size, "general")
 
         # 按类型批量查类型表（补 llm_config_id / kb_id / tools 等详情）
         detail_map: dict[UUID, object] = {}
@@ -110,7 +90,7 @@ class AgentService:
         for it in items:
             type_ids.setdefault(it.type, []).append(it.id)
         for t, ids in type_ids.items():
-            model = SimpleRagAgents if t == "simple_rag" else GeneralAgents
+            model = GeneralAgents
             rows = (await db.execute(select(model).where(model.id.in_(ids)))).scalars().all()
             for r in rows:
                 detail_map[r.id] = r
@@ -121,11 +101,6 @@ class AgentService:
         )
         from backend.tools import ToolRegistry
 
-        simple_kb_ids = [
-            detail_map[i.id].kb_id for i in items
-            if i.type == "simple_rag" and i.id in detail_map
-        ]
-        simple_kb_names = await AgentService._kb_name_map(db, user.id, simple_kb_ids)
         general_tools = [
             t for i in items if i.id in detail_map and hasattr(detail_map[i.id], "tools")
             for t in detail_map[i.id].tools
@@ -147,10 +122,7 @@ class AgentService:
                 status=it.status,
                 created_at=it.created_at,
             )
-            if it.type == "simple_rag" and detail:
-                item.kb_id = detail.kb_id
-                item.kb_name = simple_kb_names.get(detail.kb_id)
-            elif it.type == "general" and detail:
+            if it.type == "general" and detail:
                 item.tools = ToolRegistry.enrich_tools(detail.tools, ref_names)
             result_items.append(item)
 
@@ -185,7 +157,6 @@ class AgentService:
         """
         编辑 Agent（type 不可改，索引表定位类型，双表更新）
 
-        simple_rag：kb_id/top_k/score_threshold 等
         general：tools（整体替换）
         """
         atype, agent = await AgentService._find_agent(db, user, agent_id)
@@ -216,66 +187,31 @@ class AgentService:
             raise HTTPException(
                 status_code=400, detail="开启 Rerank 必须选择 Rerank 模型（可在模型配置页创建 Rerank 类型配置）")
 
-        if atype == "simple_rag":
-            if data.kb_id is not None and data.kb_id != agent.kb_id:
-                await AgentService._ensure_kb(db, user, data.kb_id)
-            agent = await SimpleRagAgentRepo.update(
-                db, agent,
-                name=data.name,
-                description=data.description,
-                llm_config_id=data.llm_config_id,
-                kb_id=data.kb_id,
-                top_k=data.top_k,
-                score_threshold=data.score_threshold,
-                system_prompt=data.system_prompt,
-                temperature=data.temperature,
-                top_p=data.top_p,
-                welcome_message=data.welcome_message,
-                status=data.status,
-                summary_llm_config_id=data.summary_llm_config_id,
-                mqe_enabled=(data.mqe_enabled if data.mqe_enabled is not None else
-                             (data.mqe_mode != "off" if data.mqe_mode is not None else None)),
-                hyde_enabled=(data.hyde_enabled if data.hyde_enabled is not None else
-                              (data.hyde_mode != "off" if data.hyde_mode is not None else None)),
-                mqe_query_count=data.mqe_query_count,
-                rerank_enabled=(data.rerank_enabled if data.rerank_enabled is not None else
-                                (data.rerank_mode != "off" if data.rerank_mode is not None else None)),
-                mqe_mode=(resolve_rag_mode(data.mqe_mode, data.mqe_enabled)
-                          if data.mqe_mode is not None or data.mqe_enabled is not None else None),
-                hyde_mode=(resolve_rag_mode(data.hyde_mode, data.hyde_enabled)
-                           if data.hyde_mode is not None or data.hyde_enabled is not None else None),
-                rerank_mode=(resolve_rag_mode(data.rerank_mode, data.rerank_enabled)
-                             if data.rerank_mode is not None or data.rerank_enabled is not None else None),
-                enhance_llm_config_id=data.enhance_llm_config_id,
-                rerank_config_id=data.rerank_config_id,
-                max_tokens=data.max_tokens,
-            )
-        else:
-            if data.tools is not None:
-                await AgentService._ensure_tools(db, user, data.tools)
-            AgentService._validate_intent_rules(data.intent_rules)
-            agent = await GeneralAgentRepo.update(
-                db, agent,
-                name=data.name,
-                description=data.description,
-                llm_config_id=data.llm_config_id,
-                tools=(AgentService._dump_tools(data.tools)
-                       if data.tools is not None else None),
-                system_prompt=data.system_prompt,
-                temperature=data.temperature,
-                top_p=data.top_p,
-                welcome_message=data.welcome_message,
-                status=data.status,
-                summary_llm_config_id=data.summary_llm_config_id,
-                enhance_llm_config_id=data.enhance_llm_config_id,
-                rerank_config_id=data.rerank_config_id,
-                max_tokens=data.max_tokens,
-                intent_rules=(data.intent_rules.model_dump(mode="json")
-                              if data.intent_rules is not None else None),
-                intent_routing=data.intent_routing,
-                plan_enabled=data.plan_enabled,
-                reflect_enabled=data.reflect_enabled,
-            )
+        if data.tools is not None:
+            await AgentService._ensure_tools(db, user, data.tools)
+        AgentService._validate_intent_rules(data.intent_rules)
+        agent = await GeneralAgentRepo.update(
+            db, agent,
+            name=data.name,
+            description=data.description,
+            llm_config_id=data.llm_config_id,
+            tools=(AgentService._dump_tools(data.tools)
+                   if data.tools is not None else None),
+            system_prompt=data.system_prompt,
+            temperature=data.temperature,
+            top_p=data.top_p,
+            welcome_message=data.welcome_message,
+            status=data.status,
+            summary_llm_config_id=data.summary_llm_config_id,
+            enhance_llm_config_id=data.enhance_llm_config_id,
+            rerank_config_id=data.rerank_config_id,
+            max_tokens=data.max_tokens,
+            intent_rules=(data.intent_rules.model_dump(mode="json")
+                          if data.intent_rules is not None else None),
+            intent_routing=data.intent_routing,
+            plan_enabled=data.plan_enabled,
+            reflect_enabled=data.reflect_enabled,
+        )
 
         # 索引表基础字段同步
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
@@ -302,14 +238,13 @@ class AgentService:
     ) -> None:
         """软删除 Agent（双表：类型表 + 索引表，status → 9）"""
         atype, agent = await AgentService._find_agent(db, user, agent_id)
-        if atype == "simple_rag":
-            await SimpleRagAgentRepo.soft_delete(db, agent)
-        else:
-            await GeneralAgentRepo.soft_delete(db, agent)
+        await GeneralAgentRepo.soft_delete(db, agent)
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
         if entry is not None:
             await AgentIndexRepo.soft_delete(db, entry)
         await db.commit()
+        from backend.skills import SkillRegistry
+        SkillRegistry().unbind_agent(user.id, agent_id)
 
     # ═══════════════════════════════════════════════
     # 批量操作
@@ -325,17 +260,21 @@ class AgentService:
         """
         批量操作 Agent：enable / disable / delete
 
-        索引表 + 两张类型表同步更新（ids 可能混合类型）
+        索引表与 general 详情表同步更新，删除时解除本地技能绑定。
         """
         if action not in ("enable", "disable", "delete"):
             raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
         status = 9 if action == "delete" else (1 if action == "enable" else 0)
 
         affected_index = await AgentIndexRepo.batch_update_status(db, user.id, ids, status)
-        affected_simple = await SimpleRagAgentRepo.batch_update_status(db, user.id, ids, status)
         affected_general = await GeneralAgentRepo.batch_update_status(db, user.id, ids, status)
 
         await db.commit()
+        if action == "delete":
+            from backend.skills import SkillRegistry
+            registry = SkillRegistry()
+            for agent_id in ids:
+                registry.unbind_agent(user.id, agent_id)
         return BatchResult(
             success_count=affected_index,
             fail_count=len(ids) - affected_index,
@@ -345,47 +284,6 @@ class AgentService:
     # 创建分发
     # ═══════════════════════════════════════════════
 
-    @staticmethod
-    async def _create_simple_rag(
-        db: AsyncSession,
-        user: Users,
-        data: SimpleRagAgentCreate,
-    ) -> AgentResponse:
-        """创建简单 RAG Agent：校验知识库，类型表 + 索引表双写（同 id）"""
-        await AgentService._ensure_kb(db, user, data.kb_id)
-
-        prompt = data.system_prompt or DEFAULT_SYSTEM_PROMPT.replace("{agent_name}", data.name)
-        agent = await SimpleRagAgentRepo.create(
-            db,
-            user_id=user.id,
-            name=data.name,
-            description=data.description,
-            kb_id=data.kb_id,
-            llm_config_id=data.llm_config_id,
-            top_k=data.top_k or settings.tools.default_top_k,
-            score_threshold=data.score_threshold if data.score_threshold is not None else settings.tools.default_score_threshold,
-            system_prompt=prompt,
-            temperature=data.temperature,
-            top_p=data.top_p,
-            welcome_message=data.welcome_message,
-            summary_llm_config_id=data.summary_llm_config_id,
-            mqe_enabled=resolve_rag_mode(data.mqe_mode, data.mqe_enabled) != "off",
-            hyde_enabled=resolve_rag_mode(data.hyde_mode, data.hyde_enabled) != "off",
-            mqe_query_count=data.mqe_query_count or settings.tools.default_mqe_query_count,
-            rerank_enabled=resolve_rag_mode(data.rerank_mode, data.rerank_enabled) != "off",
-            mqe_mode=resolve_rag_mode(data.mqe_mode, data.mqe_enabled),
-            hyde_mode=resolve_rag_mode(data.hyde_mode, data.hyde_enabled),
-            rerank_mode=resolve_rag_mode(data.rerank_mode, data.rerank_enabled),
-            enhance_llm_config_id=data.enhance_llm_config_id,
-            rerank_config_id=data.rerank_config_id,
-            max_tokens=data.max_tokens,
-        )
-        # 索引表（id 共用）
-        await AgentIndexRepo.create(
-            db, agent.id, user.id, "simple_rag", agent.name, agent.description
-        )
-        await db.commit()
-        return await AgentService._to_response(db, user, "simple_rag", agent)
 
     @staticmethod
     async def _create_general(
@@ -444,13 +342,10 @@ class AgentService:
         Raises: HTTPException 404
         """
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
-        if entry is None or entry.status == 9 or entry.user_id != user.id:
+        if entry is None or entry.status == 9 or entry.user_id != user.id or entry.type != "general":
             raise HTTPException(status_code=404, detail="Agent 不存在")
 
-        if entry.type == "simple_rag":
-            agent = await SimpleRagAgentRepo.get_by_id(db, agent_id)
-        else:
-            agent = await GeneralAgentRepo.get_by_id(db, agent_id)
+        agent = await GeneralAgentRepo.get_by_id(db, agent_id)
 
         if agent is None or agent.status == 9:
             raise HTTPException(status_code=404, detail="Agent 不存在")
@@ -487,7 +382,11 @@ class AgentService:
         """
         if rules is None:
             return
+        from backend.services.intent import IntentService
+        categories = {item.code for item in IntentService.configured_categories()}
         for r in rules.rules:
+            if r.target not in categories:
+                raise HTTPException(422, f"规则目标类别未配置：{r.target}")
             if r.kind == "keyword" and not r.keywords:
                 raise HTTPException(status_code=422, detail=f"规则「{r.name}」缺少关键词")
             if r.kind == "regex":
@@ -500,14 +399,6 @@ class AgentService:
             if r.kind == "length" and r.max_length is None:
                 raise HTTPException(status_code=422, detail=f"规则「{r.name}」缺少长度上限")
 
-    @staticmethod
-    async def _ensure_kb(db: AsyncSession, user: Users, kb_id: UUID) -> None:
-        """校验知识库归属 + 未删除 + 启用"""
-        kb = await KnowledgeBaseRepo.get_by_id(db, kb_id)
-        if kb is None or kb.status == 9 or kb.user_id != user.id:
-            raise HTTPException(status_code=404, detail="知识库不存在")
-        if kb.status == 0:
-            raise HTTPException(status_code=400, detail="知识库已禁用")
 
     @staticmethod
     async def _to_response(
@@ -548,37 +439,23 @@ class AgentService:
             resp.allowed_domains = entry.allowed_domains or []
             resp.anonymous_retention_days = entry.anonymous_retention_days
 
-        if atype == "simple_rag":
-            kb = await KnowledgeBaseRepo.get_by_id(db, agent.kb_id)
-            resp.kb_id = agent.kb_id
-            resp.kb_name = kb.name if kb else None
-            resp.top_k = agent.top_k
-            resp.score_threshold = agent.score_threshold
-            resp.mqe_enabled = agent.mqe_enabled
-            resp.hyde_enabled = agent.hyde_enabled
-            resp.mqe_query_count = agent.mqe_query_count
-            resp.rerank_enabled = agent.rerank_enabled
-            resp.mqe_mode = resolve_rag_mode(getattr(agent, "mqe_mode", None), agent.mqe_enabled)
-            resp.hyde_mode = resolve_rag_mode(getattr(agent, "hyde_mode", None), agent.hyde_enabled)
-            resp.rerank_mode = resolve_rag_mode(getattr(agent, "rerank_mode", None), agent.rerank_enabled)
-        else:
-            from backend.tools import ToolRegistry
+        from backend.tools import ToolRegistry
 
-            refs = ToolRegistry.collect_refs(agent.tools)
-            ref_names: dict = {}
-            if refs.get("kb_id"):
-                ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
-            enriched = ToolRegistry.enrich_tools(agent.tools, ref_names)
-            resp.tools = [
-                ToolConfig.model_validate(item)
-                for item in AgentService._dump_tools(
-                    [ToolConfig.model_validate(item) for item in enriched]
-                )
-            ]
-            resp.intent_rules = IntentRules.model_validate(agent.intent_rules or {})
-            resp.intent_routing = agent.intent_routing
-            resp.plan_enabled = agent.plan_enabled
-            resp.reflect_enabled = agent.reflect_enabled
+        refs = ToolRegistry.collect_refs(agent.tools)
+        ref_names: dict = {}
+        if refs.get("kb_id"):
+            ref_names["kb_id"] = await AgentService._kb_name_map(db, user.id, refs["kb_id"])
+        enriched = ToolRegistry.enrich_tools(agent.tools, ref_names)
+        resp.tools = [
+            ToolConfig.model_validate(item)
+            for item in AgentService._dump_tools(
+                [ToolConfig.model_validate(item) for item in enriched]
+            )
+        ]
+        resp.intent_rules = IntentRules.model_validate(agent.intent_rules or {})
+        resp.intent_routing = agent.intent_routing
+        resp.plan_enabled = agent.plan_enabled
+        resp.reflect_enabled = agent.reflect_enabled
         return resp
 
     @staticmethod

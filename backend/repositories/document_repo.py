@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：检索返回文档、切片和向量记录的数据库定位 ID。
 """
 文档数据访问
 
@@ -215,6 +216,8 @@ class DocumentRepo:
         q = (
             select(
                 Chunks.id.label("chunk_id"),
+                Embeddings.id.label("embedding_id"),
+                Documents.id.label("document_id"),
                 Chunks.content,
                 Documents.filename,
                 (1 - Embeddings.embedding.cosine_distance(query_vec)).label("score"),
@@ -233,6 +236,8 @@ class DocumentRepo:
         return [
             {
                 "chunk_id": r.chunk_id,
+                "embedding_id": r.embedding_id,
+                "document_id": r.document_id,
                 "content": r.content,
                 "filename": r.filename,
                 "score": float(r.score),
@@ -256,6 +261,8 @@ class DocumentRepo:
                 select(
                     literal(index).label("query_index"),
                     Chunks.id.label("chunk_id"),
+                    Embeddings.id.label("embedding_id"),
+                    Documents.id.label("document_id"),
                     Chunks.content.label("content"),
                     Documents.filename.label("filename"),
                     (1 - Embeddings.embedding.cosine_distance(query_vec)).label("score"),
@@ -277,6 +284,8 @@ class DocumentRepo:
             {
                 "query_index": int(row.query_index),
                 "chunk_id": row.chunk_id,
+                "embedding_id": row.embedding_id,
+                "document_id": row.document_id,
                 "content": row.content,
                 "filename": row.filename,
                 "score": float(row.score),

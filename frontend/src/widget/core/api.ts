@@ -1,3 +1,5 @@
+import { saveDownload, type CapabilityMention, type SkillArtifact, type Capabilities } from '../../chat-core/capabilities'
+/** 作者：LHF；时间：2026-10-25；作用：提供会话上下文手动压缩交互。 */
 /** 公开接口客户端：X-API-Key 鉴权 + client_id/JWT 双身份 + SSE 流式
  *
  * baseUrl：Pin 后端地址（默认空=相对路径，与宿主同源；跨域嵌入时必传，
@@ -10,6 +12,7 @@ import { createSseParser } from '../../chat-core/sse-parser'
 import type { AgentEvent } from '../../chat-core/events'
 
 export interface ChatResult {
+  artifacts?: SkillArtifact[]
   conversation_id: string
   answer: string
   citations: Citation[]
@@ -17,8 +20,34 @@ export interface ChatResult {
 }
 
 export class PublicApi {
+  /** 读取 Key 绑定 Agent 的 @ 候选。 */
+  async capabilities(agentId: string): Promise<Capabilities> {
+    const response = await fetch(this.url(`/api/v1/public/agents/${agentId}/capabilities`), { headers: this.headers() })
+    const data = await response.json()
+    if (!response.ok || data.code !== 200) throw new Error(data.message || '能力列表读取失败')
+    return data.result
+  }
+  /** 产物下载同时带上 Key 和会话身份。 */
+  async downloadArtifact(agentId: string, artifact: SkillArtifact): Promise<void> {
+    const params = this.identityParams({ path: artifact.path })
+    const response = await fetch(this.url(`/api/v1/public/agents/${agentId}/skill-runs/${artifact.run_id}/artifacts?${new URLSearchParams(params)}`), { headers: this.headers() })
+    if (!response.ok) { const data = await response.json(); throw new Error(data.message || '产物不存在或已过期') }
+    saveDownload(await response.blob(), artifact.name)
+  }
+
   private apiKey: string
   private baseUrl: string
+
+  /** 作者：LHF；2026-10-25；带 Agent 和访客身份手动压缩会话。 */
+  async compactConversation(agentId: string, convId: string): Promise<{ compressed: boolean; before_tokens: number; after_tokens: number }> {
+    const params = this.identityParams({ agent_id: agentId })
+    const resp = await fetch(this.url(`/api/v1/public/conversations/${convId}/compact?${new URLSearchParams(params)}`), {
+      method: 'POST', headers: this.headers(),
+    })
+    const data = await resp.json()
+    if (!resp.ok || data.code !== 200) throw new Error(data.message || '上下文压缩失败')
+    return data.result
+  }
 
   constructor(apiKey: string, baseUrl = '') {
     this.apiKey = apiKey
@@ -103,9 +132,11 @@ export class PublicApi {
     })
     const data = await resp.json()
     if (!resp.ok || data.code !== 200) throw new Error(data.message || '历史消息加载失败')
-    return data.result.items.map((m: { role: string; content: string; citations: Citation[] | null; citation_bindings?: CitationBinding[] | null }) => ({
+    return data.result.items.map((m: { role: string; content: string; citations: Citation[] | null; citation_bindings?: CitationBinding[] | null; mentions?: CapabilityMention[]; artifacts?: SkillArtifact[] }) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
+      mentions: m.mentions || [],
+      artifacts: m.artifacts || [],
       citations: m.citations || [],
       rawCitations: m.citations || [],
       citationBindings: m.citation_bindings || [],
@@ -119,9 +150,11 @@ export class PublicApi {
     message: string,
     onEvent: (e: AgentEvent) => void,
     signal?: AbortSignal,
+    mentions: CapabilityMention[] = [],
   ): Promise<void> {
     const body: Record<string, unknown> = {
       message,
+      mentions,
       conversation_id: conversationId,
       stream: true,
     }

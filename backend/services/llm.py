@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """
 LLM 服务 — 协议注册表模式
 
@@ -17,8 +18,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from backend.core.config import settings
-from backend.core.observability.context import current_trace
-from backend.core.observability.events import diagnostic_preview
+from backend.core.observability.model_context import ContextHttpClient
+from backend.core.observability.operations import observe_model_call
 from backend.services.model_policy import (
     current_turn_budget,
     model_requests_per_minute,
@@ -27,7 +28,6 @@ from backend.services.model_policy import (
 
 logger = logging.getLogger(__name__)
 _llm_logger = logging.getLogger("backend.llm")
-_llm_metrics_logger = logging.getLogger("backend.llm.metrics")
 
 
 @dataclass(slots=True)
@@ -56,6 +56,8 @@ async def close_llm_clients() -> None:
             result = close()
             if hasattr(result, "__await__"):
                 await result
+    from backend.core.observability.model_context import close_context_http_clients
+    await close_context_http_clients()
 
 
 def get_rate_limiter(provider: str, model_name: str, api_key: str):
@@ -84,26 +86,14 @@ async def _acquire_request_slot(provider: str, model_name: str, api_key: str) ->
         await limiter.aacquire()
 
 
-def _log_llm_metric(event: str, **payload: object) -> None:
-    """写入模型指标及脱敏限长的诊断输出，不记录 Prompt 或 API Key。"""
-    trace = current_trace()
-    structured = {
-        "event": event,
-        "request_id": trace.request_id if trace else None,
-        "trace_id": trace.trace_id if trace else None,
-        "turn_id": trace.turn_id if trace else None,
-        **payload,
-    }
-    level = logging.ERROR if event == "llm.failed" else logging.INFO
-    _llm_metrics_logger.log(
-        level, event, extra={"structured_data": structured}
-    )
+
 
 
 class LLMService:
     """统一的 LLM 调用入口，按协议分发"""
 
     @staticmethod
+    @observe_model_call
     async def chat(
         provider: str,
         model_name: str,
@@ -136,10 +126,6 @@ class LLMService:
         call_metrics = metrics or LLMCallMetrics()
         temperature, top_p = normalize_sampling_params(
             provider, model_name, temperature, top_p)
-        _log_llm_metric(
-            "llm.started", purpose=purpose, provider=provider,
-            model=model_name, stream=False, attempt=call_metrics.attempt,
-        )
         total_started = time.perf_counter()
         queue_started = time.perf_counter()
         try:
@@ -163,34 +149,15 @@ class LLMService:
                 call_metrics.queue_wait_ms + call_metrics.generation_ms,
             )
             call_metrics.chars = len(content)
-            _log_llm_metric(
-                "llm.completed", purpose=purpose, provider=provider,
-                model=model_name, stream=False, status="completed",
-                queue_wait_ms=call_metrics.queue_wait_ms,
-                first_token_ms=None,
-                generation_ms=call_metrics.generation_ms,
-                total_ms=call_metrics.total_ms,
-                chars=call_metrics.chars,
-                attempt=call_metrics.attempt,
-                **diagnostic_preview(content),
-            )
             return content
-        except Exception as error:
+        except Exception:
             call_metrics.total_ms = round(
                 (time.perf_counter() - total_started) * 1000
-            )
-            _log_llm_metric(
-                "llm.failed", purpose=purpose, provider=provider,
-                model=model_name, stream=False, status="failed",
-                queue_wait_ms=call_metrics.queue_wait_ms,
-                total_ms=call_metrics.total_ms,
-                attempt=call_metrics.attempt,
-                error_type=error.__class__.__name__,
-                **diagnostic_preview(str(error)),
             )
             raise
 
     @staticmethod
+    @observe_model_call
     async def chat_stream(
         provider: str,
         model_name: str,
@@ -214,10 +181,6 @@ class LLMService:
         call_metrics = metrics or LLMCallMetrics()
         temperature, top_p = normalize_sampling_params(
             provider, model_name, temperature, top_p)
-        _log_llm_metric(
-            "llm.started", purpose=purpose, provider=provider,
-            model=model_name, stream=True, attempt=call_metrics.attempt,
-        )
         total_started = time.perf_counter()
         queue_started = time.perf_counter()
         try:
@@ -229,7 +192,6 @@ class LLMService:
                 (time.perf_counter() - queue_started) * 1000
             )
             generation_started = time.perf_counter()
-            output_preview = ""
             async for delta in impl.chat_stream(
                 model_name, api_key, base_url, messages, temperature, top_p,
                 timeout, max_tokens,
@@ -239,8 +201,6 @@ class LLMService:
                         (time.perf_counter() - generation_started) * 1000
                     )
                 call_metrics.chars += len(delta)
-                if len(output_preview) < 4001:
-                    output_preview += delta[:4001 - len(output_preview)]
                 yield delta
             call_metrics.generation_ms = round(
                 (time.perf_counter() - generation_started) * 1000
@@ -249,30 +209,9 @@ class LLMService:
                 round((time.perf_counter() - total_started) * 1000),
                 call_metrics.queue_wait_ms + call_metrics.generation_ms,
             )
-            _log_llm_metric(
-                "llm.completed", purpose=purpose, provider=provider,
-                model=model_name, stream=True, status="completed",
-                queue_wait_ms=call_metrics.queue_wait_ms,
-                first_token_ms=call_metrics.first_token_ms,
-                generation_ms=call_metrics.generation_ms,
-                total_ms=call_metrics.total_ms,
-                chars=call_metrics.chars,
-                attempt=call_metrics.attempt,
-                **diagnostic_preview(output_preview),
-            )
-        except Exception as error:
+        except Exception:
             call_metrics.total_ms = round(
                 (time.perf_counter() - total_started) * 1000
-            )
-            _log_llm_metric(
-                "llm.failed", purpose=purpose, provider=provider,
-                model=model_name, stream=True, status="failed",
-                queue_wait_ms=call_metrics.queue_wait_ms,
-                first_token_ms=call_metrics.first_token_ms,
-                total_ms=call_metrics.total_ms,
-                attempt=call_metrics.attempt,
-                error_type=error.__class__.__name__,
-                **diagnostic_preview(str(error)),
             )
             raise
 
@@ -293,11 +232,13 @@ class OpenAICompatible:
         identity = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         key = (identity, base_url or "https://api.openai.com/v1", float(timeout))
         if key not in _OPENAI_CLIENTS:
+            from backend.core.observability.model_context import get_context_http_client
             _OPENAI_CLIENTS[key] = AsyncOpenAI(
                 api_key=api_key,
                 base_url=key[1],
                 timeout=timeout,
                 max_retries=0,
+                http_client=get_context_http_client("direct"),
             )
         return _OPENAI_CLIENTS[key]
 
@@ -407,7 +348,6 @@ class DashScopeLLM:
         max_tokens: int | None = None,
     ) -> str:
         """DashScope 原生非流式对话（埋点：耗时 + 输出长度 + 错误）"""
-        import httpx
 
         url = (base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/") \
             + "/services/aigc/text-generation/generation"
@@ -417,7 +357,7 @@ class DashScopeLLM:
         body = {"model": model_name, "input": {"messages": messages}, "parameters": params}
         t0 = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with ContextHttpClient(timeout=timeout, purpose="direct") as client:
                 resp = await client.post(
                     url, json=body,
                     headers={"Authorization": f"Bearer {api_key}"})
@@ -451,7 +391,6 @@ class DashScopeLLM:
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """DashScope 原生流式对话（incremental_output SSE）"""
-        import httpx
 
         url = (base_url or "https://dashscope.aliyuncs.com/api/v1").rstrip("/") \
             + "/services/aigc/text-generation/generation"
@@ -462,7 +401,7 @@ class DashScopeLLM:
         t0 = time.perf_counter()
         chars = 0
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with ContextHttpClient(timeout=timeout, purpose="direct") as client:
                 async with client.stream(
                         "POST", url, json=body,
                         headers={"Authorization": f"Bearer {api_key}"}) as resp:

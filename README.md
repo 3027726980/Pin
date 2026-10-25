@@ -23,7 +23,8 @@
   - [知识库与文档处理](#知识库与文档处理)
   - [模型配置](#模型配置)
   - [Agent 类型](#agent-类型)
-  - [意图路由（降本提速）](#意图路由降本提速)
+  - [本地技能](#本地技能)
+  - [意图与可选编排](#意图与可选编排)
   - [内置推理工具 plan / reflect](#内置推理工具-plan--reflect)
   - [工具注册体系（新增工具 = 一个文件）](#工具注册体系新增工具--一个文件)
   - [对话与流式输出](#对话与流式输出)
@@ -46,7 +47,7 @@ Pin 是一个**企业自托管**的 AI Agent 平台：
 
 - **零代码嵌入**：在任意网页插入一行 `<script>`，即可获得一个浮窗 AI 助手
 - **知识库问答**：上传文档 → 解析/清洗/分块/向量化 → 基于检索增强生成（RAG）回答，回答附带可点击的引用来源
-- **可编排 Agent**：简单 RAG Agent（绑定知识库直接问答）与综合 Agent（工具注册、LLM 自主决策、任务规划与反思）
+- **统一 Agent**：通过工具配置知识库与业务能力，通过本地 Skill 提供任务说明和脚本，由模型自主选择，支持可选规划、核验与修订
 - **厂商无关**：OpenAI 兼容协议统一接入，DeepSeek / Kimi / 通义千问 / 智谱等零代码接入；本地 Embedding 模型开箱即用
 
 ## 核心特性
@@ -56,8 +57,8 @@ Pin 是一个**企业自托管**的 AI Agent 平台：
 | 🔐 完整认证 | JWT（Access 30min / Refresh 7天）+ jti 白名单即时失效 + 令牌轮转 |
 | 📚 文档处理链路 | 上传 → 解析（PDF/Office/Markdown/纯文本）→ 清洗 → 递归分块 → 向量化 → pgvector 检索 |
 | 🔍 检索增强 | MQE、HyDE、Rerank 独立配置 off / auto / always，自动策略按原始召回和预算决策 |
-| 🤖 双 Agent 类型 | `simple_rag`（知识库直答）+ `general`（工具注册、LLM 自主决策） |
-| ⚡ 意图路由 | 简单问题零工具直接回答（省 token / 降延迟），复杂问题完整 ReAct 循环 |
+| 🤖 统一 Agent 与本地技能 | general 自主选择工具；文件技能支持动态加载、Python 脚本与两端 @ |
+| ⚡ 意图分类 | 类别决定可选规划和核验，所有请求进入统一主 Agent |
 | 🧠 图编排 | 配置化意图 → 可选规划 → 主 Agent → 可选核验与修订 |
 | 🧩 工具注册体系 | 新增工具 = 一个文件（自动发现注册 + Schema 驱动前端动态表单） |
 | 🏭 厂商协议注册表 | OpenAI 兼容协议统一分发，新增厂商 = config.yaml 加一段配置 |
@@ -86,7 +87,7 @@ Pin 是一个**企业自托管**的 AI Agent 平台：
 |------|------|------|
 | Python | ≥ 3.12 | 后端 |
 | PostgreSQL | ≥ 14 | 需启用 `pgvector` 扩展 |
-| Node.js | ≥ 18 | 前端 |
+| Node.js | 22.12+（22.x）或 24.x | 前端与 Vitest 单测 |
 | uv | 最新 | 推荐（可选，也可用 venv + pip） |
 
 ### 1. 准备数据库
@@ -98,17 +99,17 @@ CREATE DATABASE pin_dev;
 
 ### 2. 后端启动
 
-```bash
+```powershell
 # 安装依赖（uv，推荐）
 uv sync
 
 # 或使用传统 venv
 python -m venv .venv
-.venv/Scripts/activate        # Windows
+.\.venv\Scripts\Activate.ps1
 pip install -e .
 
 # 准备配置文件（重要：config.yaml 不随仓库提交，需手动创建）
-cp backend/config.example.yaml backend/config.yaml   # 如无 example 文件，参考下方【配置说明】创建
+Copy-Item backend/config.example.yaml backend/config.yaml   # 仅首次执行，已有配置不要覆盖
 
 # 启动（Windows 必须带 --reload，原因见【部署-注意事项】）
 uvicorn backend.main:app --reload --port 8000
@@ -124,7 +125,7 @@ uvicorn backend.main:app --reload --port 8000
 
 ### 3. 前端启动
 
-```bash
+```powershell
 cd frontend
 npm install
 npm run dev        # → http://localhost:8001（/api 已代理到 8000）
@@ -135,14 +136,15 @@ npm run dev        # → http://localhost:8001（/api 已代理到 8000）
 1. 登录 `admin / admin123`
 2. **模型配置**（设置 → 模型配置）：创建 LLM 配置（如 DeepSeek）与 Embedding 配置
 3. **知识库**：新建知识库 → 上传文档 → 预览清洗/切片 → 保存策略并处理至向量化；是否自动处理由知识库开关控制
-4. **Agent**：创建 simple_rag（绑定知识库）或 general（配置工具）→ 进入对话
+4. **Agent**：创建 general（按需配置工具和本地技能）→ 进入对话
+5. **技能**：在「技能管理」上传 ZIP → 在 Agent 表单绑定 → 聊天时按需使用 `@` 选择；未提及的已绑定技能也可由模型自主加载
 
 ## 配置说明
 
 后端全部配置集中在 `backend/config.yaml`（**已被 .gitignore 忽略，不会提交**），通过 `settings.a.b.c` 点号访问，敏感项可用环境变量覆盖：
 
 ```yaml
-# 核心配置结构（完整结构以本地 config.yaml 为准）
+# 核心配置结构（完整结构以 backend/config.example.yaml 为准）
 app:
   name: Pin
   version: 0.1.0
@@ -157,8 +159,13 @@ checkpoint:
   keep_rounds: 5                                                     # 每会话保留最近 N 轮快照
   summarization:
     enabled: true                                                    # 长会话自动总结
-    trigger_message_count: 20
-    keep_message_count: 10
+    trigger_fraction: 0.8                                            # 达到输入容量的 80% 时触发
+    keep_fraction: 0.2                                               # 保留近期原文的目标比例
+    fallback_max_input_tokens: 32768                                 # 缺少模型容量信息时回退
+    model_input_limits: {}                                           # 按模型名显式配置容量
+    model_token_encodings: {}                                        # 按模型名指定 tiktoken 编码
+    model_tokenizer_paths: {}                                        # 可选本地 tokenizer 目录
+    summary_chunk_tokens: 12000
 
 jwt:
   secret_key: change-me-in-production    # 生产必须通过 JWT_SECRET_KEY 环境变量覆盖
@@ -182,11 +189,27 @@ tools:
   rerank:
     factor: 5
 
-intent:                                  # 意图路由（general Agent）
-  simple_max_length: 30                  # 规则判 simple 的最大消息长度（超过升级 LLM 兜底）
-  simple_history_limit: 20
-  simple_context_max_chars: 1500
+intent:                                  # 类别只控制可选编排，默认类别为 general / complex
   classify_temperature: 0.2
+  categories:
+    - code: general
+      description: 常规请求
+      use_plan: false
+      use_reflect: false
+    - code: complex
+      description: 多步骤分析或高准确度任务
+      use_plan: true
+      use_reflect: true
+
+skills:
+  root: storage/skills
+  max_zip_bytes: 10485760                 # 10 MiB
+  max_unpacked_bytes: 52428800            # 50 MiB
+  max_files: 200
+  script_timeout_seconds: 60
+  max_parallel_scripts: 2                 # 每轮脚本并发上限
+  max_output_bytes: 262144                # stdout/stderr 合计 256 KiB
+  retention_hours: 24
 
 model_types:                             # 模型类型定义（1=Embedding 2=LLM 3=Rerank）
 protocols:                               # 协议注册表（openai / dashscope）
@@ -252,34 +275,65 @@ logging:
 
 ### Agent 类型
 
-| 类型 | 存储 | 能力 | 适用 |
-|------|------|------|------|
-| `simple_rag` | simple_rag_agents | 固定绑定一个知识库，每轮强制先调用 RAG 工具再回答 | 客服问答、制度查询 |
-| `general` | general_agents | 工具注册（rag 等）+ LLM 自主决策多轮调用 | 复杂任务、多知识库、需要规划反思的场景 |
-| `workflow` | （预留） | — | — |
+统一使用 `general`，索引保存在 `agent_index`，详情保存在 `general_agents`。工具可为空，RAG 通过工具配置绑定知识库。模型自主决定直接回答、调用业务工具或使用技能。
 
-- **simple_rag**：绑定字段转换为 `rag` 工具配置，与 general 共用 `create_agent`、工具日志、引用收集和自动 checkpoint。`RagFirstMiddleware` 在本轮尚无 RAG 工具结果时强制选择 `rag`，结果返回后恢复自主生成；空结果也由 Agent 回答，提示词要求明确资料不足。供应商必须支持指定 `tool_choice`，真实兼容性仍待验收。
-- **general**：创建时勾选工具（见工具注册体系），对话由 LLM 自主决定调用哪些工具、调用几轮（LangGraph 多轮）
+`simple_rag` 类型、专属表和零工具轻量路由已移除。已有库使用 `python -m backend.scripts.cleanup_simple_agents` 预览影响；明确需要删除旧数据时追加 `--apply`。命令先备份旧 Agent、关联会话、密钥及新旧 checkpoint，再删除，并核对 general 保护数据。备份保存在 `storage/migrations/`；此操作会删除旧类型的业务数据。
 
-### 意图路由（降本提速）
+### 本地技能
 
-general Agent 可开启「意图路由」（Agent 级开关，默认关闭）：
+管理端「技能管理」支持上传 ZIP、格式校验、正文和资源预览、替换、启停与删除；Agent 表单配置技能绑定。管理端和 Widget 输入独立的 `@` 选择技能或工具，标签可移除，邮箱和未选择的普通文本保持原样。
 
-```
-用户提问
-  │
-  ▼
-① 意图识别（Agent 级规则引擎 → 未命中则 LLM 兜底分类）
-  ├── simple  → 零工具直接回答（省 token / 降延迟）
-  └── general → 可选 plan → 主 Agent 工具循环 → 可选 verify / revision
+技能保存在 `storage/skills/{用户 UUID}/{技能名称}/`，以 `SKILL.md` 的 YAML 元信息和正文定义用途，可包含 `scripts/`、`references/`、`assets/`。`.pin/config.json` 保存启停及 Agent 绑定，`.runs/` 保存本轮执行副本和产物；没有 Skill 数据表。文件更新动态读取，使用文件锁和原子发布；已加载技能在本轮使用副本，更新在后续轮次生效。
+
+#### 技能包结构
+
+```text
+report-writing/
+├── SKILL.md
+├── scripts/          # 可选，首版只执行 Python
+├── references/       # 可选，按需读取的说明和模板
+└── assets/           # 可选，静态资源
 ```
 
-- **规则引擎**：Agent 级自定义（预设模板 + 可编辑），支持 `keyword` / `regex` / `length` 三种规则，按优先级从小到大执行、命中即判定
-- **保守原则**：指向轻量路由的 keyword 必须覆盖整句（忽略标点、空白与大小写），业务路由仍为包含匹配。纯“你好！”直接轻量回答；“你好，我想了解一点这个课程的事情”继续业务规则或 LLM 分类，不再被问候截走。现有规则无需重新保存；自定义 regex / length 语义不变。
-- **长度保护**：规则判 simple 但超过 `intent.simple_max_length`（默认 30 字）仍升级 LLM 兜底。
-- **LLM 兜底**：结合最近语义历史和业务工具选择 `intent.categories` 中的类别码；动态 Pydantic 枚举校验输出，再映射到 `simple/general` 执行路由及规划、核验策略。`complex` 可作为类别码，执行路由本身仍只有两种；分类失败降级到 general 路由。
-- **simple 档**：零工具直答不等于执行知识检索；业务追问需结合上下文分类，不保证仅靠旧上下文回答准确。
-- 对话页气泡顶部会显示 `⚡ 轻量模式` / `🛠 完整模式` 标签
+最小 `SKILL.md`：
+
+```markdown
+---
+name: report-writing
+description: 根据用户提供的材料整理报告，在需要报告结构和写作步骤时使用。
+---
+
+# 报告编写
+
+先核对材料，再整理结构并撰写报告。需要知识库资料时使用当前 Agent 已配置的 rag 工具。
+引用技能包内资源时使用相对路径；只有任务需要时才执行 scripts/ 中实际存在的 Python 文件。
+```
+
+名称必须与目录一致，使用 1～64 位小写字母、数字和单个连字符；`description` 为 1～1024 字符。ZIP 可以直接包含 `SKILL.md`，也可以只包含一层 `report-writing/` 包装目录。同名上传返回 409，更新已有技能使用「替换包」；删除前需解除全部 Agent 绑定。
+
+#### 加载与执行
+
+ZIP 默认限制压缩 10 MiB、解压 50 MiB、200 个文件，校验路径、链接、重复条目、YAML 和 Python 语法，上传不执行脚本。显式提及的技能正文作为本轮参考；其他技能由模型调用 `load_skill` 按需加载，再通过 `read_skill_file` 读资源或 `run_skill_script` 执行 Python。提及不强制调用，技能不能扩大 Agent 的工具权限。
+
+脚本通过项目 Python 和独立子进程运行，使用后端服务账号权限，执行目录为技能副本；这不是沙箱。默认超时 60 秒、每轮并行 2 个、stdout/stderr 合计 256 KiB；结束时回收进程树，不自动安装依赖。产物通过 JWT 或 Widget API Key 与会话归属校验下载，默认保留 24 小时，下轮请求结束时惰性清理已结束执行。Compose 挂载 `pin-skills` 卷；自定义 `skills.root` 时同步调整挂载位置。
+
+| 内部工具 | 作用 |
+| --- | --- |
+| `load_skill(skill_name)` | 加载已绑定且启用技能的正文与资源清单 |
+| `read_skill_file(skill_name, path)` | 读取技能副本中的文本参考资源 |
+| `run_skill_script(skill_name, path, args, stdin)` | 使用参数数组执行现存 Python 脚本，返回退出码、输出、耗时和产物 |
+
+这些工具不出现在业务工具配置表单或 `@` 工具候选中。脚本不会获得注入的模型密钥、数据库会话或业务工具对象；业务工具和脚本由主 Agent 在同一轮上下文中协调。
+
+### 意图与可选编排
+
+默认关闭意图分类；开启后，规则或 LLM 返回配置的类别码。类别的 `use_plan/use_reflect` 与 Agent 开关共同决定规划、核验和修订。
+
+```text
+用户提问 → 意图类别 → [plan] → 主 Agent 工具循环 → [verify → revision]
+```
+
+所有请求都进入同一主 Agent；分类不裁减工具或技能。主 Agent、规划和核验共享本轮技能参考，正文和资源不写入 checkpoint，历史保存提及名称及产物引用。容量估算、自动压缩触发与实际请求均计入技能参考和工具定义。
 
 ### 内置推理工具 plan / reflect
 
@@ -349,7 +403,7 @@ class XxxTool(BaseTool):
             return "工具执行结果"
         return xxx
 
-    # execute 可供工具内部复用；simple_rag 也通过 build_langchain 构建的工具执行
+    # execute 可供工具内部复用；主 Agent 通过 build_langchain 构建的工具执行
 ```
 
 ```bash
@@ -402,7 +456,7 @@ POST /api/v1/agents/{agent_id}/chat
 
 新回答使用稳定 `[S#]` 与 `citation_bindings`，仅展示服务端验证的来源；旧 `[N]` 保留兼容。管理端接收 public/debug 事件，Widget 仅接收 public。
 
-`debug` 请求字段仅为旧客户端兼容。后端始终采集安全 Trace，聊天页使用「查看完整链路日志」作为诊断入口，已移除冗余 Debug 开关。准备阶段保留在完整链路内，常规进度不展示其细节。详情默认中文字段和结构化结果，原始 JSON 折叠；连续 answer.delta 在 UI 合并，但原始日志保留。聊天内查看链路打开抽屉，详情每 2 秒刷新至终态。页面内跨路由保留进行中的聊天，浏览器刷新不支持 SSE 重连。
+`debug` 请求字段仅为旧客户端兼容。后端始终采集安全 Trace，聊天页使用「查看完整链路日志」作为诊断入口，已移除冗余 Debug 开关。准备阶段保留在完整链路内，常规进度不展示其细节。详情按操作展示，元数据、完整输入、输出与错误分别折叠，保留原始 JSON 字段；历史日志只展示当时已采集的数据。聊天内查看链路打开抽屉，详情每 2 秒刷新至终态。页面内跨路由保留进行中的聊天，浏览器刷新不支持 SSE 重连。
 
 模型首输出与首答案 Token 是不同指标：Agent 可能先选择/执行工具，再生成答案；阶段进度不代表实际答案延迟已降低。模型耗时包含上游等待，不暴露或推断隐藏思维链。
 
@@ -410,8 +464,8 @@ POST /api/v1/agents/{agent_id}/chat
 
 - 会话由服务端管理：`conversation_id` 缺省时自动创建
 - **checkpoint 记忆**：LangGraph 持久化，新 thread 为 `memory_v2:{conversation_id}`，namespace 为空；前端继续使用原 conversation_id。首次访问按需迁移旧 thread 消息，不恢复旧待执行任务。
-- **长会话总结**：SummarizationMiddleware 自动压缩（触发/保留条数可配）。轻量直答也走零工具 `create_agent`，通过 `SimpleContextMiddleware` 投影模型输入，框架自动保存原始消息。
-- **展示历史**：`conversations.messages` 独立保存页面历史和引用；记忆修复使用公开图状态 API，不手写 checkpoint 版本。当前会话锁只覆盖本进程记忆服务更新，不保证多进程整轮互斥。
+- **长会话总结**：按回答模型输入容量的比例自动压缩，系统提示词、工具定义和本轮技能参考均计入输入估算；管理端可查看容量、预览草稿占用并手动压缩。优先从当前供应商模型列表读取容量，缺失时使用配置、模型 profile 或明确的回退值；本地词表或 tiktoken 用于估算，不保证与供应商计费完全一致。
+- **展示历史**：`conversations.messages` 独立保存页面历史、引用、用户提及和脚本产物引用；技能正文和资源仅作为本轮模型输入参考，不写入 checkpoint。记忆修复使用公开图状态 API，不手写 checkpoint 版本。当前聊天/手动压缩互斥只覆盖单进程，不保证多进程整轮协调。
 - 会话列表 / 历史消息 / 删除：`/api/v1/conversations` 系列接口
 - 匿名访客（widget）：会话归属 `client_id`
 
@@ -450,6 +504,8 @@ GET    /api/v1/public/conversations             访客会话列表
 POST   /api/v1/public/conversations             创建访客会话
 DELETE /api/v1/public/conversations/{id}        删除访客会话
 GET    /api/v1/public/conversations/{id}/messages  访客历史消息
+GET    /api/v1/public/agents/{id}/capabilities    @ 技能与业务工具候选
+GET    /api/v1/public/agents/{id}/skill-runs/{run_id}/artifacts  鉴权下载（path、匿名 client_id 查询参数）
 ```
 
 ### 日志体系
@@ -464,7 +520,7 @@ GET    /api/v1/public/conversations/{id}/messages  访客历史消息
 | `error.log` | 异常堆栈 |
 | `app.log` | 应用业务日志 |
 
-上述文本日志实际文件名默认为 `YYYY-MM-DD-模块.log`。结构化文件包括 `access.jsonl`、`agent-trace.jsonl`、`llm.jsonl`、`tool.jsonl`，通过 request_id / trace_id / turn_id 关联。仅超级管理员可通过 `/api/v1/debug/agent-traces` 查询、查看及导出脱敏链路。容器日志与应用文件日志独立轮转；应用 Trace 必须保留 `pin-logs` 卷。
+上述文本日志实际文件名默认为 `YYYY-MM-DD-模块.log`。结构化文件包括 `access.jsonl`、`agent-trace.jsonl`、`llm.jsonl`、`tool.jsonl`，通过 request_id / trace_id / turn_id 关联。操作结束时记录输入、输出、耗时、错误及父子关系，整轮结束写入请求汇总；技能偏好、正文加载、业务工具和脚本执行均可追溯。仅超级管理员可通过 `/api/v1/debug/agent-traces` 查询、查看及导出脱敏链路。容器日志与应用文件日志独立轮转；应用 Trace 必须保留 `pin-logs` 卷。
 
 ## API 概览
 
@@ -494,9 +550,21 @@ GET    /api/v1/agents/defaults                  默认配置
 GET    /api/v1/agents/tool-defs                 工具定义（参数 Schema + 动态选项）
 POST   /api/v1/agents/{id}/chat                 对话（stream 可选，SSE 流式）
 GET/POST/PUT/DELETE /api/v1/agents/{id}/api-keys  嵌入 API Key 管理
+GET    /api/v1/agents/{id}/capabilities         @ 候选（仅当前授权能力）
+
+# 本地技能（全部使用文件存储）
+GET/POST /api/v1/skills                        动态列表 / 上传 ZIP
+GET/PUT/DELETE /api/v1/skills/{name}           详情 / 启停 / 删除
+PUT    /api/v1/skills/{name}/package            替换技能包
+GET    /api/v1/skills/{name}/files              文件清单 / 文本预览（path 查询参数）
+GET/PUT /api/v1/agents/{id}/skills              Agent 本地技能绑定
+GET    /api/v1/agents/{id}/skill-runs/{run_id}/artifacts  鉴权下载（path 查询参数）
 
 # 会话
 CRUD   /api/v1/conversations                    会话管理 + 历史消息
+GET    /api/v1/conversations/{id}/context-usage  输入容量估算
+POST   /api/v1/conversations/{id}/context-preview  草稿与提及的容量预览
+POST   /api/v1/conversations/{id}/compact       手动压缩
 
 # 公开接口（访客）
 /api/v1/public/*                                见【公开接口与嵌入治理】
@@ -511,34 +579,58 @@ CRUD   /api/v1/providers                        厂商管理
 
 ## 测试
 
-```bash
-# 后端测试（pytest，含 API / 记忆 / 工具 / 检索增强等）
-.venv/Scripts/python -m pytest tests/ -v
+```powershell
+# 本地后端测试目录已被 Git 忽略；需先具备本地测试文件及独立 pin_test 数据库
+.\.venv\Scripts\python.exe -m pytest tests/ -v
 
-# 前端类型检查 + 构建
+# 前端单测、类型检查及两端构建
 cd frontend
+npm run test:unit
 npm run build
+npm run build:widget
 ```
+
+2026-10-25 已通过 200 项后端定向测试（145 项技能及相关回归、55 项日志与链路回归）、30 项前端单测与双构建，并复用现有服务检查上传、预览、绑定和两端 `@`。推送前另使用暂存快照验证后端导入、前端类型与构建，确认交付不依赖未提交的本地文件。这些结果不等同于全仓回归、真实供应商多轮交互或容器部署验收；真实模型与最新容器/GPU 验收仍待完成。
 
 ## 部署
 
-> 当前版本（v0.1）为开发/内测形态，生产部署建议结合 Docker（路线图中规划）。以下为手动部署要点。
+已有 CPU / GPU 后端 Dockerfile、前端 Dockerfile 与 Compose 编排。以下为部署流程，最新镜像、技能卷重启恢复与 GPU/生产环境尚未实际验收。
+
+### Docker Compose（PowerShell）
+
+```powershell
+Copy-Item backend/config.example.yaml backend/config.yaml
+Copy-Item .env.example .env
+# 以上仅首次部署执行，已有配置不要覆盖。
+# 修改 .env 的数据库密码、JWT 密钥、管理员密码，以及 config.yaml 的非敏感项
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml build
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+```
+
+- 显式 `-f docker-compose.yml` 不加载本地 override，生产仅开放前端端口。本地需要 8000 / 15432 时使用 `docker compose` 默认叠加 override。
+- 后端镜像从当前 frontend 源码构建 Widget，无需复制宿主旧产物；前端先 Vite 生成自动导入声明，再执行类型检查。
+- 配置文件必须预先存在，只读挂载；不会把本地 config.yaml 或 .env 放入镜像。生产禁止默认密码、默认 JWT 密钥。
+- 数据卷为 pgdata、pin-uploads、pin-logs、pin-models、pin-skills。`down` 保留卷；`down -v` 会删除数据库、上传、日志、模型缓存及技能和脚本产物。
+- 全新库由后端初始化；已有数据库升级必须先备份并执行缺失的编号迁移，`create_all` 不会自动修改旧表字段。
+- GPU 设置 `BACKEND_IMAGE=pin-backend:gpu`，另用部署专用 Compose 文件覆盖 `backend.build.target: runtime-gpu` 并申请 GPU 设备，再通过 `-f` 显式叠加该文件。仅更改镜像标签不会切换构建变体；驱动与容器 GPU 运行时需单独准备。
+- nginx `/api/` 关闭代理缓冲和缓存，读超时 300 秒（连续无数据超时），不能替代模型侧提速。
 
 ### 生产部署要点
 
 1. **环境变量覆盖敏感配置**：
 
-```bash
-export JWT_SECRET_KEY="<随机强密钥>"
-export ADMIN_USERNAME="admin"
-export ADMIN_PASSWORD="<强密码>"
+```powershell
+$env:JWT_SECRET_KEY="<随机强密钥>"
+$env:ADMIN_USERNAME="admin"
+$env:ADMIN_PASSWORD="<强密码>"
 ```
 
-2. **启动后端**（生产建议 gunicorn + uvicorn worker）：
+2. **启动后端**（当前默认单进程，与镜像一致；多进程部署需另外评估模型限流、日志与后台任务协调）：
 
 ```bash
-pip install gunicorn
-gunicorn backend.main:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 3. **构建前端**：
@@ -577,17 +669,20 @@ pin/
 │   ├── repositories/           # 数据访问层（纯 SQL，不管业务）
 │   ├── services/               # 业务逻辑层（协调 Repository + 规则）
 │   ├── tools/                  # 工具注册体系（自动发现 + Schema 驱动）
+│   ├── skills/                 # 文件技能注册、每轮上下文、Python 执行与产物授权
+│   ├── scripts/                # 旧类型数据备份与清理命令
 │   │   ├── common/base.py      # BaseTool 抽象基类
 │   │   └── agent/              # 工具目录（rag / plan / reflect）
 │   ├── api/v1/                 # 接口层（薄）
-│   ├── sql/                    # 建表参考 + 增量迁移（001~020）
+│   ├── sql/                    # 17 张业务表 + 增量迁移（001~026）
 │   └── static/widget/          # widget.js 构建产物
 ├── frontend/
-│   ├── src/views/              # 页面（dashboard / knowledge / agent / settings）
+│   ├── src/views/              # 页面（dashboard / knowledge / agent / skills / settings）
 │   ├── src/widget/             # 浮窗组件源码
 │   └── vite.widget.config.ts   # widget 独立构建
-├── dev-docs/                   # 设计与接口文档（Git 忽略）
-└── tests/                      # pytest 测试
+├── storage/skills/             # 技能、文件绑定、执行副本与产物（Git 忽略）
+├── dev-docs/                   # 本地设计与接口文档（Git 忽略）
+└── tests/                      # 本地 pytest 测试（Git 忽略）
 ```
 
 ### 分层规范
@@ -643,10 +738,11 @@ preset_providers:
 | 3 | 文档处理链路 + 模型配置 | ✅（含上传自动处理，2026-08-24） |
 | 4 | Agent CRUD + RAG 对话 + 意图路由 + 工具体系 | ✅ |
 | 5 | 浮窗嵌入组件（widget.js） | ✅ |
+| — | 本地 Skill、脚本执行、两端 @、统一 general Agent | ✅ 代码与定向验证完成，真实模型连续轮次待验收 |
 | 6 | 联调 + Docker 部署 | 🔄 Dockerfile/Compose 已有，近期配置更新与 GPU/生产验收待实测 |
 | — | 工具生态（web_search 等更多内置工具） | ⏳ |
 | — | workflow Agent（强制按计划执行） | ⏳ |
-| — | 意图路由数据埋点（simple/general 占比统计） | ⏳ |
+| — | 意图类别与技能/工具使用质量评估 | ⏳ |
 
 ## License
 

@@ -3,11 +3,6 @@
     <div class="page-header">
       <h2>Agent 管理</h2>
       <n-space align="center">
-        <n-radio-group v-model:value="typeFilter" size="small" @update:value="onFilterChange">
-          <n-radio-button value="">全部</n-radio-button>
-          <n-radio-button value="simple_rag">简单 RAG</n-radio-button>
-          <n-radio-button value="general">综合 Agent</n-radio-button>
-        </n-radio-group>
         <n-button type="primary" @click="openCreate">
           <template #icon><n-icon><AddOutline /></n-icon></template>
           新建 Agent
@@ -104,25 +99,12 @@ const embedAgentId = ref('')
 // ── 表格列 ──────────────────────────────
 const columns: DataTableColumns<AgentListItem> = [
   { type: 'selection' },
-  {
-    title: '类型',
-    key: 'type',
-    width: 110,
-    render(row) {
-      return h(
-        NTag,
-        { size: 'small', type: row.type === 'simple_rag' ? 'primary' : 'warning', bordered: false },
-        { default: () => (row.type === 'simple_rag' ? '简单 RAG' : '综合') },
-      )
-    },
-  },
   { title: '名称', key: 'name', ellipsis: { tooltip: true } },
   {
     title: '知识库',
     key: 'kb',
     ellipsis: { tooltip: true },
     render(row) {
-      if (row.type === 'simple_rag') return row.kb_name || '-'
       const names = row.tools.map(t => t.kb_name).filter(Boolean)
       return names.length ? names.join(', ') : '-'
     },

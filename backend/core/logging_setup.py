@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """日志体系初始化：dictConfig 风格 + 日期目录 + 模板文件名 + 分文件 + 轮转(-1) + 控制台彩色 + 脱敏 + 定时清理 + SQL 监听
 
 设计要点：
@@ -91,7 +92,7 @@ class TraceJsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """序列化结构化字段，并统一补充时间、事件名与日志来源。"""
-        from backend.core.observability.events import sanitize_event_detail
+        from backend.core.observability.model_context import sanitize_trace_payload
 
         raw = getattr(record, "structured_data", None)
         if isinstance(raw, dict):
@@ -105,7 +106,7 @@ class TraceJsonFormatter(logging.Formatter):
         )
         payload.setdefault("level", record.levelname.lower())
         payload.setdefault("logger", record.name)
-        safe_payload = sanitize_event_detail(payload)
+        safe_payload = sanitize_trace_payload(payload)
         return json.dumps(
             safe_payload,
             ensure_ascii=False,

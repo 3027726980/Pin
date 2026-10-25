@@ -1,6 +1,9 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """Agent 中间件轻量工厂
 
-当前仅 SummarizationMiddleware:
+作者：LHF；时间：2026-10-25；作用：构建工具日志及 fraction 上下文压缩中间件。
+
+当前 SummarizationMiddleware:
 - 触发/保留参数 + enabled 开关走 config.yaml(checkpoint.summarization)
 - 总结模型为 Agent 级配置(summary_llm_config_id),空则跟随对话模型
 - 未来新增中间件(如消息修剪):在此工厂加构建逻辑 + config.yaml 加配置块,chat.py 零改动
@@ -8,6 +11,7 @@
 注意：langchain 依赖在函数内延迟 import（启动提速，仅首次对话时加载）。
 """
 from backend.core.config import settings
+from backend.core.observability.model_context import get_context_http_client
 
 
 def _build_summary_model(summary_llm_cfg, llm_cfg):
@@ -31,12 +35,13 @@ def _build_summary_model(summary_llm_cfg, llm_cfg):
         rate_limiter=get_rate_limiter(
             invocation.provider, invocation.model_name, invocation.api_key
         ),
+        http_async_client=get_context_http_client(f"summary:{invocation.provider}"),
     )
 
 
-def build_middlewares(summary_llm_cfg, llm_cfg) -> list:
-    """按 config.yaml + Agent 配置构建中间件列表"""
-    from langchain.agents.middleware import SummarizationMiddleware
+def build_middlewares(summary_llm_cfg, llm_cfg, *, answer_model=None, capacity_info=None) -> list:
+    """按 config.yaml 与回答模型容量构建中间件；总结模型独立选择。"""
+    from backend.services.context_compaction import ContextSummarizationMiddleware, resolve_input_capacity
     from backend.core.observability.tool_logging import ToolLoggingMiddleware
 
     sc = settings.checkpoint.summarization
@@ -44,9 +49,8 @@ def build_middlewares(summary_llm_cfg, llm_cfg) -> list:
         return [ToolLoggingMiddleware()]
     return [
         ToolLoggingMiddleware(),
-        SummarizationMiddleware(
-            model=_build_summary_model(summary_llm_cfg, llm_cfg),
-            trigger=("messages", sc.trigger_message_count),
-            keep=("messages", sc.keep_message_count),
-        )
+        ContextSummarizationMiddleware(
+            _build_summary_model(summary_llm_cfg, llm_cfg),
+            *(capacity_info or resolve_input_capacity(llm_cfg, answer_model)),
+            answer_model_name=llm_cfg.model_name),
     ]

@@ -12,7 +12,6 @@ from backend.models import Users
 from backend.repositories import (
     GeneralAgentRepo,
     KnowledgeBaseRepo,
-    SimpleRagAgentRepo,
     UserModelConfigRepo,
 )
 from backend.schemas.user_model_config import (
@@ -176,7 +175,6 @@ class UserModelConfigService:
         """
         kbs = await KnowledgeBaseRepo.find_by_model_config(db, cfg_id)
         agents = await GeneralAgentRepo.find_by_model_config(db, cfg_id)
-        agents += await SimpleRagAgentRepo.find_by_model_config(db, cfg_id)
         return kbs, agents
 
     @staticmethod

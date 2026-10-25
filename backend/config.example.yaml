@@ -66,26 +66,16 @@ agent:
 
 # ── 意图识别（general Agent 意图路由，Phase 4.10）──
 intent:
-  simple_max_length: 30          # 规则判 simple 的最大消息长度（超过升级 LLM 兜底分类）
-  simple_history_limit: 20       # simple 档保留的历史消息条数（0 = 不限）
-  simple_context_max_chars: 1500 # 最近一轮检索残留注入的最大字符数（0 = 不注入）
   classify_temperature: 0.2      # LLM 兜底分类 / plan / reflect 的采样温度
   # 启动期意图枚举。code 同时是 LLM JSON/Pydantic 校验的唯一允许值；
   # 后续前端可管理同一结构并关联不同的工作流/Agent。
   categories:
-    - code: simple
-      description: 问候、闲聊或可直接依据对话历史回答的问题
-      route: simple
-      use_plan: false
-      use_reflect: false
     - code: general
       description: 需要使用知识库或其他业务工具的常规请求
-      route: general
       use_plan: false
       use_reflect: false
     - code: complex
       description: 多步骤分析、方案设计或高准确度要求的复杂请求
-      route: general
       use_plan: true
       use_reflect: true
 
@@ -124,10 +114,19 @@ checkpoint:
   summarization:
     # 是否启用总结中间件
     enabled: true
-    # 消息数 ≥ 此值时触发总结
-    trigger_message_count: 20
-    # 总结后保留最近 N 条原文
-    keep_message_count: 4
+    # 按回答模型最大输入容量的比例触发，包含 system/工具开销。
+    trigger_fraction: 0.8
+    keep_fraction: 0.2
+    # 兼容模型缺少 profile 时使用此回退容量；请按供应商实际限制覆盖。
+    fallback_max_input_tokens: 32768
+    model_input_limits: {}  # 例如 {"your-model-name": 65536}，优先于回答模型 profile。
+    # 优先从当前 base_url/models 读取容量；缺失后才使用上述配置/profile/回退。
+    # tiktoken 未识别的模型默认使用 o200k_base 估算；可显式指定已有编码名称。
+    model_token_encodings: {}  # 例如 {"custom-gpt-model": "cl100k_base"}
+    # 本地模型词表优先；目录必须含 tokenizer.json、tokenizer_config.json。
+    # 例如 {"deepseek-v4-pro": "/app/backend/local_models/deepseek_v4_tokenizer"}
+    model_tokenizer_paths: {}
+    summary_chunk_tokens: 12000
 
 # 模型类型对照（code → 名称）
 model_types:
@@ -276,3 +275,14 @@ logging:
   # 脱敏总开关（默认值；实际规则存 system_settings.logging.redact_rules）
   redact_sensitive: true
   # HTTP access 日志固定只记录元数据和字节数，不采集请求/响应正文。
+
+# 本地技能；定义、启停、绑定和执行副本均存文件系统。
+skills:
+  root: storage/skills
+  max_zip_bytes: 10485760
+  max_unpacked_bytes: 52428800
+  max_files: 200
+  script_timeout_seconds: 60
+  max_parallel_scripts: 2
+  max_output_bytes: 262144
+  retention_hours: 24

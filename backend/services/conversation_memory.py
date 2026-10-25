@@ -1,3 +1,4 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """会话消息状态适配：通过 LangGraph 公开接口管理快照，不拼装 checkpoint。"""
 import asyncio
 from weakref import WeakValueDictionary
@@ -11,10 +12,21 @@ from backend.core.checkpointer import get_checkpointer
 from backend.core.observability.preparation import preparation_stage
 
 _locks = WeakValueDictionary()
+_turn_locks = WeakValueDictionary()
 
 
 class ConversationMemoryService:
     """复用主 Agent 消息 schema，以公开图状态 API 读写，旧 thread 按需迁移。"""
+
+    @staticmethod
+    def turn_lock(conversation_id):
+        """作者：LHF；2026-10-25；聊天和手动压缩共用的本进程整轮锁。"""
+        key = str(conversation_id)
+        lock = _turn_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _turn_locks[key] = lock
+        return lock
 
     @staticmethod
     def config(conversation_id):

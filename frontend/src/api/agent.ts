@@ -1,3 +1,5 @@
+import type { CapabilityMention, SkillArtifact } from '@/chat-core/capabilities'
+/** 作者：LHF；时间：2026-10-25；作用：声明统一操作记录的 Trace 详情接口。 */
 /**
  * Agent 管理 + 对话 API
  */
@@ -9,7 +11,7 @@ import type { AgentEvent } from '@/chat-core/events'
 
 // ── 类型定义 ────────────────────────────
 
-export type AgentType = 'simple_rag' | 'general'
+export type AgentType = 'general'
 export type RagMode = 'off' | 'auto' | 'always'
 
 export interface ToolConfig {
@@ -57,7 +59,7 @@ export interface ToolDef {
 // ── Phase 4.10 意图识别规则 ──
 
 export type IntentRuleKind = 'keyword' | 'regex' | 'length'
-export type IntentTarget = 'simple' | 'general'
+export type IntentTarget = string
 
 export interface IntentRule {
   id?: string | null
@@ -81,8 +83,6 @@ export interface AgentListItem {
   name: string
   description: string | null
   llm_model: string | null
-  kb_id: string | null
-  kb_name: string | null
   tools: ToolConfig[]
   status: number
   created_at: string
@@ -96,8 +96,6 @@ export interface AgentDetail extends AgentListItem {
   temperature: number | null
   top_p: number | null
   max_tokens: number | null
-  top_k: number | null
-  score_threshold: number | null
   welcome_message: string | null
   // ── Phase 4.6 检索增强 ──
   mqe_enabled: boolean
@@ -127,9 +125,6 @@ export interface AgentCreatePayload {
   description?: string | null
   llm_config_id: string
   summary_llm_config_id?: string | null
-  kb_id?: string | null
-  top_k?: number | null
-  score_threshold?: number | null
   tools?: ToolConfig[]
   system_prompt?: string | null
   temperature?: number | null
@@ -168,6 +163,8 @@ export interface BatchAgentResult {
 }
 
 export interface ChatMessage {
+  mentions?: CapabilityMention[]
+  artifacts?: SkillArtifact[]
   role: 'user' | 'assistant'
   content: string
 }
@@ -194,11 +191,12 @@ export interface CitationBinding {
 export interface ChatDebug {
   queries?: string[]
   rerank?: { enabled: boolean; provider?: string | null; model?: string | null }
-  intent?: 'simple' | 'general'
+  intent?: string
   intent_code?: string
 }
 
 export interface ChatResult {
+  artifacts?: SkillArtifact[]
   answer: string
   citations: ChatCitation[]
   citation_bindings: CitationBinding[]
@@ -233,6 +231,8 @@ export interface AgentTraceDetail {
   trace_id: string
   summary: AgentTraceSummary | null
   events: Array<Record<string, unknown>>
+  /** 作者：LHF；2026-10-25；完成后生成的完整输入输出记录，兼容旧服务省略此字段。 */
+  records?: Array<Record<string, unknown>>
 }
 
 // ── Agent CRUD ──────────────────────────
@@ -240,6 +240,7 @@ export interface AgentTraceDetail {
 /** 获取 Agent 默认配置（默认系统提示词模板 + 默认检索参数 + 检索增强默认值） */
 export function getAgentDefaults(): Promise<{
   system_prompt: string
+  intent_categories: Array<{ code: string; description: string }>
   default_top_k: number
   default_score_threshold: number
   default_mqe_enabled: boolean
@@ -290,7 +291,7 @@ export function batchAgents(ids: string[], action: 'enable' | 'disable' | 'delet
 // ── 对话 ────────────────────────────────
 
 /** 非流式对话(记忆由服务端 checkpoint 管理,前端不传 history) */
-export function chatAgent(agentId: string, body: { message: string; conversation_id?: string | null; stream?: boolean }): Promise<ChatResult & { conversation_id: string; trace_id?: string | null }> {
+export function chatAgent(agentId: string, body: { mentions?: CapabilityMention[]; message: string; conversation_id?: string | null; stream?: boolean }): Promise<ChatResult & { conversation_id: string; trace_id?: string | null }> {
   return request.post(`/v1/agents/${agentId}/chat`, body)
 }
 
@@ -300,7 +301,7 @@ export function chatAgent(agentId: string, body: { message: string; conversation
  */
 export async function chatAgentStream(
   agentId: string,
-  body: { message: string; conversation_id?: string | null; stream: true },
+  body: { mentions?: CapabilityMention[]; message: string; conversation_id?: string | null; stream: true },
   onEvent: (e: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {

@@ -44,6 +44,7 @@ from backend.api.v1 import (
     public_router,
     provider_router,
     settings_router,
+    skills_router,
     user_model_config_router,
 )
 
@@ -326,6 +327,7 @@ app.include_router(agent_api_key_router)
 app.include_router(debug_router)
 app.include_router(public_router)
 app.include_router(settings_router)
+app.include_router(skills_router)
 
 # ── 公开接口 CORS（仅 /api/v1/public/ 放开，主站保持同源）──────
 @app.middleware("http")

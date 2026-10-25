@@ -138,7 +138,7 @@ class BaseTool(ABC):
     @staticmethod
     def execute(db, user, config: dict, **kwargs):
         """
-        工具核心执行逻辑（simple_rag 等代码控制场景直接调用）
+        工具核心执行逻辑（代码控制场景直接调用）
 
         非抽象方法：仅代码控制场景需要（如 rag 的预检索）；
         纯 LLM 自主调用型工具（如 plan/reflect）无需实现。

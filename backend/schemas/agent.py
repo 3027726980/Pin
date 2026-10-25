@@ -1,19 +1,10 @@
-"""
-Agent 请求/响应 Schema
-
-Agent 分类（type 字段区分，不同表存储）：
-  - simple_rag：简单 RAG Agent，仅 RAG 功能，知识库直接绑定（kb_id/top_k/score_threshold 为表字段）
-  - general：综合 Agent，能力以工具列表注册（tools JSONB）
-  - workflow：MVP 不做，后续新增
-
-请求：AgentCreate 为 discriminated union（按 type 精确校验各类型必填字段）
-响应：统一结构（type + 各类型字段可空），前端按 type 渲染
-"""
+"""作者：LHF；时间：2026-10-25；作用：统一 Agent 请求、工具配置与对话契约。"""
 from datetime import datetime
-from typing import Annotated, Literal, Union
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from backend.skills.schemas import CapabilityMention, SkillArtifact
 
 RagMode = Literal["off", "auto", "always"]
 
@@ -48,10 +39,10 @@ class IntentRule(BaseModel):
     id: UUID | None = None
     name: str = Field(..., min_length=1, max_length=100)
     kind: Literal["keyword", "regex", "length"]
-    keywords: list[str] | None = Field(None, description="kind=keyword 时必填；轻量路由需关键词覆盖整句（忽略标点/空白），业务路由为包含匹配")
+    keywords: list[str] | None = Field(None, description="kind=keyword 时必填，按关键词包含匹配到已配置类别")
     pattern: str | None = Field(None, description="kind=regex 时必填（正则表达式）")
     max_length: int | None = Field(None, ge=1, le=10000, description="kind=length 时必填（消息长度上限）")
-    target: Literal["simple", "general"]
+    target: str = Field(min_length=1, max_length=32)
     enabled: bool = True
     priority: int = Field(100, ge=0, le=10000, description="越小越先执行")
 
@@ -61,36 +52,8 @@ class IntentRules(BaseModel):
     rules: list[IntentRule] = []
 
 
-# ── 创建请求（discriminated union）──────
+# ── 创建请求（仅 general）──────
 
-class SimpleRagAgentCreate(BaseModel):
-    """简单 RAG Agent：仅 RAG 功能，知识库直接绑定"""
-    type: Literal["simple_rag"] = "simple_rag"
-    name: str = Field(..., min_length=1, max_length=200)
-    description: str | None = None
-    kb_id: UUID = Field(..., description="绑定的知识库 ID")
-    llm_config_id: UUID = Field(..., description="LLM 模型配置 ID（model_type=2）")
-    summary_llm_config_id: UUID | None = Field(
-        None, description="总结模型配置 ID（model_type=2）；空 = 跟随对话模型")
-    top_k: int | None = Field(None, ge=1, le=50, description="检索返回块数，不传用 config.yaml tools.default_top_k")
-    score_threshold: float | None = Field(None, ge=0.0, le=1.0, description="相似度阈值，不传用 config.yaml tools.default_score_threshold")
-    # ── Phase 4.6 检索增强 ──
-    mqe_enabled: bool | None = Field(None, description="多查询扩展（MQE），不传用 config.yaml tools.default_mqe_enabled")
-    hyde_enabled: bool | None = Field(None, description="假设文档嵌入（HyDE），不传用 config.yaml tools.default_hyde_enabled")
-    mqe_query_count: int | None = Field(None, ge=2, le=5, description="MQE 改写子问题数，不传用 config.yaml tools.default_mqe_query_count")
-    rerank_enabled: bool | None = Field(None, description="Rerank 精排开关，不传用 config.yaml tools.default_rerank_enabled")
-    mqe_mode: RagMode | None = Field(None, description="MQE 模式；新建默认 auto")
-    hyde_mode: RagMode | None = Field(None, description="HyDE 模式；新建默认 auto")
-    rerank_mode: RagMode | None = Field(None, description="Rerank 模式；新建默认 auto")
-    enhance_llm_config_id: UUID | None = Field(
-        None, description="增强 LLM 配置 ID（MQE 改写/HyDE 生成用，model_type=2）；空 = 跟随对话模型")
-    rerank_config_id: UUID | None = Field(
-        None, description="Rerank 模型配置 ID（model_type=3）；空 = 用 config.yaml tools.rerank 全局默认")
-    system_prompt: str | None = Field(None, description="系统提示词，不传则使用默认 RAG 模板")
-    temperature: float | None = Field(None, ge=0.0, le=2.0, description="采样温度；空 = 跟随模型配置（模型也未配置时默认 0.7）")
-    top_p: float | None = Field(None, ge=0.0, le=1.0, description="核采样；空 = 跟随模型配置（模型也未配置时默认 0.9）")
-    max_tokens: int | None = Field(None, ge=1, le=1000000, description="最大生成 token 数；空 = 跟随模型配置/厂商默认")
-    welcome_message: str | None = Field(None, max_length=500)
 
 
 class GeneralAgentCreate(BaseModel):
@@ -119,10 +82,7 @@ class GeneralAgentCreate(BaseModel):
     reflect_enabled: bool = Field(True, description="注册 reflect 工具（答案反思）")
 
 
-AgentCreate = Annotated[
-    Union[SimpleRagAgentCreate, GeneralAgentCreate],
-    Field(discriminator="type"),
-]
+AgentCreate = GeneralAgentCreate
 
 
 # ── 编辑请求（统一结构，全部可选）──────
@@ -133,9 +93,6 @@ class AgentUpdate(BaseModel):
     description: str | None = None
     llm_config_id: UUID | None = None
     summary_llm_config_id: UUID | None = None
-    kb_id: UUID | None = Field(None, description="simple_rag 类型专用")
-    top_k: int | None = Field(None, ge=1, le=50)
-    score_threshold: float | None = Field(None, ge=0.0, le=1.0)
     tools: list[ToolConfig] | None = Field(None, description="general 类型专用，整体替换（可传空数组清空）")
     # ── Phase 4.6 检索增强 ──
     mqe_enabled: bool | None = None
@@ -175,17 +132,13 @@ class AgentUpdate(BaseModel):
 class AgentResponse(BaseModel):
     """Agent 详情/创建/编辑 响应（统一结构，按 type 填充对应字段）"""
     id: UUID
-    type: Literal["simple_rag", "general"]
+    type: Literal["general"]
     name: str
     description: str | None
     llm_config_id: UUID | None
     llm_provider: str | None = None
     llm_model: str | None = None
     summary_llm_config_id: UUID | None = None
-    kb_id: UUID | None = None
-    kb_name: str | None = None
-    top_k: int | None = None
-    score_threshold: float | None = None
     # ── Phase 4.6 检索增强 ──
     mqe_enabled: bool = False
     hyde_enabled: bool = False
@@ -221,12 +174,10 @@ class AgentResponse(BaseModel):
 class AgentListItem(BaseModel):
     """Agent 列表项（仅表格需要）"""
     id: UUID
-    type: Literal["simple_rag", "general"]
+    type: Literal["general"]
     name: str
     description: str | None
     llm_model: str | None = None
-    kb_id: UUID | None = None
-    kb_name: str | None = None
     tools: list[ToolConfig] = []
     status: int
     created_at: datetime
@@ -251,6 +202,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     """对话请求(记忆由服务端 checkpoint 管理,前端不传 history)"""
     message: str = Field(..., min_length=1, max_length=4000)
+    mentions: list[CapabilityMention] = Field(default_factory=list, max_length=100)
     conversation_id: UUID | None = Field(
         None, description="会话 ID;缺省时后端自动创建并随响应返回")
     stream: bool = Field(False, description="true=SSE 流式返回")
@@ -296,6 +248,7 @@ class ChatResponse(BaseModel):
     """非流式对话响应"""
     conversation_id: UUID
     answer: str
+    artifacts: list[SkillArtifact] = Field(default_factory=list)
     citations: list[Citation] = []
     citation_bindings: list[CitationBinding] = []
     debug: dict | None = Field(

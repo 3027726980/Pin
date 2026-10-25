@@ -16,7 +16,7 @@ class AgentIndex(Base):
         ForeignKey("users.id"), nullable=False, comment="创建者用户 ID"
     )
     type: Mapped[str] = mapped_column(
-        String(20), nullable=False, comment="Agent 类型：simple_rag / general / workflow（预留）"
+        String(20), nullable=False, comment="Agent 类型：general（统一 Agent）"
     )
     name: Mapped[str] = mapped_column(
         String(200), nullable=False, comment="Agent 名称（冗余，列表查询免 join 类型表）"

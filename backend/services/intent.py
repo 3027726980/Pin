@@ -1,294 +1,189 @@
-"""配置化意图识别：运行时枚举 + Pydantic 校验。
-
-意图类别是 ``config.yaml.intent.categories`` 的启动期配置，不写死在代码中。
-旧 Agent 的 ``simple/general`` 规则仍被支持：规则命中后会映射到相应类别；未命中时由
-LLM 根据最近语义消息和当前问题输出 JSON，再由动态 Pydantic 枚举严格校验。
-"""
+"""作者：LHF；时间：2026-10-25；作用：意图类别只决定规划和核验，所有请求进入统一主 Agent。"""
 import json
 import logging
 import re
-import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from types import SimpleNamespace
-from typing import Any
 
 from pydantic import create_model
-
 from backend.core.config import settings
+from backend.core.observability.operations import Operation
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class IntentPolicy:
-    """一个启动期意图类别及其图编排策略。"""
+    """可配置类别及可选规划、核验策略。"""
 
     code: str
     description: str
-    route: str
     use_plan: bool = False
     use_reflect: bool = False
 
 
-_FALLBACK_CATEGORIES = (
-    IntentPolicy("simple", "无需外部能力的直接对话", "simple"),
-    IntentPolicy("general", "需要业务工具或检索的请求", "general"),
-)
-
-
 class IntentService:
-    """为 AgentGraph 提供规则、LLM 和运行时枚举意图判定。"""
+    """规则和模型共享类别校验，不裁减主 Agent 能力。"""
 
     @staticmethod
-    def configured_categories() -> list[IntentPolicy]:
-        """读取并校验启动期配置；历史配置缺失时保持 general 安全降级。"""
-        raw_categories = getattr(getattr(settings, "intent", None), "categories", None)
-        if not raw_categories:
-            return list(_FALLBACK_CATEGORIES)
-
-        categories: list[IntentPolicy] = []
-        seen: set[str] = set()
-        for raw in raw_categories:
-            data = IntentService._to_dict(raw)
-            code = str(data.get("code", "")).strip()
-            if not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", code):
-                raise ValueError(f"意图类别 code 非法: {code!r}")
-            if code in seen:
-                raise ValueError(f"意图类别 code 重复: {code}")
-            route = str(data.get("route", "general")).strip()
-            if route not in {"simple", "general"}:
-                raise ValueError(f"意图类别 {code} 的 route 必须是 simple 或 general")
-            categories.append(IntentPolicy(
-                code=code,
-                description=str(data.get("description") or code),
-                route=route,
-                use_plan=bool(data.get("use_plan", False)),
-                use_reflect=bool(data.get("use_reflect", False)),
-            ))
-            seen.add(code)
-        return categories
+    def configured_categories():
+        """读取配置类别，忽略已移除的轻量类别。"""
+        raw = getattr(getattr(settings, "intent", None), "categories", None) or []
+        values = [IntentService._to_dict(item) for item in raw]
+        values = [item for item in values if item.get("code") != "simple"]
+        return IntentService._normalize_categories(values or [
+            {"code": "general", "description": "常规请求"},
+            {"code": "complex", "description": "多步骤分析或高准确度任务", "use_plan": True, "use_reflect": True},
+        ])
 
     @staticmethod
-    def build_decision_model(categories: list[IntentPolicy | dict] | None = None):
-        """根据启动期类别构造 ``intent`` 动态枚举的 Pydantic 模型。"""
+    def _normalize_categories(categories):
+        """校验类别名称、重复项和执行策略。"""
+        if categories is None:
+            return IntentService.configured_categories()
+        result, seen = [], set()
+        for value in categories:
+            item = value if isinstance(value, IntentPolicy) else IntentPolicy(
+                code=str(value["code"]), description=str(value.get("description") or value["code"]),
+                use_plan=bool(value.get("use_plan", False)), use_reflect=bool(value.get("use_reflect", False)))
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item.code) or item.code in seen:
+                raise ValueError(f"意图类别非法或重复：{item.code}")
+            seen.add(item.code)
+            result.append(item)
+        if not result:
+            raise ValueError("至少需要一个意图类别")
+        return result
+
+    @staticmethod
+    def build_decision_model(categories=None):
+        """按当前类别生成结构化输出枚举。"""
         policies = IntentService._normalize_categories(categories)
-        enum_members = {policy.code.upper(): policy.code for policy in policies}
-        runtime_enum = Enum("ConfiguredIntent", enum_members, type=str)
-        return create_model("IntentDecision", intent=(runtime_enum, ...))
+        enum_type = Enum("ConfiguredIntent", {item.code.upper(): item.code for item in policies}, type=str)
+        return create_model("IntentDecision", intent=(enum_type, ...))
 
     @staticmethod
-    def resolve_policy(code: str,
-                       categories: list[IntentPolicy | dict] | None = None) -> IntentPolicy:
-        """把经过校验的类别码映射到实际图节点策略。"""
-        policies = IntentService._normalize_categories(categories)
-        for policy in policies:
-            if policy.code == code:
-                return policy
-        raise ValueError(f"未配置的意图类别: {code}")
+    def resolve_policy(code, categories=None):
+        """读取已验证类别的执行策略。"""
+        for item in IntentService._normalize_categories(categories):
+            if item.code == code:
+                return item
+        raise ValueError(f"未配置的意图类别：{code}")
 
     @staticmethod
-    def default_general_policy() -> IntentPolicy:
-        """分类异常时选择 general 路由，优先使用同名类别。"""
+    def default_general_policy():
+        """关闭或失败时选择常规策略。"""
         policies = IntentService.configured_categories()
-        for policy in policies:
-            if policy.code == "general":
-                return policy
-        return next((policy for policy in policies if policy.route == "general"), policies[0])
+        return next((item for item in policies if item.code == "general"), policies[0])
 
     @staticmethod
-    def classify_by_rules(agent: object, message: str) -> str | None:
-        """执行旧版 Agent 二元规则，并映射成配置化类别码。"""
-        target = IntentService._match_rules(getattr(agent, "intent_rules", None), message)
-        if not target:
-            return None
-        policies = IntentService.configured_categories()
-        # 前端旧规则 target 固定 simple/general；允许未来直接写新类别 code。
-        exact = next((policy for policy in policies if policy.code == target), None)
-        if exact:
-            return exact.code
-        by_route = next((policy for policy in policies if policy.route == target), None)
-        return by_route.code if by_route else None
+    def classify_by_rules(agent, message, *, diagnostics=None):
+        """规则直接映射到配置类别码，忽略失效目标。"""
+        target = IntentService._match_rules(getattr(agent, "intent_rules", None), message, diagnostics=diagnostics)
+        return target if target in {item.code for item in IntentService.configured_categories()} else None
 
     @staticmethod
-    async def classify(agent: object, llm_cfg: object, message: str,
-                       tools_desc: str = "", history: list[dict[str, str]] | None = None) -> str:
-        """返回已配置的意图类别码；任何异常都安全降级至 general 路由。"""
+    async def classify(agent, llm_cfg, message, tools_desc="", history=None):
+        """保留完整判定依据，类别仅决定规划及核验。"""
+        with Operation("intent", "意图识别", input={"message": message, "history": history or [],
+                       "tools_description": tools_desc}, metadata={}) as operation:
+            result = await IntentService._classify(agent, llm_cfg, message, tools_desc, history or [], operation)
+            policy = IntentService.resolve_policy(result)
+            operation.output = {"intent_code": policy.code,
+                                "use_plan": policy.use_plan and bool(getattr(agent, "plan_enabled", True)),
+                                "use_reflect": policy.use_reflect and bool(getattr(agent, "reflect_enabled", True))}
+            return result
+
+    @staticmethod
+    async def _classify(agent, llm_cfg, message, tools_desc, history, operation):
+        """优先规则，未命中调用模型；异常保留诊断并降级。"""
         fallback = IntentService.default_general_policy().code
         if not getattr(agent, "intent_routing", False):
+            operation.metadata["source"] = "routing_disabled"
             return fallback
-
+        result = IntentService.classify_by_rules(agent, message, diagnostics=operation.metadata)
+        if result:
+            operation.metadata["source"] = "rule"
+            return result
         try:
-            intent = IntentService.classify_by_rules(agent, message)
-            if intent:
-                policy = IntentService.resolve_policy(intent)
-                max_len = getattr(settings.intent, "simple_max_length", 30)
-                if policy.route != "simple" or len(message) <= max_len:
-                    return intent
-                logger.info("规则判定为 simple 路由但问题过长，转 LLM 分类")
-        except Exception:
-            logger.exception("意图规则引擎异常，降级 LLM 分类")
-
-        try:
-            intent = await IntentService._llm_classify(
-                llm_cfg, message, tools_desc, history or [])
-            if intent:
-                return intent
-        except Exception:
-            logger.exception("LLM 意图分类失败，默认 general")
+            operation.metadata.update(source="model", model=getattr(llm_cfg, "model_name", None),
+                                      provider=getattr(llm_cfg, "provider", None))
+            result = await IntentService._llm_classify(llm_cfg, message, tools_desc, history)
+            if result:
+                return result
+        except Exception as error:
+            operation.metadata["fallback_reason"] = {"type": type(error).__name__, "message": str(error)}
+            logger.exception("意图分类失败，保留常规主 Agent")
+        operation.status = "degraded"
+        operation.metadata["source"] = "fallback"
+        operation.metadata.setdefault("fallback_reason", "invalid_classification_result")
         return fallback
 
     @staticmethod
-    def _match_rules(intent_rules: Any, message: str) -> str | None:
-        """规则按 priority 升序命中，兼容 JSONB 字典。"""
-        rules = ((intent_rules or {}).get("rules", [])
-                 if isinstance(intent_rules, dict) else [])
-        enabled = [rule for rule in rules if rule.get("enabled", True)]
-        enabled.sort(key=lambda rule: rule.get("priority", 100))
-        simple_targets = {policy.code for policy in IntentService.configured_categories()
-                          if policy.route == "simple"} | {"simple"}
-        for rule in enabled:
-            if IntentService._rule_hit(rule, message, whole_keyword_message=rule.get("target") in simple_targets):
-                target = rule.get("target")
-                return str(target) if target else None
+    def _match_rules(intent_rules, message, *, diagnostics=None):
+        """按优先级运行规则，记录实际评估条件。"""
+        rules = intent_rules.get("rules", []) if isinstance(intent_rules, dict) else []
+        categories = {item.code for item in IntentService.configured_categories()}
+        for rule in sorted((item for item in rules if item.get("enabled", True)), key=lambda item: item.get("priority", 100)):
+            if rule.get("target") not in categories:
+                continue
+            hit = IntentService._rule_hit(rule, message)
+            if diagnostics is not None:
+                diagnostics.setdefault("evaluated_rules", []).append({"rule": dict(rule), "matched": hit})
+                if hit:
+                    diagnostics["matched_rule"] = dict(rule)
+            if hit:
+                return rule["target"]
         return None
 
     @staticmethod
-    def _rule_hit(rule: dict, message: str, *, whole_keyword_message: bool = False) -> bool:
-        """轻量 keyword 必须覆盖整句；业务关键词保持包含匹配。"""
-        kind = rule.get("kind")
-        if kind == "keyword":
-            if whole_keyword_message:
-                normalized = IntentService._normalize_short_phrase(message)
-                words = {IntentService._normalize_short_phrase(word)
-                         for word in (rule.get("keywords") or []) if word}
-                words.discard("")
-                if not normalized or not words:
-                    return False
-                pattern = "(?:" + "|".join(re.escape(word) for word in sorted(words, key=len, reverse=True)) + ")+"
-                return re.fullmatch(pattern, normalized) is not None
-            return any(word and word.lower() in message.lower()
-                       for word in (rule.get("keywords") or []))
-        if kind == "regex":
+    def _rule_hit(rule, message):
+        """支持关键词、正则及长度条件。"""
+        if rule.get("kind") == "keyword":
+            return any(word and word.casefold() in message.casefold() for word in rule.get("keywords") or [])
+        if rule.get("kind") == "regex":
             try:
-                return re.search(rule.get("pattern") or "", message) is not None
+                return bool(rule.get("pattern")) and re.search(rule["pattern"], message) is not None
             except re.error:
-                logger.warning("意图规则正则非法: %r", rule.get("pattern"))
                 return False
-        if kind == "length":
+        if rule.get("kind") == "length":
             return len(message) <= int(rule.get("max_length") or 0)
         return False
 
     @staticmethod
-    def _normalize_short_phrase(text: str) -> str:
-        """统一大小写和全角字符，忽略问候周边标点/空白，保留实际请求文字。"""
-        return "".join(char for char in unicodedata.normalize("NFKC", text).casefold()
-                       if not char.isspace() and not unicodedata.category(char).startswith("P"))
-
-    @staticmethod
-    async def _llm_classify(llm_cfg: object, message: str, tools_desc: str,
-                            history: list[dict[str, str]]) -> str | None:
-        """让 LLM 按动态 JSON Schema 输出，再由 Pydantic 校验。"""
+    async def _llm_classify(llm_cfg, message, tools_desc, history):
+        """按配置 Schema 分类，所有类别均使用同一主 Agent。"""
         from backend.services.llm import LLMService
+        from backend.services.model_policy import build_model_invocation_config
 
-        categories = IntentService.configured_categories()
-        decision_model = IntentService.build_decision_model(categories)
-        category_text = "\n".join(
-            f"- {policy.code}: {policy.description}（route={policy.route}，"
-            f"plan={policy.use_plan}，reflect={policy.use_reflect}）"
-            for policy in categories
-        )
-        history_text = "\n".join(
-            f"{item.get('role', 'user')}：{str(item.get('content', ''))[:500]}"
-            for item in history[-5:]
-        ) or "（无历史消息）"
-        prompt = (
-            "你是对话意图分类器。根据最近对话和当前问题选择一个已配置类别。\n\n"
-            "优先判断整句话的实际请求，不要只看开头的问候、感谢或肯定。"
-            "只有纯问候、纯感谢或无需业务资料/工具的闲聊才选择 simple 路由。"
-            "只要同时询问课程、产品、政策等业务信息，或要求查询、解释、办理，"
-            "应按实际请求选择 general 路由中的合适类别；省略主语的追问结合历史判断。"
-            "例如‘你好，我想了解一点这个课程的事情’是课程咨询，不是纯问候。\n\n"
-            f"可用类别：\n{category_text}\n\n"
-            f"业务工具：\n{tools_desc or '（无业务工具）'}\n\n"
-            f"最近对话（最多 5 条）：\n{history_text}\n\n"
-            f"当前问题：{message}\n\n"
-            "只输出符合以下 JSON Schema 的 JSON，不输出解释：\n"
-            f"{json.dumps(decision_model.model_json_schema(), ensure_ascii=False)}"
-        )
-
-        async def call(temperature: float) -> str:
-            return await LLMService.chat(
-                provider=llm_cfg.provider,
-                model_name=llm_cfg.model_name,
-                api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                top_p=0.9,
-                protocol=getattr(llm_cfg, "protocol", None),
-                max_tokens=getattr(llm_cfg, "max_tokens", None),
-                purpose="intent",
-            )
-
-        temperature = getattr(settings.intent, "classify_temperature", 0.2)
-        try:
-            text = await call(temperature)
-        except Exception as exc:
-            from backend.services.chat import ChatService
-
-            if not ChatService._is_temperature_error(exc):
-                raise
-            logger.warning("分类模型仅支持 temperature=1，自动重试")
-            text = await call(1.0)
-        return IntentService._parse_intent(text or "", categories)
+        model = IntentService.build_decision_model()
+        policies = IntentService.configured_categories()
+        prompt = ("根据完整任务选择意图类别。分类只决定规划和核验，不决定工具或技能调用。\n"
+                  + "\n".join(f"{item.code}: {item.description}" for item in policies)
+                  + f"\n可用能力：{tools_desc}\n历史：{json.dumps(history[-5:], ensure_ascii=False)}"
+                    f"\n当前任务：{message}\n只输出此 Schema 的 JSON：{json.dumps(model.model_json_schema(), ensure_ascii=False)}")
+        config = build_model_invocation_config(llm_cfg, temperature=getattr(settings.intent, "classify_temperature", 0.2))
+        raw = await LLMService.chat(provider=config.provider, model_name=config.model_name, api_key=config.api_key,
+                                    base_url=config.base_url, protocol=config.protocol,
+                                    messages=[{"role": "user", "content": prompt}], temperature=config.temperature,
+                                    top_p=config.top_p, max_tokens=config.max_tokens, timeout=config.timeout, purpose="intent")
+        return IntentService._parse_intent(raw, policies)
 
     @staticmethod
-    def _parse_intent(text: str,
-                      categories: list[IntentPolicy | dict] | None = None) -> str | None:
-        """解析 JSON 并通过动态 Pydantic 枚举校验；拒绝裸文本和未配置值。"""
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            cleaned = "\n".join(lines).strip()
+    def _parse_intent(text, categories=None):
+        """兼容 JSON 围栏，严格按类别枚举校验。"""
         try:
-            data = json.loads(cleaned)
-            decision = IntentService.build_decision_model(categories).model_validate(data)
+            cleaned = re.sub(r"^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$", "", str(text).strip())
+            decision = IntentService.build_decision_model(categories).model_validate_json(cleaned)
             return decision.intent.value
-        except Exception:
+        except (ValueError, TypeError):
             return None
 
     @staticmethod
-    def _normalize_categories(categories: list[IntentPolicy | dict] | None) -> list[IntentPolicy]:
-        """把显式测试配置或全局配置统一成已校验策略对象。"""
-        if categories is None:
-            return IntentService.configured_categories()
-        normalized: list[IntentPolicy] = []
-        for item in categories:
-            if isinstance(item, IntentPolicy):
-                normalized.append(item)
-                continue
-            data = IntentService._to_dict(item)
-            normalized.append(IntentPolicy(
-                code=str(data["code"]),
-                description=str(data.get("description") or data["code"]),
-                route=str(data.get("route", "general")),
-                use_plan=bool(data.get("use_plan", False)),
-                use_reflect=bool(data.get("use_reflect", False)),
-            ))
-        if not normalized:
-            raise ValueError("至少需要一个意图类别")
-        return normalized
-
-    @staticmethod
-    def _to_dict(value: Any) -> dict:
-        """兼容 config 的 SimpleNamespace 和普通字典。"""
+    def _to_dict(value):
+        """兼容 YAML 配置对象。"""
         if isinstance(value, dict):
             return value
         if isinstance(value, SimpleNamespace):
             return vars(value)
-        raise ValueError("意图类别配置必须是对象")
+        raise ValueError("类别配置必须是对象")

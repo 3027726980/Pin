@@ -1,8 +1,8 @@
+# 作者：LHF；时间：2026-10-25；作用：支持上下文比例压缩、手动压缩或模型输入日志。
 """
 对话编排服务:按 Agent 类型分发对话(记忆由 checkpoint 持久化)
 
 - 所有类型统一 create_agent + checkpointer(thread_id = conversation_id)
-- simple_rag:每轮首次模型调用强制选择 RAG 工具，命中/无命中均走 Agent 自动保存
 - general:LLM 自主决策工具调用(LangGraph 多轮)
 - 每轮对话原子追加到会话 JSON(user 原始问题 + assistant 回答含 citations)
 - 短期记忆:SummarizationMiddleware(参数走 config.yaml,总结模型 Agent 级配置)
@@ -24,10 +24,10 @@ from backend.repositories import (
     ConversationRepo,
     GeneralAgentRepo,
     MessageRepo,
-    SimpleRagAgentRepo,
     UserModelConfigRepo,
 )
 from backend.schemas.agent import ChatRequest, ChatResponse, Citation, CitationBinding
+from backend.schemas.agent_event import AgentEvent
 from backend.services.citation_bindings import (
     build_citation_bindings,
     strip_unbound_source_markers,
@@ -36,8 +36,9 @@ from backend.services.conversation import ConversationService
 from backend.services.conversation_memory import ConversationMemoryService
 from backend.services.middleware import build_middlewares
 from backend.tools import ToolRegistry
-from backend.core.config import settings
 from backend.core.observability.events import diagnostic_preview
+from backend.core.observability.context import current_trace
+from backend.core.observability.model_context import get_context_http_client
 from backend.core.observability.preparation import bind_preparation_sink, preparation_stage
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class ChatService:
         answer_parts: list[str] = []
         citations: list[Citation] = []
         bindings: list[CitationBinding] = []
+        artifacts = []
         debug_store: dict = {}
         conversation_id: UUID | None = request.conversation_id
         trace_id: str | None = None
@@ -90,6 +92,8 @@ class ChatService:
                 ]
             elif event.visibility.value == "debug":
                 debug_store[event.stage_id] = event.detail
+            elif event.stage == "artifacts":
+                artifacts = event.detail.get("artifacts", [])
             elif event.type == "turn.failed":
                 status_code = (
                     int(event.code) if (event.code or "").isdigit() else 502
@@ -106,6 +110,7 @@ class ChatService:
         return ChatResponse(
             conversation_id=conversation_id,
             answer="".join(answer_parts),
+            artifacts=artifacts,
             citations=citations,
             citation_bindings=bindings,
             debug=debug_store if include_debug else None,
@@ -125,137 +130,111 @@ class ChatService:
         """执行唯一 Turn 流，并返回 AgentEvent v2。"""
         from backend.services.turn_stream import execute_turn_stream
 
-        runner = ChatService._chat_stream_legacy(
-            db, user, agent_id, request,
-            client_id=client_id, exec_user=exec_user)
-        async for event in execute_turn_stream(
-                request_id=request_id or f"req_{uuid4().hex}",
-                agent_id=agent_id,
-                conversation_id=request.conversation_id,
-                runner=runner):
-            yield event
+        async def guarded_runner():
+            """作者：LHF；2026-10-25；整轮锁避免聊天与手动压缩同时写同一会话。"""
+            runner = ChatService._chat_stream_legacy(
+                db, user, agent_id, request, client_id=client_id, exec_user=exec_user)
+            first = await anext(runner)
+            lock = ConversationMemoryService.turn_lock(first["conversation_id"])
+            if lock.locked():
+                await runner.aclose()
+                raise HTTPException(status_code=409, detail="当前会话正在处理，请稍后重试")
+            async with lock:
+                try:
+                    yield first
+                    async for item in runner:
+                        yield item
+                finally:
+                    await runner.aclose()
+
+        runner = guarded_runner()
+        stream = execute_turn_stream(
+            request_id=request_id or f"req_{uuid4().hex}", agent_id=agent_id,
+            conversation_id=request.conversation_id, runner=runner,
+            request_input=request.model_dump(mode="json"))
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            # 提前断流同样关闭领域 runner，保证整轮锁及时释放。
+            try:
+                await stream.aclose()
+            finally:
+                await runner.aclose()
 
     @staticmethod
-    async def _chat_stream_legacy(
-        db: AsyncSession,
-        user: Users,
-        agent_id: UUID,
-        request: ChatRequest,
-        client_id: str | None = None,
-        exec_user: Users | None = None,
-    ) -> AsyncIterator[dict]:
-        """内部领域 runner；产生兼容事件但不负责 v2 Turn 终态。
+    async def _chat_stream_legacy(db, user, agent_id, request, client_id=None, exec_user=None):
+        """作者：LHF；2026-10-25；统一主 Agent，技能临时上下文不进入原始消息。"""
+        from backend.services.agent_graph import AgentGraphService
+        from backend.skills.runtime import SkillTurn
+        from backend.tools.agent.reflect import ReflectTool
 
-        client_id 非空 = 匿名访客场景（会话归属 client_id）；
-        exec_user:公开接口登录场景的 Agent 所有者。
-        """
-        atype, agent, llm_cfg, conv = await ChatService._load_context(
+        _, agent, llm_cfg, conv = await ChatService._load_context(
             db, user, agent_id, request.conversation_id, client_id, exec_user)
         yield {"type": "context", "conversation_id": str(conv.id)}
-        full_answer: list[str] = []
-        citations: list[Citation] = []
+        owner = exec_user or user
+        turn = SkillTurn(owner.id, agent_id, conv.id, request.mentions)
+        business_tools = ToolRegistry.build_langchain_tools(db, owner, agent.tools or [], citations_store=[])
+        full_answer, citations, debug_store = [], [], {}
         stream_failed = False
-        # 后端始终采集安全调试数据；前端 Debug 仅控制展示。
-        debug_store: dict = {}
-        try:
-            if atype == "simple_rag":
-                async for event in ChatService._chat_simple_rag_stream(
-                        db, user, agent, llm_cfg, conv, request,
-                        full_answer, citations, debug_store=debug_store):
+        with turn.bind():
+            turn.prepare([tool.name for tool in business_tools])
+            history = await ChatService._load_semantic_history(conv, limit=5)
+
+            async def main_stream_runner(guidance):
+                """复用原始用户消息，技能说明通过模型投影提供。"""
+                async for event in ChatService._chat_general_stream(
+                        db, owner, agent, llm_cfg, conv, request, full_answer, citations,
+                        debug_store=debug_store, orchestration_guidance=guidance):
                     if event.get("type") not in {"debug", "citations", "done"}:
-                        if event.get("type") == "error":
-                            stream_failed = True
                         yield event
-            else:
-                from backend.services.agent_graph import AgentGraphService
 
-                history = await ChatService._load_semantic_history(conv, limit=5)
+            async def draft_runner(guidance):
+                """修订使用本轮已加载技能和偏好。"""
+                return await ChatService._generate_review_draft(
+                    agent, llm_cfg, conv, request.message + turn.reference(), history, guidance)
 
-                async def simple_stream_runner() -> AsyncIterator[dict]:
-                    async for event in ChatService._chat_simple_stream(
-                            db, user, agent, llm_cfg, conv, request,
-                            full_answer, citations, debug_store=debug_store):
-                        if event.get("type") not in {"citations", "done"}:
-                            yield event
+            async def reflect_runner(answer):
+                """核验与主 Agent 共享当前问题、技能与资源。"""
+                context = f"当前问题：{request.message}{turn.catalog}{turn.reference()}\n待核验回答：{answer}"
+                return await ReflectTool._verify_answer(llm_cfg, context)
 
-                async def main_stream_runner(guidance: str) -> AsyncIterator[dict]:
-                    async for event in ChatService._chat_general_stream(
-                            db, user, agent, llm_cfg, conv, request,
-                            full_answer, citations, debug_store=debug_store,
-                            orchestration_guidance=guidance):
-                        if event.get("type") not in {"debug", "citations", "done"}:
-                            yield event
-
-                async def draft_runner(guidance: str) -> str:
-                    return await ChatService._generate_review_draft(
-                        agent, llm_cfg, conv, request.message, history, guidance)
-
+            try:
                 async for event in AgentGraphService.stream(
-                        agent=agent, llm_cfg=llm_cfg, message=request.message,
-                        history=history, tools_desc=ChatService._business_tools_desc(agent),
-                        simple_stream_runner=simple_stream_runner,
-                        main_stream_runner=main_stream_runner,
-                        draft_runner=draft_runner):
+                        agent=agent, llm_cfg=llm_cfg, message=request.message + turn.reference(),
+                        history=history, tools_desc=ChatService._business_tools_desc(agent) + turn.catalog,
+                        main_stream_runner=main_stream_runner, draft_runner=draft_runner,
+                        reflect_runner=reflect_runner):
                     if event.get("type") == "answer.revision_started":
                         full_answer.clear()
                     elif event.get("type") == "delta" and not full_answer:
-                        # revision delta 由图节点直接产生，不经过 main_stream_runner。
                         full_answer.append(str(event.get("content", "")))
-                    if event.get("type") == "intent" and debug_store is not None:
+                    if event.get("type") == "intent":
                         debug_store["intent"] = event.get("intent")
                         debug_store["intent_code"] = event.get("intent_code")
                     if event.get("type") == "error":
                         stream_failed = True
                     yield event
-            source_map = ChatService._source_map(citations)
-            sanitized_answer = strip_unbound_source_markers(
-                "".join(full_answer), ChatService._bindable_source_ids(source_map))
-            full_answer[:] = [sanitized_answer]
-            if debug_store is not None:
+                source_map = ChatService._source_map(citations)
+                answer = strip_unbound_source_markers("".join(full_answer), ChatService._bindable_source_ids(source_map))
+                full_answer[:] = [answer]
                 yield {"type": "debug", "debug": debug_store}
-            yield ChatService._citation_event(sanitized_answer, citations)
-            yield {"type": "done"}
-        finally:
-            source_map = ChatService._source_map(citations)
-            sanitized_answer = strip_unbound_source_markers(
-                "".join(full_answer), ChatService._bindable_source_ids(source_map))
-            if not stream_failed:
-                await ChatService._persist_messages(
-                    db, conv, request.message, sanitized_answer, citations,
-                    build_citation_bindings(sanitized_answer, source_map))
+                yield ChatService._citation_event(answer, citations)
+                if turn.artifacts:
+                    yield {"type": "artifacts", "artifacts": turn.artifacts}
+                yield {"type": "done", "answer": answer}
+            except Exception:
+                stream_failed = True
+                raise
+            finally:
+                source_map = ChatService._source_map(citations)
+                answer = strip_unbound_source_markers("".join(full_answer), ChatService._bindable_source_ids(source_map))
+                if not stream_failed and answer.strip():
+                    await ChatService._persist_messages(db, conv, request.message, answer, citations,
+                        build_citation_bindings(answer, source_map), mentions=request.mentions, artifacts=turn.artifacts)
 
     # ═══════════════════════════════════════════════
-    # simple_rag：RAG 工具由 Agent 执行并自动保存
-    # ═══════════════════════════════════════════════
-
-    @staticmethod
-    def _rag_tool_configs(agent: object) -> list[dict]:
-        """把 simple_rag 的绑定字段转换为现有工具配置，保留增强与精排参数。"""
-        config = {"type": "rag", "kb_id": str(agent.kb_id)}
-        for key in ("top_k", "score_threshold", "mqe_enabled", "hyde_enabled",
-                    "mqe_mode", "hyde_mode", "mqe_query_count", "rerank_enabled", "rerank_mode"):
-            config[key] = getattr(agent, key, None)
-        return [config]
-
-    @staticmethod
-    async def _chat_simple_rag(db, user, agent, llm_cfg, conv, request,
-                               debug_store=None) -> tuple[str, list[Citation]]:
-        """注册 RAG 工具进入 Agent；命中和无命中均由框架保存。"""
-        return await ChatService._chat_general(
-            db, user, agent, llm_cfg, conv, request, debug_store=debug_store,
-            tool_configs=ChatService._rag_tool_configs(agent))
-
-    @staticmethod
-    async def _chat_simple_rag_stream(db, user, agent, llm_cfg, conv, request,
-                                      full_answer, citations, debug_store=None) -> AsyncIterator[dict]:
-        """复用 Agent 工具事件、流式回答及引用收集，不在 Service 提前检索。"""
-        async for event in ChatService._chat_general_stream(
-            db, user, agent, llm_cfg, conv, request, full_answer, citations,
-            debug_store=debug_store, tool_configs=ChatService._rag_tool_configs(agent)):
-            yield event
-
-    # ═══════════════════════════════════════════════
-    # general(LLM 自主决策)
+    # 统一主 Agent（LLM 自主决定工具和技能使用）
     # ═══════════════════════════════════════════════
 
     @staticmethod
@@ -336,51 +315,17 @@ class ChatService:
         yield {"type": "done"}
 
     # ═══════════════════════════════════════════════
-    # simple（零工具直接回答，意图路由开启时）
+    # 核验后的修订：沿用本轮参考材料，不再次执行业务工具
     # ═══════════════════════════════════════════════
 
-    @staticmethod
-    async def _chat_simple(
-        db: AsyncSession,
-        user: Users,
-        agent: object,
-        llm_cfg: object,
-        conv: object,
-        request: ChatRequest,
-        debug_store: dict | None = None,
-    ) -> tuple[str, list[Citation]]:
-        """轻量直答也执行零工具 Agent，由框架自动保存原始问答。"""
-        answer = await ChatService._invoke_agent(
-            db, user, agent, llm_cfg, conv, [], request.message, lightweight=True)
-        return answer, []
 
-    @staticmethod
-    async def _chat_simple_stream(
-        db: AsyncSession,
-        user: Users,
-        agent: object,
-        llm_cfg: object,
-        conv: object,
-        request: ChatRequest,
-        full_answer: list[str],
-        citations: list[Citation],
-        debug_store: dict | None = None,
-    ) -> AsyncIterator[dict]:
-        """轻量直答复用 Agent 流式执行、错误处理和链路埋点。"""
-        async for event in ChatService._invoke_agent_stream(
-            db, user, agent, llm_cfg, conv, [], request.message, lightweight=True):
-            if event.get("type") == "delta":
-                full_answer.append(event["content"])
-            yield event
 
     @staticmethod
     async def _generate_review_draft(agent: object, llm_cfg: object, conv: object,
                                      message: str, history: list[dict[str, str]],
                                      orchestration_guidance: str) -> str:
-        """生成仅供反思节点审查的临时草稿，不写 checkpoint 且不执行业务工具。"""
-        system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
-        if orchestration_guidance:
-            system_prompt = f"{system_prompt}\n\n{orchestration_guidance}"
+        """按核验意见生成修订答案，包含相同技能目录，不写 checkpoint。"""
+        system_prompt = ChatService._system_prompt(agent, [], orchestration_guidance)
         system_prompt += (
             "\n\n你正在生成供内部审查的答案草稿。只回答当前用户问题，"
             "不要描述计划、反思或内部编排过程。"
@@ -390,12 +335,12 @@ class ChatService:
             *history[-5:],
             {"role": "user", "content": message},
         ]
-        return await ChatService._invoke_llm_direct(llm_cfg, agent, conv, messages)
+        return await ChatService._invoke_llm_direct(llm_cfg, agent, conv, messages, purpose="revision")
 
     @staticmethod
     async def _invoke_llm_direct(llm_cfg: object, agent: object,
-                                 conv: object, messages: list[dict]) -> str:
-        """simple 档直接 LLM 调用（采样参数优先级与 general 一致：Agent > 模型配置 > 默认 0.7/0.9）"""
+                                 conv: object, messages: list[dict], *, purpose: str = "answer") -> str:
+        """修订模型直接 LLM 调用（采样参数优先级与 general 一致：Agent > 模型配置 > 默认 0.7/0.9）"""
         import time as _time
 
         from backend.services.llm import LLMService
@@ -416,10 +361,10 @@ class ChatService:
                 protocol=invocation.protocol,
                 timeout=invocation.timeout,
                 max_tokens=invocation.max_tokens,
-                purpose="answer",
+                purpose=purpose,
             )
             _llm_logger.info(
-                "agent=%s type=simple conversation=%s duration_ms=%d error=None",
+                "agent=%s type=general conversation=%s duration_ms=%d error=None",
                 getattr(agent, "name", "?"), str(conv.id),
                 int((_time.perf_counter() - t0) * 1000))
             return answer
@@ -436,20 +381,14 @@ class ChatService:
                     },
                 )
             _llm_logger.error(
-                "agent=%s type=simple duration_ms=%d error=%s",
+                "agent=%s type=general duration_ms=%d error=%s",
                 getattr(agent, "name", "?"),
                 int((_time.perf_counter() - t0) * 1000), e)
-            logger.error(f"simple 档 LLM 调用失败: {e}")
+            logger.error(f"修订模型 LLM 调用失败: {e}")
             raise HTTPException(
                 status_code=ChatService._upstream_error_status(e),
                 detail=f"LLM 服务调用失败: {e}")
 
-    @staticmethod
-    async def _persist_simple_turn(conversation_id: UUID,
-                                   user_message: str,
-                                   assistant_message: str) -> None:
-        """轻量直答通过统一图状态接口保存成对消息，框架维护版本与 metadata。"""
-        await ConversationMemoryService.append_turn(conversation_id, user_message, assistant_message)
 
     # ═══════════════════════════════════════════════
     # create_agent 统一调用
@@ -520,9 +459,36 @@ class ChatService:
         return "\n".join(lines) or "（无业务工具）"
 
     @staticmethod
+    def _with_skill_tools(db, user, agent, tools):
+        """作者：LHF；2026-10-25；有绑定技能时附加三个内部能力，不改变业务工具授权。"""
+        from backend.skills.runtime import available_skills
+        from backend.skills import SkillRegistry
+        if not getattr(agent, "id", None) or not getattr(user, "id", None):
+            return tools
+        if available_skills(SkillRegistry(), user.id, agent.id):
+            ToolRegistry.sync_from_disk()
+            for name in ("load_skill", "read_skill_file", "run_skill_script"):
+                if name not in {tool.name for tool in tools}:
+                    tools.append(ToolRegistry._get(name).build_langchain(db, user, {}))
+        return tools
+
+    @staticmethod
+    def _system_prompt(agent, tools, orchestration_guidance=""):
+        """作者：LHF；2026-10-25；统一构建回答提示词，供模型调用和容量估算复用。"""
+        prompt = agent.system_prompt.replace("{agent_name}", agent.name)
+        from backend.skills.runtime import current_skill_turn, available_skills, catalog_text
+        from backend.skills import SkillRegistry
+        turn = current_skill_turn()
+        if turn is not None:
+            prompt += turn.catalog
+        elif getattr(agent, "user_id", None) and getattr(agent, "id", None):
+            prompt += catalog_text(available_skills(SkillRegistry(), agent.user_id, agent.id))
+        return f"{prompt}\n\n{orchestration_guidance}" if orchestration_guidance else prompt
+
+    @staticmethod
     async def _build_agent(db: AsyncSession, user: Users, agent: object,
                            llm_cfg: object, tools: list,
-                           orchestration_guidance: str = "", lightweight: bool = False) -> object:
+                           orchestration_guidance: str = "") -> object:
         """构建 create_agent(带 checkpointer + middleware)
 
         采样参数优先级（Phase 4.8）：Agent 配置 > 模型配置 > 默认（0.7 / 0.9）
@@ -538,23 +504,8 @@ class ChatService:
 
         with preparation_stage("summary_config", "读取总结模型配置"):
             summary_cfg = await ChatService._get_summary_cfg(db, user, agent)
-        with preparation_stage("middleware", "构建 Agent 中间件"):
-            middlewares = build_middlewares(summary_cfg, llm_cfg)
-            if lightweight:
-                from backend.services.simple_context import SimpleContextMiddleware
-                middlewares.append(SimpleContextMiddleware())
-            elif tools and hasattr(agent, "kb_id"):
-                from backend.services.rag_context import RagFirstMiddleware
-                middlewares.append(RagFirstMiddleware())
-        system_prompt = agent.system_prompt.replace("{agent_name}", agent.name)
-        if tools and hasattr(agent, "kb_id"):
-            system_prompt += (
-                '\n\n每轮必须先检索知识库，再基于本轮工具返回的资料回答。'
-                '引用必须使用结果中的 [S#] 来源标签。检索结果为空或资料不足时，'
-                '明确说明“知识库中没有相关信息”，不得用历史资料冒充本轮命中。'
-            )
-        if orchestration_guidance:
-            system_prompt = f"{system_prompt}\n\n{orchestration_guidance}"
+        tools = ChatService._with_skill_tools(db, user, agent, tools)
+        system_prompt = ChatService._system_prompt(agent, tools, orchestration_guidance)
         with preparation_stage("checkpointer", "获取 checkpoint 管理器"):
             cp = await get_checkpointer()
         from backend.services.llm import get_rate_limiter
@@ -568,9 +519,28 @@ class ChatService:
                 temperature=invocation.temperature, top_p=invocation.top_p,
                 max_tokens=invocation.max_tokens, timeout=invocation.timeout,
                 max_retries=invocation.max_retries,
+                http_async_client=get_context_http_client(f"agent:{invocation.provider}"),
                 rate_limiter=get_rate_limiter(
                     invocation.provider, invocation.model_name,
                     invocation.api_key))
+        with preparation_stage("middleware", "构建 Agent 中间件"):
+            from backend.services.context_compaction import resolve_model_capacity
+
+            capacity_info = await resolve_model_capacity(llm_cfg, model)
+            from backend.skills.runtime import current_skill_turn
+            skill_turn = current_skill_turn()
+            if skill_turn is not None:
+                from backend.services.context_tokens import ContextTokenCounter
+                skill_turn.input_capacity = capacity_info[0]
+                skill_turn.token_counter = ContextTokenCounter(llm_cfg.model_name)
+            middlewares = build_middlewares(summary_cfg, llm_cfg, answer_model=model, capacity_info=capacity_info)
+            from backend.skills.runtime import SkillContextMiddleware, current_skill_turn
+            turn = current_skill_turn()
+            middlewares.append(SkillContextMiddleware())
+            for middleware in middlewares:
+                if hasattr(middleware, "configure_request"):
+                    middleware.configure_request(system_prompt, tools)
+                    middleware.reference_provider = turn.reference if turn else None
         with preparation_stage("graph", "构建 Agent 执行图", tool_count=len(tools)):
             return create_agent(model=model, tools=tools, system_prompt=system_prompt,
                                 checkpointer=cp, middleware=middlewares)
@@ -585,6 +555,8 @@ class ChatService:
         """把上游限流识别为 429，其余调用错误维持 502。"""
         message = str(error).lower()
         status_code = getattr(error, "status_code", None)
+        if isinstance(error, HTTPException):
+            return error.status_code
         return 429 if status_code == 429 or "rate_limit" in message or "429" in message else 502
 
     @staticmethod
@@ -647,7 +619,7 @@ class ChatService:
                             llm_cfg: object, conv: object, tools: list,
                             user_content: str,
                             citations_store: list | None = None,
-                            orchestration_guidance: str = "", lightweight: bool = False) -> str:
+                            orchestration_guidance: str = "") -> str:
         """非流式:create_agent.ainvoke(thread_id = conversation_id)（埋点：耗时/错误）
 
         推理模型（Kimi K3 / o1 等）仅支持 temperature=1：检测到 temperature 限制错误时
@@ -661,8 +633,7 @@ class ChatService:
             with preparation_stage("checkpoint_repair", "检查并修复会话 checkpoint"):
                 await ChatService._repair_checkpoint(conv)
             lc_agent = await ChatService._build_agent(
-                db, user, agent, llm_cfg, tools, orchestration_guidance,
-                **({"lightweight": True} if lightweight else {}))
+                db, user, agent, llm_cfg, tools, orchestration_guidance)
         t0 = _time.perf_counter()
         try:
             result = await lc_agent.ainvoke(
@@ -703,7 +674,6 @@ class ChatService:
                                    pending_events: list[dict] | None = None,
                                    orchestration_guidance: str = "",
                                    event_queue: asyncio.Queue[tuple[str, object]] | None = None,
-                                   lightweight: bool = False,
                                    ) -> AsyncIterator[dict]:
         """同时消费消息与节点更新，实时展示模型轮、工具选择和执行状态。
 
@@ -726,8 +696,7 @@ class ChatService:
                     with preparation_stage("checkpoint_repair", "检查并修复会话 checkpoint"):
                         await ChatService._repair_checkpoint(conv)
                     return await ChatService._build_agent(
-                        db, user, agent, llm_cfg, tools, orchestration_guidance,
-                **({"lightweight": True} if lightweight else {}))
+                        db, user, agent, llm_cfg, tools, orchestration_guidance)
 
         preparation_task = asyncio.create_task(prepare())
         try:
@@ -997,15 +966,11 @@ class ChatService:
         """
         check_user = exec_user or user
         entry = await AgentIndexRepo.get_by_id(db, agent_id)
-        if entry is None or entry.status == 9 or entry.user_id != check_user.id:
+        if entry is None or entry.status == 9 or entry.user_id != check_user.id or entry.type != "general":
             raise HTTPException(status_code=404, detail="Agent 不存在")
 
-        if entry.type == "simple_rag":
-            agent = await SimpleRagAgentRepo.get_by_id(db, agent_id)
-            atype = "simple_rag"
-        else:
-            agent = await GeneralAgentRepo.get_by_id(db, agent_id)
-            atype = "general"
+        agent = await GeneralAgentRepo.get_by_id(db, agent_id)
+        atype = "general"
 
         if agent is None or agent.status == 9:
             raise HTTPException(status_code=404, detail="Agent 不存在")
@@ -1024,7 +989,7 @@ class ChatService:
     async def _persist_messages(db: AsyncSession, conv: object,
                                 user_msg: str, assistant_msg: str,
                                 citations: list[Citation],
-                                citation_bindings: list[CitationBinding]) -> None:
+                                citation_bindings: list[CitationBinding], *, mentions=None, artifacts=None) -> None:
         """原子追加本轮消息到会话 JSON（user + assistant 含引用）
 
         一轮两条一次 append_messages（单条 UPDATE || 拼接，数据库内部读-拼-写，
@@ -1037,10 +1002,14 @@ class ChatService:
             title = user_msg if len(user_msg) <= 10 else user_msg[:10] + "..."
             await ConversationRepo.update_title(db, conv, title)
         now = datetime.now(timezone.utc).isoformat()
+        # 作者：LHF；2026-10-25；把实时 Turn 的关联 ID 与回答一起落库，供重载历史恢复入口。
+        trace = current_trace()
         await MessageRepo.append_messages(db, conv.id, [
             {"role": "user", "content": user_msg, "citations": None,
+             "mentions": [item.model_dump() for item in mentions or []],
              "created_at": now},
-            {"role": "assistant", "content": assistant_msg,
+            {"role": "assistant", "content": assistant_msg, "artifacts": artifacts or [],
+             "trace_id": trace.trace_id if trace else None,
              "citations": [c.model_dump(mode="json") for c in citations]
              if citations else None,
              "citation_bindings": [b.model_dump(mode="json") for b in citation_bindings]
